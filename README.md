@@ -140,5 +140,5 @@ Bug reports and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.m
 Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for included third-party work.
 
 <div align="center">
-<sub>Made in British Columbia by <a href="https://sheernox.com">Sheernox Technology Group</a>.</sub>
+<sub>Free and open source. Paid plans in the <a href="https://app.cedr.dev">cedr.dev app</a> add features such as routes shared across your machines and team (<a href="https://cedr.dev/docs/billing/plans/">plans</a>).<br>Made by <a href="https://sheernox.com">Sheernox</a>.</sub>
 </div>
