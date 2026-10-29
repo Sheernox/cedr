@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "tagged": {
+      "command": "npx",
+      "args": [
+        "@acme/mcp-tagged@latest"
+      ]
+    }
+  }
+}

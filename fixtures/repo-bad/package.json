@@ -1,0 +1,7 @@
+{
+  "name": "broken",
+  "private": true,
+  "scripts": {
+    "build": "node build.js"
+  }
+}

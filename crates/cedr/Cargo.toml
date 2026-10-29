@@ -1,0 +1,26 @@
+[package]
+name = "cedr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "cedr"
+path = "src/main.rs"
+
+[dependencies]
+cedr-core.workspace = true
+cedr-route.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+clap = { version = "4", features = ["derive"] }
+rmcp = { version = "3.8", default-features = false, features = ["server", "macros", "transport-io"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt"] }
+
+[dev-dependencies]
+flate2 = "1"
+tar = "0.4"
+tempfile = "3"
+toml = "1"

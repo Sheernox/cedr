@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "fake": {
+      "command": "python3",
+      "args": [
+        "-I",
+        "fake_mcp_server.py"
+      ],
+      "env": {
+        "FAKE_MODE": "test"
+      }
+    }
+  }
+}

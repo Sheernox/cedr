@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "latest": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "some-mcp-server"
+      ]
+    },
+    "plain": {
+      "type": "sse",
+      "url": "http://mcp.internal.example.net/sse"
+    },
+    "loopback": {
+      "type": "http",
+      "url": "http://localhost:3000/mcp"
+    }
+  }
+}

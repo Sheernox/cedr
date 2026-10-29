@@ -1,0 +1,6 @@
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+
+[mcp_servers.container]
+command = "docker"
+args = ["run", "-i", "--rm", "ghcr.io/acme/mcp:latest"]

@@ -1,0 +1,16 @@
+{
+  "theme": "Default",
+  "mcpServers": {
+    "search": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "API_KEY",
+        "ghcr.io/acme/mcp-search@sha256:0f3c1e7d9a2b4c6e8f0a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e3f5a7b9c1d3e"
+      ]
+    }
+  }
+}

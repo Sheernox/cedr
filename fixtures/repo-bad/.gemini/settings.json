@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "python": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ]
+    }
+  }
+}

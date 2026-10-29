@@ -1,0 +1,8 @@
+{
+  "name": "@fixture/fake-weather",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": {
+    "fake-weather": "dist/index.js"
+  }
+}

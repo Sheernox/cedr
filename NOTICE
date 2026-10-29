@@ -1,0 +1,6 @@
+Cedr
+Copyright 2026 Sheernox Technology Group
+
+This product includes skill risk patterns ported from NVIDIA SkillSpector
+(https://github.com/NVIDIA/SkillSpector, commit d501c0d5035c2ed6385740a384d942bb05651fda),
+licensed under the Apache License, Version 2.0.

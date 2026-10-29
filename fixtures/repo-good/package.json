@@ -1,0 +1,8 @@
+{
+  "name": "example",
+  "private": true,
+  "scripts": {
+    "build": "node build.js",
+    "test": "node test.js"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@acme/mcp-github@1.4.2"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
+    "docs": {
+      "type": "http",
+      "url": "https://mcp.docs.example.net/mcp"
+    }
+  }
+}

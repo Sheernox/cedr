@@ -1,0 +1,10 @@
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+
+[mcp_servers.git]
+command = "uvx"
+args = ["mcp-server-git==0.6.2", "--repository", "."]
+
+[mcp_servers.local]
+command = "node"
+args = ["tools/mcp-server.js"]

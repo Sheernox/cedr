@@ -1,0 +1,36 @@
+# Route test config: two harnesses, a balanced tier, a council and an orchestrator-only route.
+version = 1
+
+[orchestrator]
+harness = "claude"
+model = "opus"
+
+[harnesses.claude]
+expect = ["five_hour", "seven_day"]
+effort_option = "effort"
+t3 = "claudeAgent"
+aliases = ["claudeAgent"]
+
+[harnesses.codex]
+expect = ["primary"]
+effort_option = "reasoningEffort"
+
+[routes."review.code"]
+work = "Independent review"
+role = "review"
+candidates = [
+  { target = "codex/sol", effort = "high", tier = 1 },
+  { target = "claude/sonnet", effort = "high", tier = 1 },
+  { target = "self" },
+]
+
+[routes.council]
+role = "review"
+council = true
+candidates = [
+  { target = "codex/sol", effort = "high" },
+  { target = "claude/opus", effort = "high" },
+]
+
+[routes.design]
+candidates = [{ target = "self" }]
