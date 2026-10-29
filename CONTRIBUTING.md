@@ -43,7 +43,9 @@ cargo fmt --check
 
 The tests never use the network; tests that need it are marked `#[ignore]`.
 
-Code comments that cite `docs/route.md`, `docs/council.md` or `docs/design.md` refer to the design notes kept with the cedr.dev source; [cedr.dev/docs](https://cedr.dev/docs) and `cedr <command> --help` describe the same behaviour.
+## Design contracts
+
+[docs/route.md](docs/route.md), [docs/council.md](docs/council.md) and [docs/design.md](docs/design.md) define every config field, output shape and exit code. A change to any of them belongs in the same pull request as the code, with the contract updated first.
 
 ## Commit messages
 

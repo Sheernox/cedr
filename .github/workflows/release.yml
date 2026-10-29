@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Ubuntu 22.04 keeps the Linux binaries on glibc 2.35, so they run on older distributions.
+          # Building on Ubuntu 22.04 keeps the Linux binaries running on older distributions (glibc 2.34+).
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
           - { target: x86_64-apple-darwin, os: macos-latest }

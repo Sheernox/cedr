@@ -4,6 +4,7 @@ The open-source `cedr` CLI from [cedr.dev](https://cedr.dev): Route picks the AI
 
 ## How this repo works
 - It is published from the cedr.dev source tree. Accepted pull requests are applied there and return with the next release, so keep each change small and self-contained.
+- Frozen contracts: [docs/route.md](docs/route.md) for `cedr route` and `cedr mcp`, [docs/council.md](docs/council.md) for `cedr council`, [docs/design.md](docs/design.md) for Guard. Change the contract first, then the code.
 - Product docs live at [cedr.dev/docs](https://cedr.dev/docs); `cedr <command> --help` is the CLI reference.
 
 ## Layout

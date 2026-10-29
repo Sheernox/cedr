@@ -3,6 +3,7 @@
 <a href="https://cedr.dev"><img src="assets/banner.png" alt="cedr.dev: developer tools for humans and agents. Route the work to the right agent, review it across vendors, and pin what your agents load. One open-source CLI." width="100%"></a>
 
 <a href="https://github.com/Sheernox/cedr/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Sheernox/cedr/ci.yml?branch=main&style=for-the-badge&label=CI&labelColor=555555" alt="CI status"></a>
+<a href="https://github.com/Sheernox/cedr/releases/latest"><img src="https://img.shields.io/github/v/release/Sheernox/cedr?style=for-the-badge&label=Release&color=2F7A57&labelColor=555555" alt="Latest release"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-2F7A57?style=for-the-badge&labelColor=555555" alt="License: Apache-2.0"></a>
 <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Built_with-Rust-7A6A55?style=for-the-badge&labelColor=555555" alt="Built with Rust"></a>
 <a href="https://cedr.dev/docs"><img src="https://img.shields.io/badge/Docs-cedr.dev-2F7A57?style=for-the-badge&labelColor=555555" alt="Docs: cedr.dev"></a>
@@ -35,11 +36,30 @@
 
 ## 📦 Install
 
-Build from source with a current stable [Rust toolchain](https://rustup.rs):
+Download the archive for your platform from the [latest release](https://github.com/Sheernox/cedr/releases/latest), unpack it and put `cedr` on your `PATH`.
+
+| Platform | Archive |
+| --- | --- |
+| Linux x86_64 | `cedr-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux ARM64 | `cedr-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS, Apple silicon | `cedr-aarch64-apple-darwin.tar.gz` |
+| macOS, Intel | `cedr-x86_64-apple-darwin.tar.gz` |
+| Windows x86_64 | `cedr-x86_64-pc-windows-msvc.zip` |
+
+For example, on Linux x86_64:
+
+```sh
+curl -fsSL https://github.com/Sheernox/cedr/releases/latest/download/cedr-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+install -m 755 cedr-x86_64-unknown-linux-gnu/cedr ~/.local/bin/cedr
+cedr --version
+```
+
+Linux builds need glibc 2.34 or newer (Ubuntu 22.04, Debian 12, RHEL 9 or later). Every release lists SHA-256 checksums in `SHA256SUMS` and carries signed build provenance you can check with `gh attestation verify <archive> --repo Sheernox/cedr`.
+
+To build from source instead, use a current stable [Rust toolchain](https://rustup.rs):
 
 ```sh
 cargo install --locked --git https://github.com/Sheernox/cedr cedr
-cedr --version
 ```
 
 ## 🚀 Quick start
@@ -114,7 +134,7 @@ $ cedr route verdict p-979e77351990 accepted
 | `cedr lock` | Pin every skill and MCP server in `cedr.lock` |
 | `cedr verify` | Fail when the setup no longer matches `cedr.lock` (offline) |
 
-Run `cedr <command> --help` for every option.
+Run `cedr <command> --help` for every option. Every config field, output shape and exit code is specified in the design docs for [Route](docs/route.md), [Council](docs/council.md) and [Guard](docs/design.md).
 
 ## 🔌 Use it from your agent
 
