@@ -1,5 +1,5 @@
-name: cedr guard
-description: Lint and verify the skills and MCP servers your AI coding agents load, with findings as pull request annotations
+name: cedr
+description: Check Guard inventory and Sync agent configuration, report drift, and repair generated files with a pull request
 author: Sheernox
 branding:
   icon: shield
@@ -21,6 +21,15 @@ inputs:
   verify:
     description: "auto runs cedr verify when a lock exists; true requires one; false skips it"
     default: auto
+  outdated:
+    description: Report newer npm server versions as annotations without failing the job
+    default: "true"
+  sync:
+    description: "auto checks Sync when .cedr/sync.toml exists; true requires it; false skips"
+    default: auto
+  sync-fix:
+    description: "Repair Sync drift with a PR on push, schedule or workflow_dispatch; needs contents and pull-requests write"
+    default: "false"
   push-org:
     description: When set with the CEDR_API_KEY env, send the results to this cedr.dev organization (also when the checks fail)
     default: ""
@@ -106,6 +115,78 @@ runs:
         esac
         cedr verify "$INPUT_PATH" --format github
 
+    - name: cedr outdated
+      if: ${{ always() && inputs.outdated == 'true' }}
+      shell: bash
+      continue-on-error: true
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+      run: cedr outdated "$INPUT_PATH" --format github
+
+    - name: cedr sync fix
+      id: sync-fix
+      shell: bash
+      continue-on-error: true
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_FIX: ${{ inputs.sync-fix }}
+        EVENT: ${{ github.event_name }}
+        GH_TOKEN: ${{ github.token }}
+        BASE: ${{ github.event.repository.default_branch }}
+      run: |
+        set -euo pipefail
+        case "$INPUT_FIX" in false) exit 0 ;; true) ;; *) echo "::error title=cedr::sync-fix must be true or false"; exit 1 ;; esac
+        case "$EVENT" in push|schedule|workflow_dispatch) ;; *) echo "::error title=cedr::sync-fix requires push, schedule or workflow_dispatch"; exit 1 ;; esac
+        cd "$INPUT_PATH"
+        if [ -n "$(git status --porcelain)" ]; then echo "::error title=cedr::sync-fix requires a clean checkout"; exit 1; fi
+        cedr sync
+        if [ -z "$(git status --porcelain)" ]; then exit 0; fi
+        git checkout -B cedr/sync-fix
+        changed=()
+        while IFS= read -r -d '' path; do changed+=("$path"); done < <(git ls-files --modified --others --exclude-standard -z)
+        git add -- "${changed[@]}"
+        git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix(sync): regenerate agent configuration'
+        if git ls-remote --exit-code --heads origin cedr/sync-fix >/dev/null 2>&1; then
+          git fetch origin refs/heads/cedr/sync-fix:refs/remotes/origin/cedr/sync-fix
+        fi
+        git push --force-with-lease origin HEAD:refs/heads/cedr/sync-fix
+        body="$RUNNER_TEMP/cedr-sync-pr.md"
+        cat > "$body" <<'PR'
+        > 🎯 **TLDR:** Refresh native agent configuration from the repository's .cedr sources.
+
+        #### 🧩 Problem
+        Generated agent files differ from their shared sources.
+
+        #### 🛠️ Solution
+        Run cedr sync to **regenerate the native files and lock**.
+
+        | ✅ Verified | ⚠️ Risk | 🚀 Deploy impact |
+        | --- | --- | --- |
+        | cedr sync completed; organization checks run separately | Review changes to agent instructions and permissions | No deployment |
+        PR
+        number=$(gh pr list --head cedr/sync-fix --base "$BASE" --json number --jq '.[0].number // empty')
+        if [ -n "$number" ]; then
+          gh pr edit "$number" --title 'fix(sync): regenerate agent configuration' --body-file "$body"
+        else
+          gh pr create --head cedr/sync-fix --base "$BASE" --title 'fix(sync): regenerate agent configuration' --body-file "$body"
+        fi
+
+    - name: cedr sync check
+      id: sync
+      shell: bash
+      continue-on-error: true
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_SYNC: ${{ inputs.sync }}
+      run: |
+        case "$INPUT_SYNC" in
+          false) exit 0 ;;
+          auto) if [ ! -f "$INPUT_PATH/.cedr/sync.toml" ]; then echo "no Sync configuration: skipped"; exit 0; fi ;;
+          true) ;;
+          *) echo "::error title=cedr::sync must be auto, true or false"; exit 1 ;;
+        esac
+        cedr sync check "$INPUT_PATH" --format github
+
     - name: cedr push
       if: ${{ always() && inputs.push-org != '' }}
       shell: bash
@@ -117,12 +198,15 @@ runs:
           echo "::warning title=cedr::push-org is set but CEDR_API_KEY is not; nothing was sent"
           exit 0
         fi
+        if [ -f "$INPUT_PATH/.cedr/sync.toml" ]; then
+          cedr sync push "$INPUT_PATH" --org "$INPUT_ORG" --repo "$GITHUB_REPOSITORY" || exit $?
+        fi
         if [ ! -f "$INPUT_PATH/.cedr/guard.lock" ] && [ ! -f "$INPUT_PATH/cedr.lock" ]; then
           echo "::warning title=cedr::no lock to push; run cedr lock and commit .cedr/"
           exit 0
         fi
         # --org without --config reads no routes.toml from the checkout, so it cannot redirect the key.
-        cedr push "$INPUT_PATH" --org "$INPUT_ORG" --repo "$GITHUB_REPOSITORY"
+        cedr push "$INPUT_PATH" --org "$INPUT_ORG" --repo "$GITHUB_REPOSITORY" --updates
 
     - name: Result
       if: ${{ always() }}
@@ -130,6 +214,8 @@ runs:
       env:
         LINT: ${{ steps.lint.outcome }}
         VERIFY: ${{ steps.verify.outcome }}
+        SYNC: ${{ steps.sync.outcome }}
+        SYNC_FIX: ${{ steps.sync-fix.outcome }}
       run: |
         echo "cedr lint: $LINT, cedr verify: $VERIFY"
-        [ "$LINT" != failure ] && [ "$VERIFY" != failure ]
+        [ "$LINT" != failure ] && [ "$VERIFY" != failure ] && [ "$SYNC" != failure ] && [ "$SYNC_FIX" != failure ]

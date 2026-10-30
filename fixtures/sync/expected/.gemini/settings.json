@@ -1,0 +1,58 @@
+{
+  "context": {
+    "fileName": [
+      "AGENTS.md"
+    ]
+  },
+  "mcpServers": {
+    "docs": {
+      "httpUrl": "https://example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${DOCS_TOKEN}"
+      }
+    },
+    "local": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "example-mcp@1.2.3"
+      ],
+      "env": {
+        "API_KEY": "${API_KEY}"
+      }
+    }
+  },
+  "tools": {
+    "allowed": [
+      "run_shell_command(git status)",
+      "run_shell_command(npm)"
+    ]
+  },
+  "hooks": {
+    "AfterTool": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npm run format",
+            "timeout": 60000,
+            "cwd": "."
+          }
+        ],
+        "matcher": "write_file|replace"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git status",
+            "timeout": 60000,
+            "cwd": "."
+          }
+        ]
+      }
+    ]
+  }
+}

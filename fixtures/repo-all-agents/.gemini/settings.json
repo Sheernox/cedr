@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "gemini": {
+      "httpUrl": "https://example.com/gemini"
+    }
+  }
+}

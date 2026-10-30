@@ -18,9 +18,20 @@ impl Severity {
     }
 }
 
-/// Lint rules (CG) and verify checks (CV), named as in the design contract.
+/// Guard lint (CG), verification (CV), and Sync (CS) finding codes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Rule {
+    Cs001,
+    Cs002,
+    Cs003,
+    Cs004,
+    Cs005,
+    Cs101,
+    Cs102,
+    Cs103,
+    Cs104,
+    Cs105,
+
     Cg001,
     Cg002,
     Cg003,
@@ -41,6 +52,16 @@ pub enum Rule {
 impl Rule {
     pub fn as_str(self) -> &'static str {
         match self {
+            Rule::Cs001 => "CS001",
+            Rule::Cs002 => "CS002",
+            Rule::Cs003 => "CS003",
+            Rule::Cs004 => "CS004",
+            Rule::Cs005 => "CS005",
+            Rule::Cs101 => "CS101",
+            Rule::Cs102 => "CS102",
+            Rule::Cs103 => "CS103",
+            Rule::Cs104 => "CS104",
+            Rule::Cs105 => "CS105",
             Rule::Cg001 => "CG001",
             Rule::Cg002 => "CG002",
             Rule::Cg003 => "CG003",

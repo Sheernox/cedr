@@ -10,8 +10,10 @@ name = "cedr"
 path = "src/main.rs"
 
 [dependencies]
+cedr-sync.workspace = true
 cedr-core.workspace = true
 cedr-route.workspace = true
+cedr-monitor.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"

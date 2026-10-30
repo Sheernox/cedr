@@ -347,7 +347,7 @@ pub fn snapshot(session: &Session, sync: &Sync) -> Result<Value> {
         row.summary = clip(&row.summary, 256);
     }
     next.truncate(SNAPSHOT_ROWS);
-    Ok(json!({
+    let mut snapshot = json!({
         "org": sync.org,
         "machine": machine::machine_id()?,
         "name": clip(&machine::machine_name(ctx.config), 64),
@@ -358,7 +358,10 @@ pub fn snapshot(session: &Session, sync: &Sync) -> Result<Value> {
         "pools": pools,
         "next": next,
         "stale": session.stale.iter().take(16).collect::<Vec<_>>(),
-    }))
+    });
+    // Keep Route's wire order stable when Sync enables insertion-ordered JSON merging.
+    snapshot.sort_all_objects();
+    Ok(snapshot)
 }
 
 /// The most pool rows and routes a snapshot carries; the app refuses larger ones.
@@ -501,9 +504,22 @@ pub fn auto_now() -> Result<bool> {
 /// Starts `<exe> route sync --quiet --config <config>` in the background. The child is not waited
 /// for here: a thread reaps it, so a long-lived MCP server leaves no zombies behind.
 pub fn auto_start(exe: &Path, config: &Path) -> Result<()> {
+    detached_start(
+        exe,
+        &[
+            std::ffi::OsStr::new("route"),
+            std::ffi::OsStr::new("sync"),
+            std::ffi::OsStr::new("--quiet"),
+            std::ffi::OsStr::new("--config"),
+            config.as_os_str(),
+        ],
+    )
+}
+
+/// Starts background CLI work with closed streams and reaps its process without waiting here.
+pub fn detached_start(exe: &Path, args: &[&std::ffi::OsStr]) -> Result<()> {
     let mut child = Command::new(exe)
-        .args(["route", "sync", "--quiet", "--config"])
-        .arg(config)
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -511,6 +527,136 @@ pub fn auto_start(exe: &Path, config: &Path) -> Result<()> {
         .map_err(|e| sync_err("background", e))?;
     std::thread::spawn(move || child.wait());
     Ok(())
+}
+
+/// Serializes monitor automatic-start decisions independently of its longer-running pushes.
+pub fn monitor_auto_lock() -> Result<Option<Lock>> {
+    lock_at(&state_file("monitor-auto.lock"), SystemTime::now())
+}
+
+/// Validates a destination without making a request, using Route's transport policy.
+pub fn validate_url(url: &str) -> Result<()> {
+    client(url).map(|_| ())
+}
+
+/// An independent nonce-protected lock for monitor pushes.
+pub fn monitor_lock() -> Result<Option<Lock>> {
+    lock_at(&state_file("monitor-push.lock"), SystemTime::now())
+}
+
+/// Sends counts-only monitor batches using the same key, URL and error rules as Route.
+pub fn send_monitor(sync: &Sync, key: &str, body: &Value) -> Result<Value> {
+    let response = client(sync.url())?
+        .post(format!("{}/monitor/usage", sync.url()))
+        .bearer_auth(key)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body.to_string())
+        .send()
+        .map_err(|e| sync_err("monitor", request_error(e)))?;
+    if !response.status().is_success() {
+        return Err(reply_error("monitor", response, key));
+    }
+    let bytes = read_limited(response, 4096).map_err(|e| sync_err("monitor reply", e))?;
+    serde_json::from_slice(&bytes).map_err(|_| sync_err("monitor reply", "invalid JSON"))
+}
+
+/// Organization rules response. Only the contract's specific errors are nonfatal.
+pub enum SyncRules {
+    Rules(Value),
+    None,
+    PlanRequired,
+}
+/// Reads organization rules using the same key, client and URL rules as Route.
+pub fn get_sync_rules(sync: &Sync, key: &str) -> Result<SyncRules> {
+    let mut url = reqwest::Url::parse(&format!("{}/sync/rules", sync.url()))
+        .map_err(|_| sync_err("pull", "invalid API URL"))?;
+    url.query_pairs_mut().append_pair("org", &sync.org);
+    let response = client(sync.url())?
+        .get(url)
+        .bearer_auth(key)
+        .send()
+        .map_err(|e| sync_err("pull", request_error(e)))?;
+    let status = response.status();
+    if status.is_success() {
+        return read_limited(response, 8 * 1024 * 1024)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .ok_or(())
+            .map(SyncRules::Rules)
+            .map_err(|_| sync_err("pull", "invalid JSON response"));
+    }
+    if status.as_u16() == 404 || status.as_u16() == 403 {
+        let v: Value = read_limited(response, 8 * 1024 * 1024)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .ok_or(())
+            .map_err(|_| sync_err("pull", format!("HTTP {status}")))?;
+        if status.as_u16() == 404 && v["error"] == "no_rules" {
+            return Ok(SyncRules::None);
+        }
+        if status.as_u16() == 403 && v["error"] == "plan_required" {
+            return Ok(SyncRules::PlanRequired);
+        }
+        return Err(sync_err("pull", format!("HTTP {status}")));
+    }
+    Err(reply_error("pull", response, key))
+}
+/// Reports a repo without sending source contents or environment values.
+pub fn send_sync_repo(sync: &Sync, key: &str, body: &Value) -> Result<Value> {
+    let response = client(sync.url())?
+        .put(format!("{}/sync/repo", sync.url()))
+        .bearer_auth(key)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body.to_string())
+        .send()
+        .map_err(|e| sync_err("push", request_error(e)))?;
+    if !response.status().is_success() {
+        return Err(reply_error("push", response, key));
+    }
+    read_limited(response, 1024 * 1024)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .ok_or(())
+        .map_err(|_| sync_err("push", "invalid JSON response"))
+}
+/// Account metadata for Doctor; callers must never print the response wholesale.
+pub fn get_me(sync: &Sync, key: &str) -> Result<Value> {
+    let response = client(sync.url())?
+        .get(format!("{}/me", sync.url()))
+        .bearer_auth(key)
+        .send()
+        .map_err(|e| sync_err("account", request_error(e)))?;
+    if !response.status().is_success() {
+        return Err(sync_err("account", format!("HTTP {}", response.status())));
+    }
+    read_limited(response, 1024 * 1024)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .ok_or(())
+        .map_err(|_| sync_err("account", "invalid JSON response"))
+}
+
+/// Latest CLI release for diagnostics. An explicit loopback API supports offline test fixtures.
+pub fn doctor_release(sync: &Sync) -> Result<Value> {
+    let local = reqwest::Url::parse(sync.url())
+        .ok()
+        .is_some_and(|u| is_local(&u));
+    let url = if local {
+        format!("{}/releases/latest", sync.url())
+    } else {
+        "https://api.github.com/repos/Sheernox/cedr/releases/latest".into()
+    };
+    let response = client(&url)?
+        .get(&url)
+        .header(reqwest::header::USER_AGENT, "cedr")
+        .send()
+        .map_err(|e| sync_err("release", request_error(e)))?;
+    if !response.status().is_success() {
+        return Err(sync_err("release", "release lookup unavailable"));
+    }
+    let bytes =
+        read_limited(response, 256 * 1024).map_err(|_| sync_err("release", "invalid response"))?;
+    serde_json::from_slice(&bytes).map_err(|_| sync_err("release", "invalid JSON response"))
 }
 
 #[cfg(test)]

@@ -1,0 +1,4 @@
+{"type": "session_meta", "payload": {"id": "fixture", "cwd": "/work/project"}}
+{"type": "turn_context", "payload": {"model": "gpt-6.1-sol", "effort": "high"}}
+{"type": "token_usage_record", "timestamp": "2026-10-30T10:00:00Z", "payload": {"response_id": "response1", "usage": {"input_tokens": 100, "cached_input_tokens": 30, "cache_write_input_tokens": 10, "output_tokens": 20, "reasoning_output_tokens": 5}}}
+{"type": "event_msg", "timestamp": "2026-10-30T10:00:00Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"total_tokens": 120}, "last_token_usage": {"input_tokens": 100, "output_tokens": 20}}}}

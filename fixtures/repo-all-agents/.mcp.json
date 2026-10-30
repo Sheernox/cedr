@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "claude": {
+      "command": "example-mcp"
+    }
+  }
+}

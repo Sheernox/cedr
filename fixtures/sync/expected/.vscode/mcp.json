@@ -1,0 +1,20 @@
+{
+  "servers": {
+    "docs": {
+      "url": "https://example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:DOCS_TOKEN}"
+      }
+    },
+    "local": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "example-mcp@1.2.3"
+      ],
+      "env": {
+        "API_KEY": "${env:API_KEY}"
+      }
+    }
+  }
+}

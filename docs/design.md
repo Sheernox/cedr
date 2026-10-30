@@ -69,10 +69,13 @@ paths = [".agents/skills/security-audit/**"]   # globs over the finding's path, 
 | Any | `AGENTS.md` (any depth) | `.agents/skills/<name>/SKILL.md` | | |
 | Claude Code | `CLAUDE.md` | `.claude/skills/<name>/SKILL.md` | `.mcp.json` (`mcpServers`) | `.claude/settings.json` `permissions.allow` |
 | Codex | | | `.codex/config.toml` (`[mcp_servers.<name>]`) | `.codex/config.toml` `sandbox_mode`, `approval_policy` |
-| Cursor | | | `.cursor/mcp.json` (`mcpServers`) | |
-| Gemini | `GEMINI.md` | | `.gemini/settings.json` (`mcpServers`) | |
+| Cursor | | `.cursor/skills/<name>/SKILL.md` | `.cursor/mcp.json` (`mcpServers`) | |
+| Gemini | `GEMINI.md` | `.gemini/skills/<name>/SKILL.md` | `.gemini/settings.json` (`mcpServers`; `httpUrl` is remote) | |
+| Copilot | `.github/copilot-instructions.md` | `.github/skills/<name>/SKILL.md` | `.vscode/mcp.json` (`servers`), `.github/mcp.json` (`mcpServers`) | |
+| opencode | | `.opencode/skills/<name>/SKILL.md` | `opencode.json` (`mcp`: `type` `local` with a `command` array, or `remote` with `url`) | |
+| Antigravity | | | `.agents/mcp_config.json` (`mcpServers`; `serverUrl` is remote) | |
 
-A server entry is stdio (`command`, `args`, `env`) or remote (`url`, or `type`/`transport` of `http`/`sse`). The same server name in two clients is two lock entries keyed by `client` and `name`.
+A server entry is stdio (`command`, `args`, `env`) or remote (`url`, `httpUrl`, `serverUrl`, or `type`/`transport` of `http`/`sse`). Clients are `claude`, `codex`, `cursor`, `gemini`, `copilot`, `opencode` and `antigravity`. The same server name in two clients is two lock entries keyed by `client` and `name`.
 
 Skill directories and the files in them are read only when their canonical path stays inside the canonical root (a `.claude/skills` link into `.agents/skills` is fine). A file symlink inside a skill is never followed: the hash and the lint rules both see its target text. A skill directory whose canonical path escapes the root is skipped, never read: `cedr lint` reports it as CG010, and `cedr lock` and `cedr verify` print `skipped <path>: links outside the repo` on stderr and carry on with the rest.
 
@@ -198,6 +201,16 @@ egress = ["api.github.com"]
 
 `cedr verify [PATH] [--format text|json|github]` never touches the network. It fails (exit 1) when a skill's content hash differs, a skill or server was added or removed, or a server's source changed. Findings use the lint JSON shape with rules `CV001` (content changed), `CV002` (added), `CV003` (removed), `CV004` (source changed) and `CV005` (launch changed: command, arguments, env keys or URL). Env values are never hashed or stored, only their keys.
 
+## Updates
+
+`cedr outdated [PATH] [--format text|json|github] [--fail-on high|medium|low|never]` checks each locked npm server for a newer version and shows what it would change, without installing or running anything:
+
+1. For each `[[mcp]]` entry with an `npm:` source, read the registry's `latest` dist-tag (as `cedr latest`).
+2. When it is newer than the locked version (semver; an unpinned entry compares the version it resolved to), extract the newer version's surface statically (as `cedr surface`) and diff it against the locked surface (as `cedr diff`; an entry locked with `method = "none"` reports the version alone).
+3. Report one update per server: `{"client", "name", "source", "latest", "severity", "changes": [<diff changes>]}`, where `severity` is the highest change's (`none` when the surfaces match).
+
+Other sources (`pypi:`, `oci:`, `command:`, `url:`) are listed as `not checked` in text output and left out of JSON. A registry or network failure for one server is a warning naming the server, never a failure of the run. JSON output is `{"version": 1, "updates": [...]}`; `--format github` prints one `::warning` per update (`::error` for high). Exit 0, or 1 when an update reaches `--fail-on` (default `never`), 2 on usage or I/O failure.
+
 ## Push
 
 `cedr push [PATH] [--repo NAME] [--org SLUG] [--config FILE]` sends the repo's pinned inventory and its current findings to the cedr.dev app, so an organization sees every repo's agent setup in one place. It uses Route's credentials ([route.md](route.md), Sync), the key from `$CEDR_API_KEY` or `$XDG_CONFIG_HOME/cedr/api-key`. With `--org` and no `--config` it sends to the default API URL and reads no routes config at all: a CI checkout is untrusted, and a `.cedr/routes.toml` in it must never redirect the key. Otherwise `[sync] url` and `org` come from the routes config found as Route finds it (`--config` first), with `--org` overriding `[sync] org`.
@@ -216,6 +229,7 @@ It reads the lock (exit 2 with `no lock: run cedr lock first` when there is none
 - `skills` and `mcp` are the lock's entries in lock order; `surface` is `null` with method `none`. Findings use the lint JSON shape (`lint` after `guard.toml` suppression).
 - Limits: strings cut to 1024 characters (names, paths and sources to 256), lists to 512 entries (`tools` and `egress` 256 per server, each finding list 1000), so the app never refuses a push for one long value; each list cut short prints `sent N of M <what>` as a warning. The app refuses a body over 2 MiB (413) and any value over these limits (400); a push that would exceed 2 MiB fails before sending, naming the size. It never sends file contents, env values, launch commands or absolute paths, and a `url:` source goes without its user info, query or fragment.
 - The app shows when it received each push (not the client's `at`), keeps at most 200 repos and 32 MiB of stored pushes per organization (the oldest pushes are dropped first), and keeps a repo's push when its sender leaves the organization. Owners and admins can remove a repo's record.
+- `--updates` adds `"updates": [{"client", "name", "source", "latest", "severity", "changes"}]` from `cedr outdated`, where `changes` is the number of surface changes (at most 512 updates); without it the field is absent. The GitHub Action passes it.
 - The reply is `{"ok": true}`; the app keeps only the latest push per organization and repo. Exit 0 sent, 2 on any failure (the message names the HTTP status and the API's error text, never the URL's query or the key). It does not change exit status on findings: `verify` gates, `push` reports.
 
 ## GitHub Action
@@ -228,7 +242,8 @@ The public repo's root `action.yml` is a composite action: `uses: Sheernox/cedr@
 | `path` | `.` | Repo root to check |
 | `strict` | `false` | Pass `--strict` to lint |
 | `verify` | `auto` | `auto` runs `cedr verify` when a lock exists; `true` requires one; `false` skips it |
-| `push-org` | empty | When set with the `CEDR_API_KEY` env, run `cedr push --org <it>` after the checks, also when they fail |
+| `push-org` | empty | When set with the `CEDR_API_KEY` env, run `cedr push --org <it> --updates` after the checks, also when they fail |
+| `outdated` | `true` | Run `cedr outdated --format github` after verify, so newer versions of pinned servers show as annotations; it never fails the job |
 
 `version` must be a release tag (`vX.Y.Z`, optionally with a `-suffix`). It downloads `cedr-<target>.tar.gz` (or `.zip` on Windows) and `SHA256SUMS` for the runner from the GitHub release over https, refuses an archive whose checksum does not match, then runs `cedr lint --format github` and `cedr verify --format github`. The job fails when either fails. It runs no package or server and never uses `--introspect`.
 

@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npm run format",
+            "timeout": 60,
+            "cwd": "."
+          }
+        ],
+        "matcher": "apply_patch"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git status",
+            "timeout": 60,
+            "cwd": "."
+          }
+        ]
+      }
+    ]
+  }
+}

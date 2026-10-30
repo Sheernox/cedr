@@ -19,6 +19,21 @@
 > [!NOTE]
 > cedr is in preview. Commands and file formats may still change before 1.0.
 
+## Monitor
+
+`cedr monitor` reads local coding-agent usage and reports tokens, cache use and API-equivalent cost estimates. It sends counts only when you run `push` or enable automatic pushes.
+
+```sh
+cedr monitor --since 7d --by model
+cedr monitor sources
+cedr monitor sessions
+cedr monitor limits
+cedr monitor push --org your-org
+cedr monitor schedule
+```
+
+Configure collection and optional automatic pushes in `~/.config/cedr/monitor.toml`. `cedr monitor reset` removes the local store so the next report rebuilds it from the logs still available. Missing usage stays unknown.
+
 ## ✨ What it does
 
 <table>
@@ -133,11 +148,14 @@ $ cedr route verdict p-979e77351990 accepted
 | `cedr lint` | Find problems in a repo's agent setup |
 | `cedr lock` | Pin every skill and MCP server in `.cedr/guard.lock` |
 | `cedr verify` | Fail when the setup no longer matches the lock (offline) |
-| `cedr push` | Send a repo's pins and findings to your cedr.dev organization's Guard page |
+| `cedr outdated` | Inspect newer npm versions and their surface changes without running them |
+| `cedr push` | Send pins and findings to your organization's Guard page; `--updates` includes npm updates |
 
 Run `cedr <command> --help` for every option, and `cedr completions bash|zsh|fish|powershell|elvish` for a shell completion script. Every config field, output shape and exit code is specified in the design docs for [Route](docs/route.md), [Council](docs/council.md) and [Guard](docs/design.md).
 
 ## 🛡️ Check every pull request
+
+Guard discovers Claude, Codex, Cursor, Gemini, Copilot, opencode and Antigravity MCP configs, plus their standard skill folders.
 
 The Guard action installs a released `cedr` (checked against the release's `SHA256SUMS`), runs `cedr lint` and `cedr verify`, and shows each finding as an annotation on the pull request:
 
@@ -146,7 +164,7 @@ The Guard action installs a released `cedr` (checked against the release's `SHA2
 - uses: Sheernox/cedr@v0.3.0
 ```
 
-Inputs: `version`, `path`, `strict`, `verify` (`auto`, `true` or `false`) and `push-org`, which with a `CEDR_API_KEY` secret also sends each result to the app. Repo-level settings, such as extra skill folders and checks to skip, go in `.cedr/guard.toml`. See the [Guard design](docs/design.md) for every field.
+Inputs: `version`, `path`, `strict`, `verify` (`auto`, `true` or `false`), `sync`, `sync-fix`, `outdated` (default `true`, annotations never fail the job) and `push-org`, which with a `CEDR_API_KEY` secret also sends each result and npm updates to the app. Repo-level settings, such as extra skill folders and checks to skip, go in `.cedr/guard.toml`. See the [Guard design](docs/design.md) for every field.
 
 ## 🔌 Use it from your agent
 
@@ -163,6 +181,23 @@ codex mcp add cedr -- cedr mcp
 - Picks, verdicts and stats stay on your machine. `cedr route sync` sends them to cedr.dev only when you add a `[sync]` section and a cedr.dev API key.
 - `cedr lock` runs an MCP server only when you pass `--introspect`, and warns before it does.
 - `cedr push` sends names, versions, hashes and findings, never file contents, environment values or how a server is started.
+
+## Sync
+
+Keep agent instructions, skills, MCP servers, permissions and hooks in `.cedr/`, then compile them into each agent's native files:
+
+```bash
+cedr sync init
+cedr sync --dry-run
+cedr sync
+cedr sync check --format github
+```
+
+Commit the sources, generated files and `.cedr/sync.lock`. Sync refuses unmanaged Markdown and hand edits unless `--force` is supplied. `cedr sync pull --org <id>` vendors organization rules; `cedr sync push --org <id>` reports drift without sending file contents or environment values.
+
+## Doctor
+
+Run `cedr doctor` to diagnose account setup, Route, MCP registration, Monitor, Sync and Guard. `cedr doctor --format json` returns checks with states and repair steps. Doctor reads without changing configuration; offline account checks are skipped or reported as warnings. Failures exit 1; warnings alone exit 0.
 
 ## 🤝 Contributing
 

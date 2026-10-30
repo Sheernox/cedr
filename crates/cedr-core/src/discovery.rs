@@ -18,10 +18,13 @@ use crate::source::Source;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Client {
+    Antigravity,
     Claude,
     Codex,
+    Copilot,
     Cursor,
     Gemini,
+    Opencode,
 }
 
 impl Client {
@@ -31,6 +34,9 @@ impl Client {
             Client::Codex => "codex",
             Client::Cursor => "cursor",
             Client::Gemini => "gemini",
+            Client::Copilot => "copilot",
+            Client::Opencode => "opencode",
+            Client::Antigravity => "antigravity",
         }
     }
 }
@@ -127,7 +133,7 @@ impl SkillDir {
 #[derive(Debug)]
 pub struct Workspace {
     pub root: PathBuf,
-    /// `AGENTS.md`, `CLAUDE.md` and `GEMINI.md` files, relative to the root.
+    /// Standard instruction files, including Copilot instructions, relative to the root.
     pub instructions: Vec<String>,
     pub skills: Vec<SkillDir>,
     pub servers: Vec<Server>,
@@ -138,7 +144,14 @@ pub struct Workspace {
 }
 
 pub const INSTRUCTION_FILES: [&str; 3] = ["AGENTS.md", "CLAUDE.md", "GEMINI.md"];
-const SKILL_ROOTS: [&str; 2] = [".agents/skills", ".claude/skills"];
+const SKILL_ROOTS: [&str; 6] = [
+    ".agents/skills",
+    ".claude/skills",
+    ".cursor/skills",
+    ".gemini/skills",
+    ".github/skills",
+    ".opencode/skills",
+];
 
 pub fn discover(root: &Path) -> Result<Workspace> {
     let meta = fs::metadata(root).map_err(io_err(root))?;
@@ -188,7 +201,13 @@ fn instruction_files(root: &Path) -> Result<Vec<String>> {
             found.push(relative(root, entry.path()));
         }
     }
+    let copilot = root.join(".github/copilot-instructions.md");
+    if copilot.exists() {
+        ensure_inside(&canonical_root, &copilot)?;
+        found.push(".github/copilot-instructions.md".into());
+    }
     found.sort();
+    found.dedup();
     Ok(found)
 }
 
@@ -256,21 +275,46 @@ fn skills(root: &Path, extra: &[String]) -> Result<(Vec<SkillDir>, Vec<String>)>
 }
 
 fn servers(root: &Path) -> Result<Vec<Server>> {
+    let canonical_root = fs::canonicalize(root).map_err(io_err(root))?;
     let mut found = Vec::new();
     for (client, rel) in [
         (Client::Claude, ".mcp.json"),
         (Client::Cursor, ".cursor/mcp.json"),
         (Client::Gemini, ".gemini/settings.json"),
+        (Client::Copilot, ".vscode/mcp.json"),
+        (Client::Copilot, ".github/mcp.json"),
+        (Client::Opencode, "opencode.json"),
+        (Client::Antigravity, ".agents/mcp_config.json"),
     ] {
+        if root.join(rel).exists() {
+            ensure_inside(&canonical_root, &root.join(rel))?;
+        }
         if let Some(text) = read_optional(&root.join(rel))? {
             found.extend(json_servers(client, rel, &text, &root.join(rel))?);
         }
     }
     let rel = ".codex/config.toml";
+    if root.join(rel).exists() {
+        ensure_inside(&canonical_root, &root.join(rel))?;
+    }
     if let Some(text) = read_optional(&root.join(rel))? {
         found.extend(codex_servers(rel, &text, &root.join(rel))?);
     }
     found.sort_by(|a, b| (a.client, &a.name).cmp(&(b.client, &b.name)));
+    for pair in found.windows(2) {
+        if pair[0].client == pair[1].client && pair[0].name == pair[1].name {
+            return Err(parse_err(
+                root,
+                format!(
+                    "duplicate MCP server {}.{} in {} and {}",
+                    pair[0].client.as_str(),
+                    pair[0].name,
+                    pair[0].config_path,
+                    pair[1].config_path
+                ),
+            ));
+        }
+    }
     Ok(found)
 }
 
@@ -289,6 +333,7 @@ struct RawServer {
     args: Vec<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
+    #[serde(alias = "httpUrl", alias = "serverUrl")]
     url: Option<String>,
     #[serde(rename = "type")]
     kind: Option<String>,
@@ -326,12 +371,62 @@ impl RawServer {
 
 fn json_servers(client: Client, rel: &str, text: &str, path: &Path) -> Result<Vec<Server>> {
     let value: serde_json::Value = serde_json::from_str(text).map_err(|e| parse_err(path, e))?;
-    let Some(map) = value.get("mcpServers") else {
+    let section_name = match rel {
+        ".vscode/mcp.json" => "servers",
+        "opencode.json" => "mcp",
+        _ => "mcpServers",
+    };
+    let Some(map) = value.get(section_name) else {
         return Ok(Vec::new());
     };
+    let mut map = map.clone();
+    if client == Client::Opencode {
+        let entries = map
+            .as_object_mut()
+            .ok_or_else(|| parse_err(path, "mcp must be an object"))?;
+        for (name, entry) in entries {
+            let entry = entry
+                .as_object_mut()
+                .ok_or_else(|| parse_err(path, "MCP entry must be an object"))?;
+            match entry.get("type").and_then(serde_json::Value::as_str) {
+                Some("local") => {
+                    let command = entry
+                        .get("command")
+                        .and_then(serde_json::Value::as_array)
+                        .filter(|a| !a.is_empty() && a.iter().all(serde_json::Value::is_string))
+                        .ok_or_else(|| {
+                            parse_err(
+                                path,
+                                format!("MCP server {name:?} needs a nonempty command array"),
+                            )
+                        })?
+                        .clone();
+                    entry.insert("command".into(), command[0].clone());
+                    entry.insert(
+                        "args".into(),
+                        serde_json::Value::Array(command[1..].to_vec()),
+                    );
+                    if let Some(env) = entry.remove("environment") {
+                        entry.insert("env".into(), env);
+                    }
+                }
+                Some("remote")
+                    if entry
+                        .get("url")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some() => {}
+                _ => {
+                    return Err(parse_err(
+                        path,
+                        format!("MCP server {name:?} needs type local or remote with url"),
+                    ));
+                }
+            }
+        }
+    }
     let map: BTreeMap<String, RawServer> =
-        serde_json::from_value(map.clone()).map_err(|e| parse_err(path, e))?;
-    let section = text.find("\"mcpServers\"").unwrap_or(0);
+        serde_json::from_value(map).map_err(|e| parse_err(path, e))?;
+    let section = text.find(&format!("\"{section_name}\"")).unwrap_or(0);
     map.into_iter()
         .map(|(name, raw)| {
             // The entry's key: the quoted name followed by a colon.

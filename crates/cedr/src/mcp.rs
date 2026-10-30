@@ -100,6 +100,22 @@ pub struct HistoryArgs {
     limit: Option<usize>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct MonitorReportArgs {
+    since: Option<String>,
+    by: Option<String>,
+    harness: Option<String>,
+    project: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct RepoArgs {
+    /// Repository root, default current directory
+    path: Option<PathBuf>,
+}
+
 fn reply(result: cedr_route::Result<Value>) -> CallToolResult {
     match result {
         Ok(v) => CallToolResult::success(vec![ContentBlock::text(
@@ -147,6 +163,76 @@ fn json(v: impl serde::Serialize) -> Value {
 
 #[tool_router]
 impl RouteServer {
+    #[tool(description = "Check generated agent files and organization rules offline")]
+    async fn sync_check(&self, Parameters(a): Parameters<RepoArgs>) -> CallToolResult {
+        blocking(move || {
+            crate::sync::check_value(&a.path.unwrap_or_else(|| PathBuf::from(".")))
+                .map_err(cedr_route::Error::Usage)
+        })
+        .await
+    }
+    #[tool(description = "Plan agent configuration changes as unified diffs without writing")]
+    async fn sync_plan(&self, Parameters(a): Parameters<RepoArgs>) -> CallToolResult {
+        blocking(move || {
+            cedr_sync::plan(&a.path.unwrap_or_else(|| PathBuf::from(".")))
+                .map(|p| json(p.files))
+                .map_err(cedr_route::Error::Usage)
+        })
+        .await
+    }
+    #[tool(description = "Diagnose this machine and repository without changing them")]
+    async fn doctor(&self, Parameters(a): Parameters<RepoArgs>) -> CallToolResult {
+        blocking(move || {
+            Ok(crate::doctor::value(
+                &a.path.unwrap_or_else(|| PathBuf::from(".")),
+            ))
+        })
+        .await
+    }
+    #[tool(description = "Report local coding-agent token usage and API-equivalent cost estimates")]
+    async fn monitor_report(&self, Parameters(a): Parameters<MonitorReportArgs>) -> CallToolResult {
+        blocking(move || {
+            let db =
+                cedr_monitor::collect().map_err(|e| cedr_route::Error::Usage(e.to_string()))?;
+            cedr_monitor::report::report(
+                &db,
+                cedr_monitor::report::Options {
+                    since: a.since.as_deref(),
+                    by: a.by.as_deref(),
+                    harness: a.harness.as_deref(),
+                    project: a.project.as_deref(),
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| cedr_route::Error::Usage(e.to_string()))
+        })
+        .await
+    }
+    #[tool(description = "Show latest plan windows and usage projections")]
+    async fn monitor_limits(&self) -> CallToolResult {
+        blocking(move || {
+            let db =
+                cedr_monitor::collect().map_err(|e| cedr_route::Error::Usage(e.to_string()))?;
+            for warning in cedr_monitor::limits::refresh(&db) {
+                eprintln!("cedr: {warning}");
+            }
+            cedr_monitor::limits::report(&db).map_err(|e| cedr_route::Error::Usage(e.to_string()))
+        })
+        .await
+    }
+    #[tool(description = "Show local usage source availability and collection health")]
+    async fn monitor_sources(&self) -> CallToolResult {
+        blocking(move || {
+            let db =
+                cedr_monitor::collect().map_err(|e| cedr_route::Error::Usage(e.to_string()))?;
+            Ok(json(
+                db.source_values()
+                    .map_err(|e| cedr_route::Error::Usage(e.to_string()))?,
+            ))
+        })
+        .await
+    }
+
     #[tool(
         description = "Pick the harness, model and effort for a route. The brief must start with the returned tag."
     )]

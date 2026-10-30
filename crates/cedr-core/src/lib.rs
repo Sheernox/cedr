@@ -14,6 +14,7 @@ mod introspect;
 pub mod lint;
 pub mod lock;
 mod npm;
+pub mod outdated;
 mod patterns;
 pub mod risk;
 pub mod skill;

@@ -1,0 +1,1 @@
+{"id": "m1", "role": "assistant", "modelID": "gpt-6.1-sol", "time": {"created": 1793354400000}, "tokens": {"input": 100, "output": 20, "reasoning": 5, "cache": {"read": 50, "write": 10}}, "cost": 0.1}

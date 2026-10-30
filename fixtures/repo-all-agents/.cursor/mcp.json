@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "cursor": {
+      "command": "example-mcp"
+    }
+  }
+}

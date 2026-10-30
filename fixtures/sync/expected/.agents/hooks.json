@@ -1,0 +1,29 @@
+{
+  "cedr": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npm run format",
+            "timeout": 60,
+            "cwd": "."
+          }
+        ],
+        "matcher": "write_file|replace_file_content"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git status",
+            "timeout": 60,
+            "cwd": "."
+          }
+        ]
+      }
+    ]
+  }
+}

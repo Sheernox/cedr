@@ -1,6 +1,48 @@
 # Changelog
 
-Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council) and [docs/design.md](docs/design.md) (Guard); the user guides are [cedr.dev/docs/route](https://cedr.dev/docs/route) and [cedr.dev/docs/guard](https://cedr.dev/docs/guard).
+Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor) and [docs/doctor.md](docs/doctor.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
+
+## v0.4.0 (2026-10-30)
+
+**v0.4.0** · 14 changes from 1 contributor
+
+### Highlights
+Two new tools and a checkup. **Sync** keeps one agent setup in `.cedr/` and writes every agent's own files from it (AGENTS.md, Claude Code, Codex, Cursor, Gemini CLI, Copilot, opencode and Antigravity), fails CI on drift, and applies your organization's rules. **Monitor** reads each coding agent's local logs and plan readings and reports tokens, spend at API list prices, cache use, sessions, errors and plan limits, and sends counts (never prompts or code) to the app's Monitor page. **`cedr doctor`** checks everything cedr needs and prints the fix for each problem. Guard now reads all eight agents' configs and shows what a newer server version would change before you take it. No upgrade step: existing routes, history and locks are unchanged.
+
+### Fixes
+- Monitor's push reads its organization only from your own `~/.config/cedr/monitor.toml` or `routes.toml`, never from a repo's `.cedr/routes.toml`, so a cloned repo cannot choose where your API key goes.
+- Claude Code tool calls written without a timestamp are counted in the hour they happened instead of at 1970.
+
+### Features
+- **`cedr sync`.** `init` imports a repo's existing agent files into `.cedr/` (replacing literal secrets with `${NAME}` references); `cedr sync` compiles rules, skills, MCP servers, permissions and hooks into each agent's native files, merging settings files instead of replacing them; `check` fails on drift, hand edits and broken org rules (CS001-CS105), with `--format github`; `pull` vendors org rules into `.cedr/org-rules.json`; `push` reports each repo to the app's Sync page. ([docs](docs/sync.md), [guide](https://cedr.dev/docs/sync))
+- **`cedr monitor`.** Incremental collectors for Claude Code, Codex, Gemini CLI, Copilot CLI, opencode, Muse Code and Antigravity into a local store; reports by model, agent, project, day, hour, session or effort; `sessions`, `limits` (projection and outlook per plan window), `sources`, `push` (hourly counts to the app) and `schedule` (an hourly user timer on Linux, macOS and Windows). ([docs](docs/monitor.md), [guide](https://cedr.dev/docs/monitor))
+- **`cedr doctor`.** Checks the CLI version, API key and organization, Route, MCP registrations, Monitor's collectors and schedule, and Sync and Guard in the current repo, each with its fix; `--format json` for agents. ([docs](docs/doctor.md))
+- **`cedr outdated`.** Shows newer versions of pinned npm servers and what each would change (tools, descriptions, schemas, hosts, capabilities) without installing or running anything; `cedr push --updates` sends them to the Guard page. ([docs](docs/design.md#updates))
+- **Guard reads every agent.** Copilot, opencode and Antigravity MCP configs and the Gemini, Cursor, Copilot and opencode skill folders are linted, locked and verified like the rest. ([docs](docs/design.md#discovery))
+- **GitHub Action.** New inputs `sync`, `sync-fix` (a scheduled pull request that repairs Sync drift) and `outdated`; `push-org` also reports Sync and server updates. The action is now named `cedr`.
+- **MCP tools.** `cedr mcp` adds `sync_check`, `sync_plan`, `monitor_report`, `monitor_limits`, `monitor_sources` and `doctor`.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* docs: add the sync, monitor and doctor design contracts
+* feat(monitor): add the shared api price table
+* docs(guard): contract every agent's config files, cedr outdated and update reports
+* docs(monitor): state the per-row counter ceiling and the app's per-member caps
+* feat(monitor): read every coding agent's local usage into a store, report it and push hourly counts
+* fix(monitor): send counts the app accepts, read the org only from the person's own config, and explain every flag
+* fix(monitor): place untimed records at the file's last time instead of the epoch
+* feat(sync): compile agent setup and diagnose local configuration
+* fix(sync): retain invalid-source findings and native import notes
+* fix(sync): keep front matter on the first line of generated rules
+* docs(sync): state the default targets and when doctor goes online
+* feat(guard): discover all clients and report npm surface updates
+* docs: changelog for 0.4.0
+* chore(release): cedr 0.4.0
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.3.0...v0.4.0
+</details>
 
 ## v0.3.0 (2026-10-30)
 

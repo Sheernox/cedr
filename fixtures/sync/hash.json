@@ -1,0 +1,18 @@
+{
+  "input": {
+    "org": "org-fixture",
+    "version": 7,
+    "hash": "ignored",
+    "updatedAt": "2026-10-30T18:02:11Z",
+    "instructions": "Café 雪 \"quote\" \\ path\nnext line\n",
+    "deny": [
+      "read:.env"
+    ],
+    "checks": {
+      "pinnedServers": true,
+      "unrestrictedShell": false
+    }
+  },
+  "canonical": "{\"checks\":{\"pinnedServers\":true,\"unrestrictedShell\":false},\"deny\":[\"read:.env\"],\"instructions\":\"Café 雪 \\\"quote\\\" \\\\ path\\nnext line\\n\"}",
+  "expected": "sha256-1f2c0003aa389c2fa76ab542a468e565cc38b51c2034c0e7fb8a0ae682de86e1"
+}

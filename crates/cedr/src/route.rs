@@ -606,6 +606,16 @@ fn statusline(harness: &str, command: &[String]) -> ExitCode {
     {
         eprintln!("cedr: cannot save the {harness} reading ({e})");
     }
+    if let Some(d) = &doc {
+        let result = cedr_monitor::store::Store::open(&cedr_monitor::store::path())
+            .and_then(|db| db.readings(d));
+        if let Err(e) = result {
+            eprintln!("cedr: cannot record monitor readings ({e})");
+        }
+        if let Err(e) = cedr_monitor::push::auto_start() {
+            eprintln!("cedr: cannot start monitor push ({e})");
+        }
+    }
     let Some((program, args)) = command.split_first() else {
         println!("{}", readers::statusline_text(harness, doc.as_ref()));
         return ExitCode::SUCCESS;

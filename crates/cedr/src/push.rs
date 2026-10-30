@@ -2,14 +2,14 @@
 //! (docs/design.md, Push). It reports and never gates: exit 0 when sent, 2 on any failure.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
+use crate::common::{clip, head_commit, repo_name, settings};
 use cedr_core::finding::Finding;
 use cedr_core::lock;
 use cedr_core::source::public_source;
 use cedr_core::{lint, verify};
-use cedr_route::config::{self, Sync};
 use clap::Args;
 use serde_json::{Value, json};
 
@@ -27,6 +27,9 @@ pub struct PushArgs {
     /// routes.toml whose [sync] settings to use instead of the usual search
     #[arg(long)]
     config: Option<PathBuf>,
+    /// Include available npm updates and their surface-change counts
+    #[arg(long)]
+    updates: bool,
 }
 
 /// The most entries of each list, and the longest strings, a push carries; the app refuses more.
@@ -39,14 +42,14 @@ const MAX_TEXT: usize = 1024;
 const MAX_BODY: usize = 2 * 1024 * 1024;
 
 pub fn run(args: &PushArgs) -> Result<ExitCode, String> {
-    let settings = settings(args)?;
+    let settings = settings(args.org.as_deref(), args.config.as_deref())?;
     let root =
         fs::canonicalize(&args.path).map_err(|e| format!("push: {}: {e}", args.path.display()))?;
     let repo = repo_name(args.repo.as_deref(), &root)?;
     let (lock, _) = lock::read_lock(&root).map_err(|e| e.to_string())?;
     let lint = lint::lint(&root).map_err(|e| e.to_string())?;
     let verification = verify::verify(&root).map_err(|e| e.to_string())?;
-    let body = json!({
+    let mut body = json!({
         "org": settings.org,
         "repo": repo,
         "at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -72,6 +75,19 @@ pub fn run(args: &PushArgs) -> Result<ExitCode, String> {
         "lint": findings(&lint.findings),
         "verify": findings(&verification.report.findings),
     });
+    if args.updates {
+        let report = cedr_core::outdated::outdated(&root).map_err(|e| e.to_string())?;
+        for warning in &report.warnings {
+            eprintln!("cedr: warning: {}", warning.escape_debug());
+        }
+        if report.updates.len() > MAX_ENTRIES {
+            eprintln!(
+                "cedr: warning: sent {MAX_ENTRIES} of {} updates",
+                report.updates.len()
+            );
+        }
+        body["updates"] = updates_body(&report.updates);
+    }
     let size = body.to_string().len();
     if size > MAX_BODY {
         return Err(format!(
@@ -98,58 +114,13 @@ pub fn run(args: &PushArgs) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Where to push. `--org` without `--config` goes to the default API URL and reads no config at
-/// all: in CI the checkout is untrusted, and a `.cedr/routes.toml` in it must never redirect the
-/// API key. Otherwise the config found as Route finds it supplies `[sync]`, with `--org` applied.
-fn settings(args: &PushArgs) -> Result<Sync, String> {
-    let mut sync = match (&args.org, &args.config) {
-        (Some(org), None) => Sync {
-            org: org.clone(),
-            routes: Default::default(),
-            url: None,
-            auto: false,
-        },
-        _ => {
-            let cwd =
-                std::env::current_dir().map_err(|e| format!("push: current directory: {e}"))?;
-            let path = config::locate(args.config.as_deref(), &cwd).map_err(|e| e.to_string())?;
-            config::load_local(&path)
-                .map_err(|e| e.to_string())?
-                .sync
-                .ok_or("push: no organization: pass --org or add [sync] org to routes.toml")?
-        }
-    };
-    if let Some(org) = &args.org {
-        sync.org = org.clone();
-    }
-    if !config::is_slug(&sync.org) {
-        return Err(format!(
-            "push: \"{}\" is not an organization slug (lowercase letters, digits and -)",
-            sync.org
-        ));
-    }
-    Ok(sync)
-}
-
-fn repo_name(flag: Option<&str>, root: &Path) -> Result<String, String> {
-    let name = match flag {
-        Some(name) => name.to_string(),
-        None => root
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-    };
-    let valid = (1..=128).contains(&name.len())
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-'));
-    if valid {
-        Ok(name)
-    } else {
-        Err(format!(
-            "push: repo name \"{name}\" must be 1-128 of A-Z a-z 0-9 . _ / -; pass --repo"
-        ))
-    }
+/// The app stores change counts, keeping package text and descriptions out of update records.
+fn updates_body(updates: &[cedr_core::outdated::Update]) -> Value {
+    json!(updates.iter().take(MAX_ENTRIES).map(|u| json!({
+        "client": u.client.as_str(), "name": clip(&u.name, MAX_NAME),
+        "source": clip(&public_source(&u.source), MAX_NAME), "latest": clip(&u.latest, MAX_NAME),
+        "severity": u.severity, "changes": u.changes.len(),
+    })).collect::<Vec<_>>())
 }
 
 fn findings(list: &[Finding]) -> Vec<Value> {
@@ -196,90 +167,49 @@ fn truncated(lock: &lock::Lock, lint: usize, verify: usize) -> Vec<String> {
     out
 }
 
-fn clip(s: &str, max: usize) -> String {
-    s.chars().take(max).collect()
-}
-
 fn clip_all(list: &[String], entries: usize, chars: usize) -> Vec<String> {
     list.iter().take(entries).map(|s| clip(s, chars)).collect()
-}
-
-/// The checkout's `HEAD` commit read from `.git` (a directory, or a worktree's `gitdir:` file)
-/// without running git; `None` when it is not a checkout or the ref cannot be resolved. Every
-/// read is bounded and a ref must be a plain `refs/...` name, since the checkout is untrusted.
-fn head_commit(root: &Path) -> Option<String> {
-    let dot_git = root.join(".git");
-    let git_dir = if dot_git.is_dir() {
-        dot_git
-    } else {
-        let text = read_small(&dot_git, SMALL)?;
-        let dir = PathBuf::from(text.strip_prefix("gitdir:")?.trim());
-        if dir.is_absolute() {
-            dir
-        } else {
-            root.join(dir)
-        }
-    };
-    // A linked worktree keeps its own HEAD but shares refs with the main repository.
-    let common = read_small(&git_dir.join("commondir"), SMALL)
-        .map(|c| git_dir.join(c.trim()))
-        .unwrap_or_else(|| git_dir.clone());
-    let head = read_small(&git_dir.join("HEAD"), SMALL)?;
-    let head = head.trim();
-    let Some(reference) = head.strip_prefix("ref:").map(str::trim) else {
-        return is_sha(head).then(|| head.to_string());
-    };
-    let plain = reference.starts_with("refs/")
-        && !reference.contains('\\')
-        && reference
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..");
-    if !plain {
-        return None;
-    }
-    for dir in [&git_dir, &common] {
-        if let Some(sha) = read_small(&dir.join(reference), SMALL) {
-            let sha = sha.trim();
-            if is_sha(sha) {
-                return Some(sha.to_string());
-            }
-        }
-    }
-    let packed = read_small(&common.join("packed-refs"), PACKED_REFS)?;
-    packed.lines().find_map(|line| {
-        let (sha, name) = line.split_once(' ')?;
-        (name == reference && is_sha(sha)).then(|| sha.to_string())
-    })
-}
-
-/// Git metadata files are tiny; packed refs can be large but are still bounded.
-const SMALL: u64 = 4096;
-const PACKED_REFS: u64 = 16 * 1024 * 1024;
-
-/// A regular file's text, or `None` when it is not a regular file, unreadable or over `max`.
-fn read_small(path: &Path, max: u64) -> Option<String> {
-    use std::io::Read;
-    if !fs::metadata(path).ok()?.is_file() {
-        return None;
-    }
-    let mut text = String::new();
-    fs::File::open(path)
-        .ok()?
-        .take(max + 1)
-        .read_to_string(&mut text)
-        .ok()?;
-    (text.len() as u64 <= max).then_some(text)
-}
-
-fn is_sha(s: &str) -> bool {
-    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cedr_route::config;
+    use std::path::Path;
 
     const SHA: &str = "3f2269d0c1aa3f2269d0c1aa3f2269d0c1aa3f22";
+
+    #[test]
+    fn update_payload_uses_counts_and_app_limits() {
+        use cedr_core::{
+            diff::{Change, ChangeKind, ChangeSeverity},
+            discovery::Client,
+            outdated::{Update, UpdateSeverity},
+        };
+        let updates: Vec<_> = (0..513)
+            .map(|_| Update {
+                client: Client::Antigravity,
+                name: "n".repeat(257),
+                source: "npm:example@1.0.0".into(),
+                latest: "npm:example@1.1.0".into(),
+                severity: UpdateSeverity::High,
+                changes: vec![Change {
+                    kind: ChangeKind::ToolAdded,
+                    tool: Some("tool".into()),
+                    detail: "description".into(),
+                    before: None,
+                    severity: ChangeSeverity::High,
+                }],
+            })
+            .collect();
+        let body = updates_body(&updates);
+        assert_eq!(body.as_array().unwrap().len(), 512);
+        assert_eq!(body[0].as_object().unwrap().len(), 6);
+        assert_eq!(body[0]["client"], "antigravity");
+        assert_eq!(body[0]["name"].as_str().unwrap().len(), 256);
+        assert_eq!(body[0]["severity"], "high");
+        assert_eq!(body[0]["changes"], 1);
+    }
 
     #[test]
     fn reads_head_through_loose_and_packed_refs() {
@@ -340,8 +270,9 @@ mod tests {
             repo: None,
             org: Some("acme".into()),
             config: None,
+            updates: false,
         };
-        let sync = settings(&args).unwrap();
+        let sync = settings(args.org.as_deref(), args.config.as_deref()).unwrap();
         assert_eq!(
             (sync.org.as_str(), sync.url()),
             ("acme", config::DEFAULT_API_URL)

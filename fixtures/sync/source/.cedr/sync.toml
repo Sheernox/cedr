@@ -1,0 +1,18 @@
+version = 1
+targets = ["agents", "claude", "codex", "cursor", "gemini", "copilot", "opencode", "antigravity"]
+[mcp.local]
+command = "npx"
+args = ["-y", "example-mcp@1.2.3"]
+env = { API_KEY = "${API_KEY}" }
+[mcp.docs]
+url = "https://example.com/mcp"
+headers = { Authorization = "Bearer ${DOCS_TOKEN}" }
+[permissions]
+allow = ["shell:git status", "shell:npm", "read:src/**", "fetch:example.com", "mcp:local/tool"]
+deny = ["shell:rm -rf", "read:.env", "edit:private/**"]
+[[hooks]]
+event = "after-edit"
+command = "npm run format"
+[[hooks]]
+event = "session-start"
+command = "git status"

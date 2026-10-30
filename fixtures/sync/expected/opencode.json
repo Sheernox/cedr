@@ -1,0 +1,29 @@
+{
+  "mcp": {
+    "docs": {
+      "url": "https://example.com/mcp",
+      "type": "remote",
+      "headers": {
+        "Authorization": "Bearer {env:DOCS_TOKEN}"
+      }
+    },
+    "local": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "example-mcp@1.2.3"
+      ],
+      "environment": {
+        "API_KEY": "{env:API_KEY}"
+      }
+    }
+  },
+  "permission": {
+    "bash": {
+      "git status *": "allow",
+      "npm *": "allow",
+      "rm -rf *": "deny"
+    }
+  }
+}

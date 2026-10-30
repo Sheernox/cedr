@@ -35,6 +35,7 @@ pub(crate) struct Dist {
 
 pub(crate) struct Registry {
     client: reqwest::blocking::Client,
+    base: String,
 }
 
 impl Registry {
@@ -46,7 +47,25 @@ impl Registry {
             .user_agent(concat!("cedr/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| Error::Registry(format!("could not start the HTTP client: {e}")))?;
-        Ok(Registry { client })
+        Ok(Registry {
+            client,
+            base: REGISTRY.into(),
+        })
+    }
+
+    // Only unit tests can opt into a loopback registry; production remains HTTPS-only.
+    #[cfg(test)]
+    pub(crate) fn mock(base: String) -> Self {
+        Self {
+            client: reqwest::blocking::Client::new(),
+            base,
+        }
+    }
+
+    fn local_tarball(&self, url: &str) -> bool {
+        cfg!(test)
+            && self.base.starts_with("http://127.0.0.1:")
+            && url.starts_with(&format!("{}/", self.base))
     }
 
     /// The registry document for one version or dist-tag of a package.
@@ -57,7 +76,7 @@ impl Registry {
                 "not a valid npm package and version: {name}@{version}"
             )));
         }
-        let url = format!("{REGISTRY}/{}/{version}", name.replacen('/', "%2F", 1));
+        let url = format!("{}/{}/{version}", self.base, name.replacen('/', "%2F", 1));
         let body = self.get(&url, MAX_METADATA_BYTES)?;
         serde_json::from_slice(&body).map_err(|e| {
             Error::Registry(format!(
@@ -75,7 +94,7 @@ impl Registry {
                 doc.version
             ))
         })?;
-        if !doc.dist.tarball.starts_with("https://") {
+        if !doc.dist.tarball.starts_with("https://") && !self.local_tarball(&doc.dist.tarball) {
             return Err(Error::Registry(format!(
                 "tarball URL is not https: {}",
                 url_label(&doc.dist.tarball)

@@ -1,0 +1,2 @@
+{"payload_type": "runtime.session.metadata", "payload": {"record": {"model_id": "muse-wonder-1.0", "workspace_root": "/work/project"}}}
+{"recorded_at": 1793354400000000, "payload_type": "runtime.session", "payload": {"event": {"kind": "goal_usage_attribution", "record": {"usage_id": "u1", "usage_family": "provider", "quantity": {"reported": true, "input_tokens": 100, "cached_tokens": 20, "output_tokens": 30, "reasoning_tokens": 5}, "owner": {"owner_type": "reminder_child"}}}}}

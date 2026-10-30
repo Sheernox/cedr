@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "vscode": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "example-mcp@1.0.0"
+      ]
+    }
+  }
+}

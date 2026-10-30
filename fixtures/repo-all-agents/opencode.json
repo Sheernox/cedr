@@ -1,0 +1,19 @@
+{
+  "mcp": {
+    "local": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "example-mcp@1.0.0"
+      ],
+      "environment": {
+        "TOKEN": "{env:TOKEN}"
+      }
+    },
+    "remote": {
+      "type": "remote",
+      "url": "https://example.com/opencode"
+    }
+  }
+}

@@ -1,0 +1,3 @@
+{"type": "session.start", "data": {"sessionId": "fixture", "context": {"cwd": "/work/project"}}}
+{"type": "session.shutdown", "timestamp": "2026-10-30T10:00:00Z", "data": {"modelMetrics": {"gpt-6.1-sol": {"usage": {"inputTokens": 100, "cacheReadTokens": 20, "outputTokens": 10}}}}}
+{"type": "session.shutdown", "timestamp": "2026-10-30T10:00:00Z", "data": {"modelMetrics": {"gpt-6.1-sol": {"usage": {"inputTokens": 100, "cacheReadTokens": 20, "outputTokens": 30}}}}}

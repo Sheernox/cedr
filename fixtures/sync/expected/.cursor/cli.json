@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(src/**)",
+      "Shell(npm)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Write(private/**)"
+    ]
+  }
+}

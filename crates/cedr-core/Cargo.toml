@@ -14,6 +14,7 @@ regex = "1"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
 rmcp = { version = "3.8", features = ["client", "transport-child-process"] }
 saphyr = "0.3"
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"

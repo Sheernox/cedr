@@ -193,12 +193,16 @@ pub fn from_source(source: &Source) -> Result<Surface> {
 
 /// The registry's `latest` version of an npm source, as `npm:<pkg>@<version>`.
 pub fn latest(source: &Source) -> Result<Source> {
+    latest_with(source, &Registry::new()?)
+}
+
+pub(crate) fn latest_with(source: &Source, registry: &Registry) -> Result<Source> {
     let Source::Npm { name, .. } = source else {
         return Err(Error::Source(format!(
             "{source} is not an npm source; use npm:<pkg>"
         )));
     };
-    let doc = Registry::new()?.version_doc(name, "latest")?;
+    let doc = registry.version_doc(name, "latest")?;
     Ok(Source::Npm {
         name: name.clone(),
         version: Some(doc.version),
