@@ -55,17 +55,17 @@ Download the archive for your platform from the [latest release](https://github.
 
 | Platform | Archive |
 | --- | --- |
-| Linux x86_64 | `cedr-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux ARM64 | `cedr-aarch64-unknown-linux-gnu.tar.gz` |
-| macOS, Apple silicon | `cedr-aarch64-apple-darwin.tar.gz` |
-| macOS, Intel | `cedr-x86_64-apple-darwin.tar.gz` |
-| Windows x86_64 | `cedr-x86_64-pc-windows-msvc.zip` |
+| Linux x86_64 | `cedr-linux-x86_64.tar.gz` |
+| Linux ARM64 | `cedr-linux-arm64.tar.gz` |
+| macOS, Apple silicon | `cedr-macos-arm64.tar.gz` |
+| macOS, Intel | `cedr-macos-x86_64.tar.gz` |
+| Windows x86_64 | `cedr-windows-x86_64.zip` |
 
 For example, on Linux x86_64:
 
 ```sh
-curl -fsSL https://github.com/Sheernox/cedr/releases/latest/download/cedr-x86_64-unknown-linux-gnu.tar.gz | tar -xz
-install -m 755 cedr-x86_64-unknown-linux-gnu/cedr ~/.local/bin/cedr
+curl -fsSL https://github.com/Sheernox/cedr/releases/latest/download/cedr-linux-x86_64.tar.gz | tar -xz
+install -m 755 cedr-linux-x86_64/cedr ~/.local/bin/cedr
 cedr --version
 ```
 

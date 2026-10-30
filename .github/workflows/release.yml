@@ -19,11 +19,11 @@ jobs:
       matrix:
         include:
           # Building on Ubuntu 22.04 keeps the Linux binaries running on older distributions (glibc 2.34+).
-          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
-          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
-          - { target: x86_64-apple-darwin, os: macos-latest }
-          - { target: aarch64-apple-darwin, os: macos-latest }
-          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+          - { target: x86_64-unknown-linux-gnu, asset: linux-x86_64, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, asset: linux-arm64, os: ubuntu-22.04-arm }
+          - { target: x86_64-apple-darwin, asset: macos-x86_64, os: macos-latest }
+          - { target: aarch64-apple-darwin, asset: macos-arm64, os: macos-latest }
+          - { target: x86_64-pc-windows-msvc, asset: windows-x86_64, os: windows-latest }
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -39,7 +39,8 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          name=cedr-${{ matrix.target }}
+          # Archives are named by OS and architecture (cedr-linux-x86_64), not the Rust target triple.
+          name=cedr-${{ matrix.asset }}
           mkdir -p "dist/$name"
           cp LICENSE NOTICE README.md "dist/$name/"
           if [ "$RUNNER_OS" = Windows ]; then
@@ -51,8 +52,8 @@ jobs:
           fi
       - uses: actions/upload-artifact@v4
         with:
-          name: cedr-${{ matrix.target }}
-          path: dist/cedr-${{ matrix.target }}.*
+          name: cedr-${{ matrix.asset }}
+          path: dist/cedr-${{ matrix.asset }}.*
           if-no-files-found: error
 
   release:

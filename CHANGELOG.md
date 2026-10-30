@@ -2,6 +2,29 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor) and [docs/doctor.md](docs/doctor.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.4.2 (2026-10-30)
+
+**v0.4.2** · 4 changes from 1 contributor
+
+### Highlights
+Release archives are named by operating system and architecture instead of the Rust target triple: `cedr-linux-x86_64.tar.gz`, `cedr-linux-arm64.tar.gz`, `cedr-macos-arm64.tar.gz`, `cedr-macos-x86_64.tar.gz` and `cedr-windows-x86_64.zip`, each unpacking to a folder of the same name. The GitHub Action downloads the new names; earlier releases keep their old ones. Release notes are now this changelog's entry for each tag.
+
+### Fixes
+- Archive names no longer carry the target triple's `unknown`, `apple` and `pc` vendor fields.
+- Each GitHub release now publishes its changelog entry instead of a generated one-line compare link.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* ci(release): publish each tag's changelog entry as its release notes
+* build(release): name archives by os and architecture
+* docs: changelog for 0.4.2
+* chore(release): cedr 0.4.2
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.4.1...v0.4.2
+</details>
+
 ## v0.4.1 (2026-10-30)
 
 **v0.4.1** · 5 changes from 1 contributor

@@ -52,11 +52,11 @@ runs:
           exit 1
         fi
         case "$RUNNER_OS/$RUNNER_ARCH" in
-          Linux/X64) target=x86_64-unknown-linux-gnu ext=tar.gz ;;
-          Linux/ARM64) target=aarch64-unknown-linux-gnu ext=tar.gz ;;
-          macOS/X64) target=x86_64-apple-darwin ext=tar.gz ;;
-          macOS/ARM64) target=aarch64-apple-darwin ext=tar.gz ;;
-          Windows/X64) target=x86_64-pc-windows-msvc ext=zip ;;
+          Linux/X64) asset=linux-x86_64 ext=tar.gz ;;
+          Linux/ARM64) asset=linux-arm64 ext=tar.gz ;;
+          macOS/X64) asset=macos-x86_64 ext=tar.gz ;;
+          macOS/ARM64) asset=macos-arm64 ext=tar.gz ;;
+          Windows/X64) asset=windows-x86_64 ext=zip ;;
           *) echo "::error title=cedr::no cedr build for $RUNNER_OS/$RUNNER_ARCH"; exit 1 ;;
         esac
         if [ -n "$version" ]; then
@@ -67,7 +67,7 @@ runs:
         dir="$RUNNER_TEMP/cedr"
         mkdir -p "$dir"
         cd "$dir"
-        archive="cedr-$target.$ext"
+        archive="cedr-$asset.$ext"
         curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$archive" "$base/$archive"
         curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o SHA256SUMS "$base/SHA256SUMS"
         expected=$(awk -v f="$archive" '$2 == f || $2 == "*" f { print $1 }' SHA256SUMS)
@@ -81,7 +81,7 @@ runs:
           exit 1
         fi
         if [ "$ext" = zip ]; then unzip -q "$archive"; else tar -xzf "$archive"; fi
-        echo "$dir/cedr-$target" >> "$GITHUB_PATH"
+        echo "$dir/cedr-$asset" >> "$GITHUB_PATH"
 
     - name: cedr lint
       id: lint

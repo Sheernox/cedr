@@ -245,7 +245,7 @@ The public repo's root `action.yml` is a composite action: `uses: Sheernox/cedr@
 | `push-org` | empty | When set with the `CEDR_API_KEY` env, run `cedr push --org <it> --updates` after the checks, also when they fail |
 | `outdated` | `true` | Run `cedr outdated --format github` after verify, so newer versions of pinned servers show as annotations; it never fails the job |
 
-`version` must be a release tag (`vX.Y.Z`, optionally with a `-suffix`). It downloads `cedr-<target>.tar.gz` (or `.zip` on Windows) and `SHA256SUMS` for the runner from the GitHub release over https, refuses an archive whose checksum does not match, then runs `cedr lint --format github` and `cedr verify --format github`. The job fails when either fails. It runs no package or server and never uses `--introspect`.
+`version` must be a release tag (`vX.Y.Z`, optionally with a `-suffix`). It downloads `cedr-<os>-<arch>.tar.gz` for the runner (`linux`, `macos` or `windows`; `x86_64` or `arm64`; `.zip` on Windows) and `SHA256SUMS` from the GitHub release over https, refuses an archive whose checksum does not match, then runs `cedr lint --format github` and `cedr verify --format github`. The job fails when either fails. It runs no package or server and never uses `--introspect`.
 
 ## Watcher commands
 
