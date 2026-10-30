@@ -1,4 +1,4 @@
-# Route test config: two harnesses, a balanced tier, a council and an orchestrator-only route.
+# Route test config: two harnesses, a balanced tier, a council, a cascade and an orchestrator-only route.
 version = 1
 
 [orchestrator]
@@ -34,3 +34,8 @@ candidates = [
 
 [routes.design]
 candidates = [{ target = "self" }]
+
+[routes.impl]
+work = "Bounded implementation, judged before it is accepted"
+judge = "review.code"
+candidates = [{ target = "codex/sol", effort = "medium" }, { target = "self" }]

@@ -5,16 +5,14 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use cedr_route::council::{self, Gate, Merged, Report};
+use cedr_route::council::{self, Gate, Merged, Next, Report};
 use cedr_route::readings::{MAX_BYTES, read_limited};
 use cedr_route::session::Session;
 use cedr_route::{Error, Result};
 use clap::Subcommand;
 use serde_json::Value;
 
-use crate::route::{
-    self, ListFormat, PickFormat, SizeArg, SourceArgs, cwd, open, print_pick, record,
-};
+use crate::route::{self, PickFormat, SizeArg, SourceArgs, cwd, open, print_pick, record};
 
 #[derive(Subcommand)]
 pub enum CouncilCommand {
@@ -31,6 +29,15 @@ pub enum CouncilCommand {
         #[command(flatten)]
         sources: SourceArgs,
     },
+    /// Recorded council outcomes per route
+    Stats {
+        #[arg(long)]
+        route: Option<String>,
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long, value_enum, default_value_t = route::ListFormat::Text)]
+        format: route::ListFormat,
+    },
     /// Merge the members' reports and decide the gate
     Merge {
         /// <path> (JSON) or <member>=<path> (text or JSON); `-` reads stdin
@@ -39,15 +46,33 @@ pub enum CouncilCommand {
         /// Council route whose quorum and blocking severity apply
         #[arg(long)]
         route: Option<String>,
+        #[arg(long)]
+        run: Option<String>,
+        #[arg(long)]
+        no_record: bool,
         /// Quorum to use instead of the route's (default 2)
         #[arg(long)]
         quorum: Option<usize>,
         /// Least severe finding that blocks, instead of the route's (default P1)
         #[arg(long, value_parser = ["P0", "P1", "P2", "P3"])]
         block: Option<String>,
-        #[arg(long, value_enum, default_value_t = ListFormat::Text)]
-        format: ListFormat,
+        /// Revision rounds instead of the route's (default 1)
+        #[arg(long)]
+        rounds: Option<u32>,
+        /// The review being merged: 1 for the first, 2 after one revision
+        #[arg(long)]
+        round: Option<u32>,
+        #[arg(long, value_enum, default_value_t = MergeFormat::Text)]
+        format: MergeFormat,
     },
+}
+
+/// Merge output: the gate summary, its JSON, or only the author's revision brief.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum MergeFormat {
+    Text,
+    Json,
+    Brief,
 }
 
 /// One report argument: a JSON report, or text whose member the argument names. An argument that is
@@ -100,13 +125,23 @@ fn read_report(arg: &str) -> Result<Report> {
     Ok(Report::from_text(&text, member))
 }
 
-pub fn print_merged(m: &Merged, format: ListFormat) {
-    if let ListFormat::Json = format {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(m).expect("merge serializes")
-        );
-        return;
+pub fn print_merged(m: &Merged, format: MergeFormat) {
+    match format {
+        MergeFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(m).expect("merge serializes")
+            );
+            return;
+        }
+        MergeFormat::Brief => {
+            match &m.brief {
+                Some(b) => print!("{b}"),
+                None => eprintln!("cedr: no revision brief: the council's next step is done"),
+            }
+            return;
+        }
+        MergeFormat::Text => {}
     }
     println!(
         "council: {} ({} of quorum {} reviewed, {:?} and above block: {})",
@@ -131,6 +166,15 @@ pub fn print_merged(m: &Merged, format: ListFormat) {
             }
         }
     }
+    match m.next {
+        Next::Revise => println!(
+            "next: revise (round {} of {}): give the author the revision brief (--format brief), then review again with --round {}",
+            m.round,
+            m.rounds,
+            m.round + 1
+        ),
+        Next::Done => println!("next: done"),
+    }
 }
 
 pub fn gate_code(gate: Gate) -> ExitCode {
@@ -144,6 +188,40 @@ pub fn gate_code(gate: Gate) -> ExitCode {
 pub fn run(command: CouncilCommand, config: &route::ConfigArg) -> Result<ExitCode> {
     let config = config.path();
     match command {
+        CouncilCommand::Stats {
+            route,
+            since,
+            format,
+        } => {
+            let rows = cedr_route::history::council_stats(
+                &cedr_route::history::default_path(),
+                route.as_deref(),
+                since.as_deref(),
+            )?;
+            match format {
+                route::ListFormat::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&rows).expect("rows serialize")
+                ),
+                route::ListFormat::Text => {
+                    for r in rows {
+                        println!(
+                            "{} merges {} pass {} block {} incomplete {} revised {} passed_after_revision {} blocking_findings_per_merge {:.1}",
+                            r.route.as_deref().unwrap_or("-"),
+                            r.merges,
+                            r.pass,
+                            r.block,
+                            r.incomplete,
+                            r.revised,
+                            r.passed_after_revision,
+                            r.blocking_findings_per_merge
+                        );
+                    }
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+
         CouncilCommand::Plan {
             route,
             size,
@@ -166,9 +244,10 @@ pub fn run(command: CouncilCommand, config: &route::ConfigArg) -> Result<ExitCod
             } else {
                 print_pick(&plan.pick, format);
                 println!(
-                    "quorum {}: {} eligible",
+                    "quorum {}: {} eligible, run {}",
                     plan.quorum,
-                    plan.pick.delegates.len()
+                    plan.pick.delegates.len(),
+                    plan.pick.run.as_deref().expect("plan run")
                 );
             }
             Ok(match (plan.pick.delegates.len(), plan.quorum_reachable) {
@@ -180,19 +259,38 @@ pub fn run(command: CouncilCommand, config: &route::ConfigArg) -> Result<ExitCod
         CouncilCommand::Merge {
             reports,
             route,
+            run,
+            no_record,
             quorum,
             block,
+            rounds,
+            round,
             format,
         } => {
             let block = block.as_deref().and_then(council::Severity::parse);
-            let settings = council::settings(quorum, block, route.as_deref(), || {
-                Ok(Session::config_only(config, &cwd()?)?.config)
-            })?;
+            let settings =
+                council::settings(quorum, block, rounds, round, route.as_deref(), || {
+                    Ok(Session::config_only(config, &cwd()?)?.config)
+                })?;
             let reports = reports
                 .iter()
                 .map(|a| read_report(a))
                 .collect::<Result<Vec<_>>>()?;
-            let merged = council::merge(&reports, settings);
+            let mut merged = council::merge(&reports, settings);
+            cedr_route::history::validate_run(
+                &cedr_route::history::default_path(),
+                run.as_deref(),
+            )?;
+            if !no_record {
+                cedr_route::history::record_council(
+                    &cedr_route::history::default_path(),
+                    &mut merged,
+                    route.as_deref(),
+                    run.as_deref(),
+                    chrono::Utc::now(),
+                )?;
+                route::auto_sync(config);
+            }
             print_merged(&merged, format);
             Ok(gate_code(merged.gate))
         }

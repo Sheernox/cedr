@@ -110,7 +110,7 @@ fn parse_line(line: &str) -> Option<Finding> {
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Gate {
     Pass,
@@ -157,19 +157,69 @@ impl Group {
     }
 }
 
+/// What follows a merge: another revision round, or nothing (the gate stands).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Next {
+    Revise,
+    Done,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Merged {
+    pub id: Option<String>,
     pub gate: Gate,
     pub quorum: usize,
     pub block: Severity,
+    pub round: u32,
+    pub rounds: u32,
+    pub next: Next,
+    /// The revision brief for the change's author; only when `next` is revise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brief: Option<String>,
     pub reviewers: Vec<String>,
     pub groups: Vec<Group>,
+}
+
+/// The Markdown revision brief (docs/council.md, Critique and revise): every group in merge order
+/// with every finding, so dissent reaches the author.
+fn brief(groups: &[Group], block: Severity, round: u32, rounds: u32) -> String {
+    let mut out = format!(
+        "# Council revision brief (round {round} of {rounds})\n\n\
+         Blocking: {block:?} and above. Fix each blocking group or rebut it with evidence; the others are advisory.\n\
+         Reply with one line per group: `<file>:<line> fixed|rebutted - <reason>`.\n"
+    );
+    for g in groups {
+        out.push_str(&format!(
+            "\n## {:?} {}:{} ({})\n",
+            g.severity,
+            g.file,
+            g.line,
+            g.members.join(", ")
+        ));
+        for f in &g.findings {
+            out.push_str(&format!(
+                "- {} {:?} :{} {}",
+                f.member, f.severity, f.line, f.claim
+            ));
+            if let Some(scenario) = &f.scenario {
+                out.push_str(&format!(" - {scenario}"));
+            }
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Groups findings that point at the same place, then decides the gate: any finding at or above the
 /// blocking severity blocks, otherwise the council passes only once the quorum has reported.
 pub fn merge(reports: &[Report], settings: Settings) -> Merged {
-    let Settings { quorum, block } = settings;
+    let Settings {
+        quorum,
+        block,
+        rounds,
+        round,
+    } = settings;
     let reviewers: Vec<String> = reports
         .iter()
         .map(|r| r.member.clone())
@@ -226,10 +276,20 @@ pub fn merge(reports: &[Report], settings: Settings) -> Merged {
     } else {
         Gate::Incomplete
     };
+    let next = if gate == Gate::Block && round <= rounds {
+        Next::Revise
+    } else {
+        Next::Done
+    };
     Merged {
+        id: None,
         gate,
         quorum,
         block,
+        round,
+        rounds,
+        next,
+        brief: (next == Next::Revise).then(|| brief(&groups, block, round, rounds)),
         reviewers,
         groups,
     }
@@ -243,25 +303,34 @@ pub struct Plan {
     pub quorum_reachable: bool,
 }
 
-/// The quorum for a merge: as given, else the council route's, else 2. `config` is read only when
-/// a route is named.
-/// How a merge decides: the quorum, and the least severe finding that blocks.
+/// How a merge decides: the quorum, the least severe finding that blocks, the revision rounds
+/// allowed, and which review this is (1 for the first).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Settings {
     pub quorum: usize,
     pub block: Severity,
+    pub rounds: u32,
+    pub round: u32,
 }
 
-/// Merge settings: given values first, then the council route's, then quorum 2 and P1. `config` is read
-/// only when a route is named.
+/// Merge settings: given values first, then the council route's, then quorum 2, P1 and 1 round.
+/// `round` defaults to 1. `config` is read only when a route is named.
 pub fn settings(
     quorum: Option<usize>,
     block: Option<Severity>,
+    rounds: Option<u32>,
+    round: Option<u32>,
     route: Option<&str>,
     config: impl FnOnce() -> Result<crate::config::Config>,
 ) -> Result<Settings> {
     if quorum == Some(0) {
         return Err(Error::Usage("quorum must be at least 1".into()));
+    }
+    if rounds.is_some_and(|r| r > 3) {
+        return Err(Error::Usage("rounds must be between 0 and 3".into()));
+    }
+    if round == Some(0) {
+        return Err(Error::Usage("round must be at least 1".into()));
     }
     let from_route = match route {
         Some(r) => {
@@ -271,13 +340,15 @@ pub fn settings(
                 .get(r)
                 .filter(|x| x.council)
                 .ok_or_else(|| Error::Usage(format!("{r:?} is not a council route")))?;
-            Some((route.quorum(), route.block()))
+            Some((route.quorum(), route.block(), route.rounds()))
         }
         None => None,
     };
     Ok(Settings {
         quorum: quorum.or(from_route.map(|r| r.0)).unwrap_or(2),
         block: block.or(from_route.map(|r| r.1)).unwrap_or(Severity::P1),
+        rounds: rounds.or(from_route.map(|r| r.2)).unwrap_or(1),
+        round: round.unwrap_or(1),
     })
 }
 
@@ -290,7 +361,8 @@ pub fn plan(ctx: &Context, route_id: &str, size: Size, avoid: &[String]) -> Resu
         .filter(|r| r.council)
         .ok_or_else(|| Error::Usage(format!("{route_id:?} is not a council route")))?;
     let quorum = route.quorum();
-    let pick = ctx.pick(route_id, size, avoid)?;
+    let mut pick = ctx.pick(route_id, size, avoid)?;
+    pick.run = Some(crate::pick::new_id().replacen("p-", "r-", 1));
     Ok(Plan {
         quorum_reachable: pick.delegates.len() >= quorum,
         pick,
@@ -317,6 +389,8 @@ mod tests {
         Settings {
             quorum,
             block: Severity::P1,
+            rounds: 1,
+            round: 1,
         }
     }
 
@@ -437,8 +511,8 @@ mod tests {
             merge(
                 &p2,
                 Settings {
-                    quorum: 2,
-                    block: Severity::P2
+                    block: Severity::P2,
+                    ..q(2)
                 }
             )
             .gate,
@@ -452,13 +526,73 @@ mod tests {
             merge(
                 &p1,
                 Settings {
-                    quorum: 2,
-                    block: Severity::P0
+                    block: Severity::P0,
+                    ..q(2)
                 }
             )
             .gate,
             Gate::Pass
         );
+    }
+
+    #[test]
+    fn a_blocked_gate_goes_back_for_revision_while_rounds_remain() {
+        let mut a = f("src/a.rs", 12, Severity::P1, "reads until EOF");
+        a.scenario = Some("a 2 GB log".into());
+        let reports = [
+            report("codex", vec![a]),
+            report("claude", vec![f("src/a.rs", 14, Severity::P2, "no cap")]),
+        ];
+        let first = merge(&reports, q(2));
+        assert_eq!(
+            (first.next, first.round, first.rounds),
+            (Next::Revise, 1, 1)
+        );
+        assert_eq!(
+            first.brief.as_deref(),
+            Some(
+                "# Council revision brief (round 1 of 1)\n\n\
+                 Blocking: P1 and above. Fix each blocking group or rebut it with evidence; the others are advisory.\n\
+                 Reply with one line per group: `<file>:<line> fixed|rebutted - <reason>`.\n\n\
+                 ## P1 src/a.rs:12 (codex, claude)\n\
+                 - codex P1 :12 reads until EOF - a 2 GB log\n\
+                 - claude P2 :14 no cap\n"
+            )
+        );
+        let last = merge(&reports, Settings { round: 2, ..q(2) });
+        assert_eq!((last.next, last.brief.is_none()), (Next::Done, true));
+        let none = merge(&reports, Settings { rounds: 0, ..q(2) });
+        assert_eq!(none.next, Next::Done);
+        let pass = merge(&[report("codex", vec![]), report("claude", vec![])], q(2));
+        assert_eq!(pass.next, Next::Done);
+        let v = serde_json::to_value(&pass).unwrap();
+        assert!(v.get("brief").is_none() && v["next"] == "done");
+    }
+
+    #[test]
+    fn rounds_come_from_flags_then_the_route_then_one() {
+        let config = || {
+            crate::config::Config::parse(
+                "version = 1\n[harnesses.codex]\n[routes.c]\ncouncil = true\nrounds = 2\ncandidates = [{ target = \"codex/sol\" }]\n",
+                std::path::Path::new("t.toml"),
+            )
+        };
+        let s = settings(None, None, None, None, Some("c"), config).unwrap();
+        assert_eq!((s.rounds, s.round), (2, 1));
+        assert_eq!(
+            settings(None, None, Some(0), Some(3), Some("c"), config)
+                .unwrap()
+                .rounds,
+            0
+        );
+        assert_eq!(
+            settings(None, None, None, None, None, config)
+                .unwrap()
+                .rounds,
+            1
+        );
+        assert!(settings(None, None, Some(4), None, None, config).is_err());
+        assert!(settings(None, None, None, Some(0), None, config).is_err());
     }
 
     #[test]

@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "cedr"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cedr-core",
  "cedr-route",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "cedr-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "flate2",
@@ -216,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "cedr-route"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "getrandom 0.4.3",

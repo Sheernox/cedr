@@ -4,7 +4,7 @@ The frozen contract for `cedr route` and the MCP server. A change to any shape b
 
 ## Scope
 
-Route config, readings sources (including built-in readers for Claude Code and Codex), machine checks, pool states, the pick, route tags, `--format t3`, local history, verdicts, stats, sync with the cedr.dev app (history, shared routes and the machine snapshot), and the MCP tools. Council has its own contract: [council.md](council.md).
+Route config, readings sources (including built-in readers for Claude Code and Codex), machine checks, pool states, preview versions, the pick, cascades, route tags, `--format t3`, local history, verdicts, stats, sync with the cedr.dev app (history, shared routes and the machine snapshot), and the MCP tools. Council has its own contract: [council.md](council.md).
 
 Out of scope: `run` mode (starting vendor CLIs), hook templates, and the GitHub App.
 
@@ -24,9 +24,10 @@ Found in this order: `--config PATH`, `$CEDR_ROUTES`, the nearest `.cedr/routes.
 version = 1
 
 [evaluation]              # optional: when the routes were last re-checked
-last = "2026-10-25"
+last = "2026-10-25"       # optional; without it nothing is stale, and models alone drives the preview gate
 stale_days = 35           # default 35; older evaluations print a warning
 models = ["codex/gpt-6.1-sol"]
+preview = "trial"         # trial (default) | hold | use: what a pick does with a version models does not list (see Preview versions)
 
 [thresholds]              # optional; defaults shown
 fresh_seconds = 600       # oldest reading treated as live
@@ -81,10 +82,18 @@ candidates = [
   { target = "claude/sonnet", effort = "high", tier = 1 },
   { target = "self" },
 ]
+
+[routes."code.impl"]
+work = "Bounded implementation"
+judge = "review.judge"    # optional: a cascade (see Cascade); the route that judges this route's work
+escalate = "code.hard"    # optional, needs judge: where work the judge escalates goes; default the orchestrator
+candidates = [{ target = "codex/luna", effort = "medium", tier = 1 }, { target = "self" }]
 ```
 
 - A target is `self` (the orchestrator keeps the work) or `<harness>/<model>`, where the harness is defined and the model is a family name (`sol`) or an exact id. `self` ends the walk, so it takes no `tier`. Validation fails on anything else, on an empty candidate list, and on an unknown `version`.
 - Consecutive candidates with the same `tier` form one tier; a candidate without `tier` stands alone.
+- `judge` and `escalate` name other routes in the file. Validation fails when either names an unknown route or the route itself, when `escalate` is set without `judge`, when a council has either or either names a council, when a judge route has a `judge` of its own, or when following `escalate` from a route comes back to it.
+- `preview` is `trial`, `hold` or `use`; anything else fails validation.
 - The rules hash is the first 7 hex characters of SHA-256 over the file bytes.
 - `command` is a program name (no `/` or `\`, no arguments) or, in a machine's own file only, an absolute path; `reader` is `codex`, `muse` or `claude-statusline`. Both are allowed in shared routes because neither runs anything: Cedr only looks the program up and compares the hint with the local readings sources. Shared routes refuse a path, which would tell whoever edits them which files exist on members' machines. `[machine] skip` names defined harnesses or none (an unknown name is a warning, not an error, so an org dropping a harness never breaks a machine).
 
@@ -144,6 +153,15 @@ The worst state wins in the order ready < unknown < conserve < out; absent overr
 
 An id the readings list for the harness is kept as named. Otherwise the name is a family: model ids split on `-` into words and version numbers (`gpt-6.1-sol` is words `gpt sol`, version 6.1); the family matches ids whose words end with the name's words, and the newest version wins. No list, no match, or a name matching more than one family resolves to nothing (`unresolved`).
 
+## Preview versions
+
+A family's newest offered version is in preview when `[evaluation] models` is non-empty, `preview` is not `use`, and the list has no `<harness>/<id>` entry for it (the harness by id or alias). Evaluation is what promotes a version: the re-evaluation adds it to `models` once its trial verdicts warrant it.
+
+- `hold`: the family resolves to its newest version that `models` lists and the harness offers.
+- `trial` (the default): as `hold`, except a `small` pick resolves to the preview version, so it collects verdicts on low-risk work before an evaluation lists it.
+- When the harness offers no listed version of the family, the preview version is used for every size.
+- An exact id in a route (one the model list holds) and `manual` targets are never in preview.
+
 ## Pick
 
 `pick(route, size, avoid)` walks the tiers in order:
@@ -153,8 +171,22 @@ An id the readings list for the harness is kept as named. Otherwise the name is 
 3. Council routes take every eligible candidate of every tier, with reason `council`.
 4. Otherwise the tier's candidates are ranked: ready plans, then API keys (so plan headroom is used before per-token spend), then plans whose state is unknown, then conserving ones; within each, the lowest use wins (unknown use last). Reason: `fallback:<skipped,...>` when anything was skipped so far; `balanced:<winner use>` plus `<<other>=<use>,...` when the tier has more than one candidate; else `primary`. Use shows as `N%`, `?` when unknown, or `key` for an API key.
 5. No delegate: reason `no eligible delegate: <skipped>` or `orchestrator-only route`.
+6. A delegate whose model resolved to a preview version has ` (preview)` appended to its reason and `"preview": true`; every other delegate has `"preview": false`.
 
 `manual(<harness>/<model>, effort)` tags a model the user named: a known id is kept, a family resolves to its newest version, an unknown name with no model list is kept as named, and an unknown name with a model list is an error. Reason `user-named`.
+
+## Cascade
+
+A route with `judge` is a cascade: its delegate drafts, a cheaper second delegate judges the draft, and work the judge does not accept goes to a stronger route or back to the orchestrator. Cedr starts no agent, so the orchestrator runs each step:
+
+1. Pick the route and start its delegate as usual.
+2. Pick the `judge` route and start the judge with the draft's brief, its acceptance checks and the draft's result (diff, report, check output). The judge replies with a first line of `ACCEPT` or `ESCALATE: <reason>` and nothing else changes: a judge never edits.
+3. On `ACCEPT` the orchestrator verifies as it would any delegate. On `ESCALATE` it records the draft's verdict as `rejected` with the note `judge: <reason>`, then picks the `escalate` route (or keeps the work when there is none) and briefs it with the original brief, the judge's reason and the draft's checkpoint.
+4. The judge's own pick gets a verdict too: `accepted` when the orchestrator agrees with its call, `rejected` when it does not. These verdicts are how a judge earns or loses its place.
+
+The judge's pick is made with `--judges <draft pick id>` and the escalation's with `--escalates <draft pick id>`, so history links all three (see History). Either flag fails (exit 2) when the draft id is not in this machine's history, or when the route picked is not the draft route's `judge` (for `--judges`) or `escalate` (for `--escalates`) in the config in use.
+
+A judge route is an ordinary route (role `review` is usual); it may not be a cascade itself.
 
 ## Route tag
 
@@ -170,27 +202,31 @@ All take `--config PATH`; picks also take `--readings`, `--models`, `--no-record
 
 | Command | Does |
 |---|---|
-| `cedr route pick <route> [--size small\|medium\|large] [--avoid H]... [--format text\|json\|t3]` | Pick and record |
+| `cedr route pick <route> [--size small\|medium\|large] [--avoid H]... [--judges P \| --escalates P] [--format text\|json\|t3]` | Pick and record; `--judges`/`--escalates` link a cascade's judge or escalation to its draft pick `P` |
 | `cedr route manual <harness>/<model> [--effort E] [--format ...]` | Tag a named model and record |
 | `cedr route pools [--format text\|json]` | Each harness's state, plus one row per `model_windows` model a route uses |
-| `cedr route list` | Routes with their tier chains |
+| `cedr route list` | Routes with their tier chains, and `judge <route> -> <escalate route or self>` after a cascade's chain |
 | `cedr route verdict <pick-id> accepted\|reworked\|redone\|rejected [--task ID] [--note TEXT]` | Record a verdict |
-| `cedr route stats [--route R] [--format text\|json]` | Picks and verdicts per route and model |
+| `cedr route stats [--route R] [--since YYYY-MM-DD] [--format text\|json]` | Picks, verdicts, time to verdict and cascade outcomes per route, model and preview status |
+| `cedr route history [--route R] [--limit N] [--format text\|json]` | The latest records, newest first (default 20, at most 500): picks with their latest verdict, and council results |
+| `cedr route import <routing.toml>` | Print a `routes.toml` converted from a T3 Code delegation `routing.toml` (see Import) |
 | `cedr route statusline [-- <command>...]` | Claude Code status line: capture `rate_limits` from stdin for the `claude-statusline` reader, then print `claude s23% w41%`, or run `<command>` with the same stdin and print its output instead |
 | `cedr route sync [--push-only\|--pull-only] [--quiet]` | Push history, pull the org's shared routes and send the machine snapshot (see Sync); `--quiet` prints only errors |
 | `cedr mcp` | MCP server on stdio |
 
-Text output of a pick: the tag, then `  <harness>/<model> role=<role>`, then `  brief starts: <prefix>` when set. `t3` output is for orchestrators that start work through T3 Code's `delegate_task`: the tag, `  delegate_task role=<role> target=<json>` with `{"providerInstanceId", "model", "options"}` where options is `{<effort_option>: <effort>}` or `{}`, then the prefix line. When the work is kept: `keep: <route> (<reason>); <orchestrator summary>` and exit 1. A council with skipped members adds `absent (report, never substitute): <skipped>`. Warnings (stale evaluation, readings failures) go to stderr, and `cedr mcp` writes them to its stderr as well.
+Text output of a pick: the tag, then `  <harness>/<model> role=<role>`, then `  brief starts: <prefix>` when set. A cascade route adds, after its delegates, `  cascade: judge <judge route>, escalate <escalate route or self>`. `t3` output is for orchestrators that start work through T3 Code's `delegate_task`: the tag, `  delegate_task role=<role> target=<json>` with `{"providerInstanceId", "model", "options"}` where options is `{<effort_option>: <effort>}` or `{}`, then the prefix line, then the cascade line. When the work is kept: `keep: <route> (<reason>); <orchestrator summary>` and exit 1. A council with skipped members adds `absent (report, never substitute): <skipped>`. Warnings (stale evaluation, readings failures) go to stderr, and `cedr mcp` writes them to its stderr as well.
 
 JSON output of a pick:
 
 ```json
 {"route": "review.code", "work": "...", "role": "review", "rules": "8ff065e", "orchestrator": "claude s5% w33%",
  "delegates": [{"id": "p-1a2b3c4d5e6f", "target": "codex/gpt-6.1-sol", "harness": "codex", "model": "gpt-6.1-sol",
-   "effort": "high", "state": "ready", "reason": "primary", "summary": "codex w4%", "tag": "[route ...]",
+   "effort": "high", "state": "ready", "reason": "primary", "preview": false, "summary": "codex w4%", "tag": "[route ...]",
    "prefix": "", "t3": {"providerInstanceId": "codex", "model": "gpt-6.1-sol", "options": {"reasoningEffort": "high"}}}],
- "skipped": [], "reason": null, "warnings": []}
+ "skipped": [], "reason": null, "cascade": null, "warnings": []}
 ```
+
+`cascade` is `{"judge": "<route>", "escalate": "<route>" | null}` on a cascade route (null escalate: the orchestrator takes escalated work) and null otherwise, including when the work is kept.
 
 `warnings` repeats the stale-evaluation and readings-source warnings, so an orchestrator calling over MCP sees them too.
 
@@ -199,18 +235,31 @@ JSON output of a pick:
 Append-only JSON lines in `$XDG_STATE_HOME/cedr/route-history.jsonl` (default `~/.local/state/cedr/`), one line per write:
 
 ```json
-{"type": "pick", "id": "p-...", "at": "2026-10-29T01:40:00Z", "route": "review.code", "rules": "8ff065e", "target": "codex/gpt-6.1-sol", "effort": "high", "reason": "primary", "state": "ready", "size": "medium"}
+{"type": "pick", "id": "p-...", "at": "2026-10-29T01:40:00Z", "route": "review.code", "rules": "8ff065e", "target": "codex/gpt-6.1-sol", "effort": "high", "reason": "primary", "state": "ready", "size": "medium", "preview": true, "run": "r-...", "judges": "p-...", "escalates": "p-..."}
 {"type": "verdict", "id": "p-...", "at": "...", "verdict": "accepted", "task": "...", "note": "..."}
+{"type": "council", "id": "c-...", "at": "...", "route": "review.council", "run": "r-...", "round": 1, "rounds": 1, "gate": "block", "next": "revise", "quorum": 2, "block": "P1", "reviewers": ["codex/gpt-6.1-sol", "claude/claude-opus-5-5"], "groups": {"P0": 0, "P1": 1, "P2": 0, "P3": 2}, "findings": {"codex/gpt-6.1-sol": 2, "claude/claude-opus-5-5": 1}}
 ```
 
+- `preview`, `run`, `judges` and `escalates` are written only when set.
+- A run ties picks that belong together: `r-` and 12 lowercase hex characters. Each pick on a cascade route starts a run; its judge and escalation picks carry the draft's run plus `judges` or `escalates` with the draft's id. Every member pick of one `cedr council plan` shares a new run.
+- A `council` record is written by `cedr council merge` (council.md, Record): `id` is `c-` and 12 lowercase hex characters, `run` the plan's run or null, `route` the council route or null, `groups` the merged groups per severity, `findings` the findings each reviewer reported (zero included). It holds counts only, never files, lines or claims.
 - A verdict needs a recorded pick id; the latest verdict for an id counts. Notes are one line of at most 120 characters. History holds no briefs, prompts, code or credentials.
-- `stats` groups picks by route and target, and reports picks, each verdict count, verdicts recorded, and accepted percent (accepted over verdicts recorded). A cell with fewer than 10 verdicts is marked provisional.
+- `stats` groups picks by route, target and preview status (a preview version's trial cell is its own row), counting picks made on or after `--since` when given, and reports picks, each verdict count, verdicts recorded, accepted percent (accepted over verdicts recorded), and `median_minutes`: the median time from pick to its latest verdict, rounded to 0.1, null without verdicts. A cell with fewer than 10 verdicts is marked provisional. Rows of a cascade route add `judged` (its picks some judge pick names in `judges`) and `escalated` (its picks some escalation pick names in `escalates`); other rows have both null. JSON rows: `{"route", "target", "preview", "picks", "accepted", "reworked", "redone", "rejected", "verdicts", "accepted_pct", "median_minutes", "provisional", "judged", "escalated"}`; text marks a preview row ` (preview)` after the target.
+- `history` JSON is a list of `{"type": "pick", ...the pick record..., "verdict": <latest verdict record without type and id, or null>}` and `{"type": "council", ...the council record...}`; text prints one line per record: `<at> <route> -> <target> <effort> <verdict or "-"> <id>` for picks and `<at> <route> council <gate> round <round>/<rounds> <id>` for council results.
+
+## Import
+
+`cedr route import <path>` reads a T3 Code delegation `routing.toml` (providers named by T3 provider id, `[families]` for model windows) and prints the equivalent `routes.toml` (version 1) on stdout, exit 0, or exits 2 naming the first thing it cannot convert. The output validates as any config does. Mapping:
+
+- `[providers.X]` becomes `[harnesses.<id>]` with the same `expect`, where `<id>` is `claude` for `claudeAgent` (with `t3 = "claudeAgent"` and `aliases = ["claudeAgent"]`) and `X` otherwise; `effort_option` is `effort` for claude, `reasoningEffort` for `codex` and `muse`, none for `antigravity`, whose `brief_prefix` is `Load the workstation-rules skill first`.
+- `[families]` entries become `[model_windows]` with the provider mapped the same way; `[thresholds]` and `[evaluation]` copy as they are; `[orchestrator]` is `harness = "claude"`, `model = "opus"`.
+- Every route copies `work`, `enabled`, `role`, `council`, `quorum`, `block`, `rounds`, `judge`, `escalate` and its candidates (`target` with `claudeAgent/` rewritten to `claude/`, `effort`, `tier`). Any other key in the source is an error, so a source field the import does not know about is never dropped silently.
 
 ## Sync
 
 `cedr route sync` talks to the cedr.dev app API (`[sync] url`, default `https://api.cedr.dev/v1`; plain `http://` only for `localhost` during development) with a personal API key from `$CEDR_API_KEY` or the file `$XDG_CONFIG_HOME/cedr/api-key` (refused unless mode 600). The key never appears in output, history or errors. `[sync] org` names the organization; the key's owner must be a member.
 
-- **Push**: history records not yet sent, in order, in batches of at most 500: `POST /route/history` with `{"org": "<slug>", "records": [<history lines>]}`. The reply `{"accepted": n, "skipped": n}` counts records stored and records refused (a verdict on a pick the org does not have, a malformed record). The byte offset reached is kept in `$XDG_STATE_HOME/cedr/route-sync.json` per org and URL, and advances only after a batch is accepted, so a failed push is retried from the same record. Picks are stored once per id; a verdict replaces the pick's earlier verdict when its `at` is newer.
+- **Push**: history records not yet sent, in order, in batches of at most 500: `POST /route/history` with `{"org": "<slug>", "records": [<history lines>]}`. Council records go with them. The reply `{"accepted": n, "skipped": n}` counts records stored and records refused (a verdict on a pick the org does not have, a malformed record, a record type the app does not know). The byte offset reached is kept in `$XDG_STATE_HOME/cedr/route-sync.json` per org and URL, and advances only after a batch is accepted, so a failed push is retried from the same record. Picks are stored once per id; a verdict replaces the pick's earlier verdict when its `at` is newer.
 - **Pull**: `GET /route/routes?org=<slug>` returns `{"org", "routes", "rules", "updatedAt", "updatedBy"}`, where `routes` is a `routes.toml` text; 404 means the org has no shared routes, and 403 with the error `plan_required` that its plan does not include them; both remove any local copy, so a pick never follows routes the org no longer shares, and neither is a failure. Any other 403 (`not_a_member`, a refused key) is a failure and keeps the copy. The text is validated, refused if it has `[[readings]]`, `[sync]` or `[machine]` (a shared file must never make members' machines run a command or fetch a URL, and what a machine has is for that machine to say), and written to `$XDG_CONFIG_HOME/cedr/org-routes/<slug>.toml`.
 - **Machine snapshot**: after the pull (skipped with `--pull-only`), `PUT /route/machine` with this machine's current view, built from the routes in use and fresh readings without recording anything:
 
@@ -233,10 +282,12 @@ Append-only JSON lines in `$XDG_STATE_HOME/cedr/route-history.jsonl` (default `~
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `route_pick` | `route`, `size?`, `avoid?`, `models?` | The pick JSON above |
+| `route_pick` | `route`, `size?`, `avoid?`, `models?`, `judges?`, `escalates?` | The pick JSON above |
 | `route_manual` | `target`, `effort?` | The pick JSON |
 | `route_verdict` | `id`, `verdict`, `task?`, `note?` | `{"recorded": true}` |
 | `route_pools` | none | Pool rows |
-| `route_list` | none | Routes with tiers |
+| `route_list` | none | Routes with tiers, and `judge` and `escalate` (null when unset) |
+| `route_stats` | `route?`, `since?` | Stats rows |
+| `route_history` | `route?`, `limit?` | History entries |
 
 Errors return as tool errors with the same message the CLI prints.

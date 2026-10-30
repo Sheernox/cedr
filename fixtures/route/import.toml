@@ -1,0 +1,19 @@
+[evaluation]
+preview = "hold"
+[thresholds]
+out = 90
+[providers.claudeAgent]
+expect = ["seven_day"]
+[providers.codex]
+expect = ["primary"]
+[providers.muse]
+expect = ["weekly"]
+[providers.antigravity]
+expect = ["gemini-weekly"]
+[families]
+sonnet = {provider = "claudeAgent", model = "sonnet"}
+[routes.review]
+work = "Review code"
+enabled = false
+role = "review"
+candidates = [{target = "claudeAgent/sonnet", effort = "high", tier = 2}, {target = "self"}]

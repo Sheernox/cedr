@@ -4,9 +4,9 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::config::{Candidate, Config, Route};
+use crate::config::{Candidate, Config, Preview, Route};
 use crate::error::{Error, Result};
-use crate::pool::{Pool, State, pool, resolve, round_pct};
+use crate::pool::{Pool, State, pool, resolve, round_pct, versions};
 use crate::readings::Readings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +54,8 @@ pub struct Delegate {
     pub effort: String,
     pub state: State,
     pub reason: String,
+    /// The model is a version the last evaluation did not list (docs/route.md, Preview versions).
+    pub preview: bool,
     pub summary: String,
     pub tag: String,
     pub prefix: String,
@@ -62,6 +64,11 @@ pub struct Delegate {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Pick {
+    pub run: Option<String>,
+    #[serde(skip)]
+    pub judges: Option<String>,
+    #[serde(skip)]
+    pub escalates: Option<String>,
     pub route: String,
     pub work: String,
     pub role: String,
@@ -70,10 +77,20 @@ pub struct Pick {
     pub delegates: Vec<Delegate>,
     pub skipped: Vec<String>,
     pub reason: Option<String>,
+    /// A cascade route's judge and escalation; none when the work is kept.
+    pub cascade: Option<Cascade>,
     /// Stale evaluation and failed readings sources, so an orchestrator sees them too.
     pub warnings: Vec<String>,
     #[serde(skip)]
     pub council: bool,
+}
+
+/// Where a cascade's draft goes to be judged, and where work the judge escalates goes.
+#[derive(Debug, Clone, Serialize)]
+pub struct Cascade {
+    pub judge: String,
+    /// None: the orchestrator takes escalated work.
+    pub escalate: Option<String>,
 }
 
 /// Everything a pick reads, so the CLI and the MCP server share one call.
@@ -105,6 +122,8 @@ pub fn new_id() -> String {
 struct Choice<'a> {
     harness: &'a str,
     model: String,
+    /// `model` is a version the last evaluation did not list.
+    preview: bool,
     effort: &'a str,
     pool: Pool,
     /// An API-key harness: ready, but after the tier's ready plans, so plan headroom is used first.
@@ -165,6 +184,11 @@ impl Context<'_> {
             format!(" {effort}")
         };
         let orch_part = orch.map(|o| format!("; {o}")).unwrap_or_default();
+        let reason = if c.preview {
+            format!("{reason} (preview)")
+        } else {
+            reason.to_string()
+        };
         let mut options = Map::new();
         if let Some(opt) = h.effort_option.as_ref().filter(|_| !effort.is_empty()) {
             options.insert(opt.clone(), Value::String(effort.to_string()));
@@ -180,7 +204,8 @@ impl Context<'_> {
             model: model.to_string(),
             effort: effort.to_string(),
             state: p.state,
-            reason: reason.to_string(),
+            reason,
+            preview: c.preview,
             summary: p.summary.clone(),
             prefix: h.brief_prefix.clone(),
             t3: T3Target {
@@ -189,6 +214,30 @@ impl Context<'_> {
                 options,
             },
         }
+    }
+
+    /// The model a route target resolves to for a pick of `size`, and whether it is a preview
+    /// version: one `[evaluation] models` does not list, held back to the newest listed version
+    /// except for small trial picks or when the harness offers no listed version.
+    fn resolve_for(&self, harness: &str, name: &str, size: Size) -> Option<(String, bool)> {
+        let all = versions(harness, name, self.readings)?;
+        let newest = all.first()?.clone();
+        let mode = match &self.config.evaluation {
+            Some(ev) if !ev.models.is_empty() => ev.preview,
+            _ => Preview::Use,
+        };
+        if mode == Preview::Use || newest == name || self.config.evaluated(harness, &newest) {
+            return Some((newest, false));
+        }
+        if mode == Preview::Trial && size == Size::Small {
+            return Some((newest, true));
+        }
+        Some(
+            match all.into_iter().find(|m| self.config.evaluated(harness, m)) {
+                Some(held) => (held, false),
+                None => (newest, true),
+            },
+        )
     }
 
     /// Walks the route's tiers in order. In a tier, eligible candidates compete: the best state
@@ -213,6 +262,13 @@ impl Context<'_> {
             delegates: Vec::new(),
             skipped: Vec::new(),
             reason: None,
+            run: route
+                .judge
+                .as_ref()
+                .map(|_| new_id().replacen("p-", "r-", 1)),
+            judges: None,
+            escalates: None,
+            cascade: None,
             warnings: self.warnings.to_vec(),
             council: route.council,
         };
@@ -231,7 +287,7 @@ impl Context<'_> {
                     result.skipped.push(format!("{harness}=avoided"));
                     continue;
                 }
-                let Some(model) = resolve(harness, name, self.readings) else {
+                let Some((model, preview)) = self.resolve_for(harness, name, size) else {
                     result.skipped.push(format!("{harness}=unresolved"));
                     continue;
                 };
@@ -246,6 +302,7 @@ impl Context<'_> {
                     options.push(Choice {
                         harness,
                         model,
+                        preview,
                         effort: &c.effort,
                         pool: p,
                         api: self.is_api(harness),
@@ -294,10 +351,17 @@ impl Context<'_> {
             break;
         }
         if result.delegates.is_empty() {
+            // Kept work records no pick, so a run would name nothing.
+            result.run = None;
             result.reason = Some(if result.skipped.is_empty() {
                 "orchestrator-only route".to_string()
             } else {
                 format!("no eligible delegate: {}", result.skipped.join(", "))
+            });
+        } else if let Some(judge) = &route.judge {
+            result.cascade = Some(Cascade {
+                judge: judge.clone(),
+                escalate: route.escalate.clone(),
             });
         }
         Ok(result)
@@ -333,6 +397,7 @@ impl Context<'_> {
             harness,
             pool: pool(harness, &model, self.readings, self.config, self.now),
             model,
+            preview: false,
             effort,
             api: self.is_api(harness),
         };
@@ -346,6 +411,10 @@ impl Context<'_> {
             delegates: vec![delegate],
             skipped: Vec::new(),
             reason: None,
+            run: None,
+            judges: None,
+            escalates: None,
+            cascade: None,
             warnings: self.warnings.to_vec(),
             council: false,
         })
@@ -410,6 +479,8 @@ pub struct RouteRow {
     pub council: bool,
     pub role: String,
     pub tiers: Vec<Vec<String>>,
+    pub judge: Option<String>,
+    pub escalate: Option<String>,
 }
 
 /// Consecutive candidates sharing a `tier` value form one group; a candidate without one stands alone.
@@ -443,17 +514,17 @@ pub fn list(config: &Config) -> Vec<RouteRow> {
                 .into_iter()
                 .map(|g| g.iter().map(|c| c.target.clone()).collect())
                 .collect(),
+            judge: r.judge.clone(),
+            escalate: r.escalate.clone(),
         })
         .collect()
 }
 
-/// A warning when the last evaluation is older than `stale_days`, or missing.
+/// A warning when the last evaluation is older than `stale_days` or not a date. Without `last` there
+/// is nothing to age: a file can carry only the evaluated models for the preview gate.
 pub fn stale_evaluation(config: &Config, now: DateTime<Utc>) -> Option<String> {
     let ev = config.evaluation.as_ref()?;
-    let last = ev
-        .last
-        .as_deref()
-        .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+    let last = chrono::NaiveDate::parse_from_str(ev.last.as_deref()?, "%Y-%m-%d").ok();
     let Some(last) = last else {
         return Some(
             "routes.toml has no valid [evaluation] last date; re-run the route evaluation".into(),
@@ -706,6 +777,147 @@ candidates = [{ target = "codex/sol" }]
         assert_eq!(
             d.harness, "codex-api",
             "a key beats a plan whose state is unknown"
+        );
+    }
+
+    #[test]
+    fn an_evaluation_without_a_last_date_is_never_stale() {
+        let now = Utc::now();
+        let with = |ev: &str| {
+            Config::parse(
+                &format!("version = 1\n[evaluation]\n{ev}"),
+                Path::new("t.toml"),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            stale_evaluation(&with("models = [\"codex/gpt-6.1-sol\"]\n"), now),
+            None
+        );
+        assert!(stale_evaluation(&with("last = \"soon\"\n"), now).is_some());
+    }
+
+    /// Codex offers gpt-6.2-sol, gpt-6.1-sol and gpt-6-sol; the evaluation lists only gpt-6.1-sol.
+    fn preview_setup(mode: &str, listed: &str) -> (Config, Readings) {
+        let text = CONFIG.replace(
+            "[orchestrator]",
+            &format!("[evaluation]\nmodels = [{listed}]\npreview = \"{mode}\"\n[orchestrator]"),
+        );
+        let config = Config::parse(&text, Path::new("t.toml")).unwrap();
+        let (_, mut r) = setup(10.0, 95.0, true);
+        r.models.insert(
+            "codex".into(),
+            vec![
+                "gpt-6.2-sol".into(),
+                "gpt-6.1-sol".into(),
+                "gpt-6-sol".into(),
+            ],
+        );
+        (config, r)
+    }
+
+    fn picked(c: &Config, r: &Readings, size: Size) -> (String, bool, String) {
+        let d = pick(c, r, "review.code", size, &[]).delegates[0].clone();
+        (d.model, d.preview, d.reason)
+    }
+
+    #[test]
+    fn trial_holds_preview_versions_back_except_for_small_picks() {
+        let (c, r) = preview_setup("trial", "\"codex/gpt-6.1-sol\"");
+        assert_eq!(
+            picked(&c, &r, Size::Medium),
+            ("gpt-6.1-sol".into(), false, "fallback:claude=out".into())
+        );
+        assert_eq!(
+            picked(&c, &r, Size::Small),
+            (
+                "gpt-6.2-sol".into(),
+                true,
+                "fallback:claude=out (preview)".into()
+            )
+        );
+    }
+
+    #[test]
+    fn hold_and_use_never_and_always_take_the_newest() {
+        let (c, r) = preview_setup("hold", "\"codex/gpt-6.1-sol\"");
+        assert_eq!(picked(&c, &r, Size::Small).0, "gpt-6.1-sol");
+        let (c, r) = preview_setup("use", "\"codex/gpt-6.1-sol\"");
+        assert_eq!(
+            picked(&c, &r, Size::Medium),
+            ("gpt-6.2-sol".into(), false, "fallback:claude=out".into())
+        );
+    }
+
+    #[test]
+    fn a_family_with_no_listed_version_uses_its_preview_for_every_size() {
+        let (c, r) = preview_setup("hold", "\"claude/claude-opus-5-5\"");
+        assert_eq!(
+            picked(&c, &r, Size::Large),
+            (
+                "gpt-6.2-sol".into(),
+                true,
+                "fallback:claude=out (preview)".into()
+            )
+        );
+    }
+
+    #[test]
+    fn evaluated_entries_match_harness_aliases() {
+        let text = CONFIG.replace(
+            "t3 = \"claudeAgent\"",
+            "t3 = \"claudeAgent\"\naliases = [\"claudeAgent\"]",
+        );
+        let c = Config::parse(
+            &text.replace(
+                "[orchestrator]",
+                "[evaluation]\nmodels = [\"claudeAgent/claude-sonnet-5-5\"]\n[orchestrator]",
+            ),
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        let (_, mut r) = setup(95.0, 10.0, true);
+        r.models.insert(
+            "claude".into(),
+            vec!["claude-sonnet-5-6".into(), "claude-sonnet-5-5".into()],
+        );
+        let d = &pick(&c, &r, "review.code", Size::Medium, &[]).delegates[0];
+        assert_eq!((d.model.as_str(), d.preview), ("claude-sonnet-5-5", false));
+    }
+
+    #[test]
+    fn an_exact_id_in_a_route_is_never_in_preview() {
+        let (_, r) = preview_setup("hold", "\"codex/gpt-6.1-sol\"");
+        let text = CONFIG
+            .replace("codex/sol\", effort = \"high\", tier = 1", "codex/gpt-6.2-sol\", effort = \"high\", tier = 1")
+            .replace("[orchestrator]", "[evaluation]\nmodels = [\"codex/gpt-6.1-sol\"]\npreview = \"hold\"\n[orchestrator]");
+        let exact = Config::parse(&text, Path::new("t.toml")).unwrap();
+        assert_eq!(
+            picked(&exact, &r, Size::Large),
+            ("gpt-6.2-sol".into(), false, "fallback:claude=out".into())
+        );
+    }
+
+    #[test]
+    fn cascade_routes_name_their_judge_and_escalation() {
+        let text = format!(
+            "{CONFIG}[routes.impl]\njudge = \"review.code\"\ncandidates = [{{ target = \"codex/sol\" }}, {{ target = \"self\" }}]\n"
+        );
+        let c = Config::parse(&text, Path::new("t.toml")).unwrap();
+        let (_, r) = setup(10.0, 20.0, true);
+        let p = pick(&c, &r, "impl", Size::Medium, &[]);
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(
+            v["cascade"],
+            json!({"judge": "review.code", "escalate": null})
+        );
+        assert_eq!(v["delegates"][0]["preview"], json!(false));
+        let kept = pick(&c, &r, "impl", Size::Medium, &["codex"]);
+        assert!(kept.delegates.is_empty() && kept.cascade.is_none() && kept.run.is_none());
+        assert!(
+            pick(&c, &r, "review.code", Size::Medium, &[])
+                .cascade
+                .is_none()
         );
     }
 

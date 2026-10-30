@@ -6,6 +6,7 @@ pub mod config;
 pub mod council;
 pub mod error;
 pub mod history;
+pub mod import;
 pub mod machine;
 pub mod pick;
 pub mod pool;

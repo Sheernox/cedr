@@ -82,6 +82,10 @@ pub enum RouteCommand {
         /// Harness to skip (it just failed on a limit or capacity); repeatable
         #[arg(long)]
         avoid: Vec<String>,
+        #[arg(long, conflicts_with = "escalates")]
+        judges: Option<String>,
+        #[arg(long)]
+        escalates: Option<String>,
         #[arg(long, value_enum, default_value_t = PickFormat::Text)]
         format: PickFormat,
         #[command(flatten)]
@@ -123,10 +127,23 @@ pub enum RouteCommand {
     /// Picks and verdicts per route and model
     Stats {
         #[arg(long)]
+        since: Option<String>,
+        #[arg(long)]
         route: Option<String>,
         #[arg(long, value_enum, default_value_t = ListFormat::Text)]
         format: ListFormat,
     },
+    /// Latest picks and council results
+    History {
+        #[arg(long)]
+        route: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, value_enum, default_value_t = ListFormat::Text)]
+        format: ListFormat,
+    },
+    /// Convert a legacy routing.toml to routes.toml
+    Import { path: PathBuf },
     /// Claude Code status line: capture plan usage for the claude-statusline reader
     Statusline {
         /// The harness the capture is for
@@ -232,6 +249,13 @@ pub(crate) fn print_pick(p: &Pick, format: PickFormat) -> ExitCode {
                 println!("  brief starts: {}", d.prefix);
             }
         }
+        if let Some(c) = &p.cascade {
+            println!(
+                "  cascade: judge {}, escalate {}",
+                c.judge,
+                c.escalate.as_deref().unwrap_or("self")
+            );
+        }
         if p.council && !p.skipped.is_empty() {
             println!(
                 "absent (report, never substitute): {}",
@@ -311,6 +335,8 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
             route,
             size,
             avoid,
+            judges,
+            escalates,
             format,
             sources,
         } => {
@@ -319,7 +345,14 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
                 sources.readings.as_deref(),
                 sources.models.as_deref(),
             )?;
-            let p = session.context().pick(&route, size.into(), &avoid)?;
+            let mut p = session.context().pick(&route, size.into(), &avoid)?;
+            history::link_pick(
+                &history::default_path(),
+                &session.loaded.config,
+                &mut p,
+                judges.as_deref(),
+                escalates.as_deref(),
+            )?;
             record(&p, size.into(), &sources, config)?;
             Ok(print_pick(&p, format))
         }
@@ -363,8 +396,18 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
             let loaded = Session::config_only(config, &cwd()?)?;
             for r in pick::list(&loaded.config) {
                 let chain: Vec<String> = r.tiers.iter().map(|t| t.join(" = ")).collect();
+                let cascade = r
+                    .judge
+                    .as_ref()
+                    .map(|j| {
+                        format!(
+                            " | judge {j} -> {}",
+                            r.escalate.as_deref().unwrap_or("self")
+                        )
+                    })
+                    .unwrap_or_default();
                 println!(
-                    "{:16} {} {}",
+                    "{:16} {} {}{cascade}",
                     r.id,
                     if r.enabled { "on " } else { "off" },
                     chain.join(" > ")
@@ -391,8 +434,18 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
             auto_sync(config);
             Ok(ExitCode::SUCCESS)
         }
-        RouteCommand::Stats { route, format } => {
-            let rows = history::stats(&history::default_path(), route.as_deref())?;
+        RouteCommand::Stats {
+            route,
+            since,
+            format,
+        } => {
+            let loaded = Session::config_only(config, &cwd()?)?;
+            let rows = history::stats(
+                &history::default_path(),
+                route.as_deref(),
+                since.as_deref(),
+                &loaded.config,
+            )?;
             match format {
                 ListFormat::Json => println!(
                     "{}",
@@ -408,18 +461,30 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
                         "reworked",
                         "redone",
                         "rejected",
-                        "accepted%"
+                        "accepted%   median_minutes judged escalated"
                     );
                     for r in rows {
                         let pct = r
                             .accepted_pct
                             .map(|p| format!("{p:.1}"))
                             .unwrap_or_else(|| "-".into());
+                        let details = format!(
+                            " {} {} {}",
+                            r.median_minutes
+                                .map(|n| format!("{n:.1}"))
+                                .unwrap_or_else(|| "-".into()),
+                            r.judged
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| "-".into()),
+                            r.escalated
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| "-".into())
+                        );
                         let mark = if r.provisional { " (provisional)" } else { "" };
                         println!(
-                            "{:16} {:32} {:>5} {:>8} {:>8} {:>6} {:>8} {:>9}{mark}",
+                            "{:16} {:32} {:>5} {:>8} {:>8} {:>6} {:>8} {:>9}{details}{mark}",
                             r.route,
-                            r.target,
+                            format!("{}{}", r.target, if r.preview { " (preview)" } else { "" }),
                             r.picks,
                             r.accepted,
                             r.reworked,
@@ -427,6 +492,54 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
                             r.rejected,
                             pct
                         );
+                    }
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        RouteCommand::Import { path } => {
+            let text = std::fs::read_to_string(&path).map_err(|source| Error::Io {
+                path: path.clone(),
+                source,
+            })?;
+            print!("{}", cedr_route::import::convert(&text, &path)?);
+            Ok(ExitCode::SUCCESS)
+        }
+        RouteCommand::History {
+            route,
+            limit,
+            format,
+        } => {
+            let rows = history::history(&history::default_path(), route.as_deref(), limit)?;
+            match format {
+                ListFormat::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&rows).expect("rows serialize")
+                ),
+                ListFormat::Text => {
+                    for r in rows {
+                        let text = |key: &str| r[key].as_str().unwrap_or("-");
+                        if r["type"] == "pick" {
+                            println!(
+                                "{} {} -> {} {} {} {}",
+                                text("at"),
+                                text("route"),
+                                text("target"),
+                                text("effort"),
+                                r["verdict"]["verdict"].as_str().unwrap_or("-"),
+                                text("id")
+                            );
+                        } else {
+                            println!(
+                                "{} {} council {} round {}/{} {}",
+                                text("at"),
+                                text("route"),
+                                text("gate"),
+                                r["round"],
+                                r["rounds"],
+                                text("id")
+                            );
+                        }
                     }
                 }
             }

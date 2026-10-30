@@ -85,6 +85,22 @@ pub struct Evaluation {
     pub stale_days: i64,
     #[serde(default)]
     pub models: Vec<String>,
+    /// What a pick does with a family's newest version that `models` does not list.
+    #[serde(default)]
+    pub preview: Preview,
+}
+
+/// How a pick treats a version the last evaluation did not list (docs/route.md, Preview versions).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Preview {
+    /// Hold it back, except for small picks, which collect its verdicts.
+    #[default]
+    Trial,
+    /// Always use the newest evaluated version.
+    Hold,
+    /// Use the newest version whatever the evaluation lists.
+    Use,
 }
 
 fn default_stale_days() -> i64 {
@@ -260,6 +276,12 @@ pub struct Route {
     pub quorum: Option<usize>,
     /// Councils only: the least severe finding that blocks; default P1.
     pub block: Option<crate::council::Severity>,
+    /// Councils only: revision rounds before a blocking gate stands; default 1.
+    pub rounds: Option<u32>,
+    /// A cascade: the route that judges this route's work (docs/route.md, Cascade).
+    pub judge: Option<String>,
+    /// With `judge`: where escalated work goes; none means the orchestrator takes it.
+    pub escalate: Option<String>,
     pub candidates: Vec<Candidate>,
 }
 
@@ -272,6 +294,11 @@ impl Route {
     /// The least severe finding that blocks the council: as configured, else P1.
     pub fn block(&self) -> crate::council::Severity {
         self.block.unwrap_or(crate::council::Severity::P1)
+    }
+
+    /// The council's revision rounds: as configured, else 1.
+    pub fn rounds(&self) -> u32 {
+        self.rounds.unwrap_or(1)
     }
 }
 
@@ -338,6 +365,16 @@ impl Config {
                 }
                 _ => {}
             }
+            match route.rounds {
+                Some(_) if !route.council => {
+                    return Err(format!("route {id}: rounds is for councils only"));
+                }
+                Some(r) if r > 3 => {
+                    return Err(format!("route {id}: rounds {r} must be between 0 and 3"));
+                }
+                _ => {}
+            }
+            self.validate_cascade(id, route)?;
             for c in &route.candidates {
                 if c.target == "self" {
                     if c.tier.is_some() {
@@ -414,6 +451,53 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// The cascade rules: `judge` and `escalate` name other, non-council routes; `escalate` needs a
+    /// judge; a judge is not a cascade itself; and following `escalate` never comes back.
+    fn validate_cascade(&self, id: &str, route: &Route) -> std::result::Result<(), String> {
+        if route.escalate.is_some() && route.judge.is_none() {
+            return Err(format!("route {id}: escalate needs a judge"));
+        }
+        if route.council && (route.judge.is_some() || route.escalate.is_some()) {
+            return Err(format!("route {id}: a council cannot be a cascade"));
+        }
+        for (field, name) in [("judge", &route.judge), ("escalate", &route.escalate)] {
+            let Some(name) = name else { continue };
+            if name == id {
+                return Err(format!("route {id}: {field} names the route itself"));
+            }
+            let Some(other) = self.routes.get(name) else {
+                return Err(format!("route {id}: {field} names unknown route {name:?}"));
+            };
+            if other.council {
+                return Err(format!("route {id}: {field} {name:?} is a council"));
+            }
+            if field == "judge" && other.judge.is_some() {
+                return Err(format!("route {id}: judge {name:?} is a cascade itself"));
+            }
+        }
+        let mut seen = vec![id];
+        let mut next = route.escalate.as_deref();
+        while let Some(name) = next {
+            if seen.contains(&name) {
+                return Err(format!("route {id}: escalate comes back to {name:?}"));
+            }
+            seen.push(name);
+            next = self.routes.get(name).and_then(|r| r.escalate.as_deref());
+        }
+        Ok(())
+    }
+
+    /// Whether `[evaluation] models` lists `harness/model`, the harness by id or alias.
+    pub fn evaluated(&self, harness: &str, model: &str) -> bool {
+        let Some(ev) = &self.evaluation else {
+            return false;
+        };
+        ev.models.iter().any(|e| {
+            e.split_once('/')
+                .is_some_and(|(h, m)| m == model && self.harness_for(h) == Some(harness))
+        })
     }
 
     /// The harness id a readings feed's name refers to, by id or alias.
@@ -603,6 +687,80 @@ mod tests {
                 .contains("unsupported version 2")
         );
         assert!(parse("version = 1\n[thresholds]\nouts = 90\n").is_err());
+    }
+
+    const CASCADE: &str = "version = 1\n[harnesses.codex]\n[routes.a]\ncandidates = [{ target = \"codex/sol\" }]\n[routes.j]\ncandidates = [{ target = \"codex/luna\" }]\n[routes.c]\ncouncil = true\ncandidates = [{ target = \"codex/sol\" }]\n";
+
+    fn cascade_err(extra: &str) -> String {
+        let text = CASCADE.replace("[routes.a]\n", &format!("[routes.a]\n{extra}"));
+        parse(&text).unwrap_err()
+    }
+
+    #[test]
+    fn validates_cascades() {
+        let ok = CASCADE.replace(
+            "[routes.a]\n",
+            "[routes.a]\njudge = \"j\"\nescalate = \"j\"\n",
+        );
+        assert!(parse(&ok).is_ok());
+        assert!(cascade_err("escalate = \"j\"\n").contains("escalate needs a judge"));
+        assert!(cascade_err("judge = \"a\"\n").contains("names the route itself"));
+        assert!(cascade_err("judge = \"nope\"\n").contains("unknown route \"nope\""));
+        assert!(cascade_err("judge = \"c\"\n").contains("is a council"));
+        assert!(cascade_err("judge = \"j\"\nescalate = \"c\"\n").contains("is a council"));
+        let council = CASCADE.replace("council = true\n", "council = true\njudge = \"j\"\n");
+        assert!(
+            parse(&council)
+                .unwrap_err()
+                .contains("a council cannot be a cascade")
+        );
+        let chained = CASCADE.replace("[routes.j]\n", "[routes.j]\njudge = \"a\"\n");
+        let chained = chained.replace("[routes.a]\n", "[routes.a]\njudge = \"j\"\n");
+        assert!(parse(&chained).unwrap_err().contains("is a cascade itself"));
+        let looped = format!(
+            "{CASCADE}[routes.b]\njudge = \"j\"\nescalate = \"a\"\ncandidates = [{{ target = \"self\" }}]\n"
+        )
+        .replace("[routes.a]\n", "[routes.a]\njudge = \"j\"\nescalate = \"b\"\n");
+        assert!(
+            parse(&looped)
+                .unwrap_err()
+                .contains("escalate comes back to")
+        );
+    }
+
+    #[test]
+    fn rounds_are_for_councils_within_0_to_3() {
+        let council = |r: &str| {
+            CASCADE.replace(
+                "council = true\n",
+                &format!("council = true\nrounds = {r}\n"),
+            )
+        };
+        assert!(parse(&council("0")).is_ok());
+        assert!(
+            parse(&council("4"))
+                .unwrap_err()
+                .contains("between 0 and 3")
+        );
+        assert!(cascade_err("rounds = 1\n").contains("rounds is for councils only"));
+    }
+
+    #[test]
+    fn preview_modes_parse_and_reject_others() {
+        let with = |m: &str| format!("version = 1\n[evaluation]\npreview = \"{m}\"\n");
+        assert_eq!(
+            parse(&with("hold")).unwrap().evaluation.unwrap().preview,
+            Preview::Hold
+        );
+        assert_eq!(
+            parse("version = 1\n[evaluation]\n")
+                .unwrap()
+                .evaluation
+                .unwrap()
+                .preview,
+            Preview::Trial
+        );
+        assert!(parse(&with("later")).is_err());
     }
 
     #[test]

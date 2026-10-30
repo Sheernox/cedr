@@ -85,12 +85,22 @@ fn verdicts_on_recorded_picks_show_in_stats() {
     );
     let skipped = s.pick("review.code", &["--no-record"]);
     assert_eq!(skipped.status.code(), Some(0));
-    let stats: Value =
-        serde_json::from_slice(&s.cedr(&["route", "stats", "--format", "json"]).stdout).unwrap();
+    let stats: Value = serde_json::from_slice(
+        &s.cedr(&[
+            "route",
+            "stats",
+            "--config",
+            &config().display().to_string(),
+            "--format",
+            "json",
+        ])
+        .stdout,
+    )
+    .unwrap();
     assert_eq!(
         stats,
         json!([{"route": "review.code", "target": "codex/gpt-6.1-sol", "picks": 1, "accepted": 1, "reworked": 0,
-                "redone": 0, "rejected": 0, "verdicts": 1, "accepted_pct": 100.0, "provisional": true}])
+                "redone": 0, "rejected": 0, "verdicts": 1, "accepted_pct": 100.0, "provisional": true, "preview": false, "median_minutes": 0.0, "judged": null, "escalated": null}])
     );
 }
 
@@ -228,6 +238,207 @@ fn mcp_serves_picks_and_returns_errors_as_tool_errors() {
             .unwrap()
             .contains("unknown route")
     );
+    // Exercise the new MCP paths against one recorded council run.
+    send(
+        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"council_plan","arguments":{"route":"council","models":{"codex":["gpt-6.1-sol"],"claude":["claude-opus-5-5"]}}}}),
+    );
+    let result = recv(5);
+    let plan: Value =
+        serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let run = plan["run"].as_str().unwrap();
+    send(
+        json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"council_merge","arguments":{"route":"council","run":run,"reports":[{"member":"a","findings":[]},{"member":"b","findings":[]}]}}}),
+    );
+    let result = recv(6);
+    let merge: Value =
+        serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(merge["gate"], "pass");
+    assert!(merge["id"].as_str().unwrap().starts_with("c-"));
+    send(
+        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"council_stats","arguments":{"route":"council"}}}),
+    );
+    let result = recv(7);
+    let stats: Value =
+        serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(stats[0]["pass"], 1);
+    send(
+        json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"route_history","arguments":{"limit":1}}}),
+    );
+    let result = recv(8);
+    let h: Value =
+        serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(h[0]["id"], merge["id"]);
+    send(
+        json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"route_stats","arguments":{"route":"council"}}}),
+    );
+    let result = recv(9);
+    let stats: Value =
+        serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(stats.as_array().unwrap().len(), 2);
+    assert!(stats.as_array().unwrap().iter().all(|r| r["picks"] == 1));
+    send(
+        json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"route_pick","arguments":{"route":"review.code","judges":"missing","escalates":"missing"}}}),
+    );
+    assert_eq!(recv(10)["result"]["isError"], true);
     drop(stdin);
     child.wait().unwrap();
+}
+
+#[test]
+fn a_cascade_names_its_judge_in_the_pick_and_the_list() {
+    let s = Scratch::new(10.0, 20.0);
+    let out = stdout(&s.pick("impl", &["--format", "t3"]));
+    assert!(
+        out.ends_with("  cascade: judge review.code, escalate self\n"),
+        "{out}"
+    );
+    let cfg = config().display().to_string();
+    let list = stdout(&s.cedr(&["route", "list", "--config", &cfg]));
+    assert!(
+        list.contains("codex/sol > self | judge review.code -> self\n"),
+        "{list}"
+    );
+}
+
+#[test]
+fn cascade_links_validate_draft_and_destination_and_inherit_run() {
+    let s = Scratch::new(10.0, 20.0);
+    let cfg = s.dir.path().join("routes.toml");
+    let source = std::fs::read_to_string(config()).unwrap().replace(
+        "judge = \"review.code\"",
+        "judge = \"review.code\"\nescalate = \"hard\"",
+    );
+    std::fs::write(
+        &cfg,
+        format!("{source}\n[routes.hard]\ncandidates = [{{target = \"codex/sol\"}}]\n"),
+    )
+    .unwrap();
+    let cfg = cfg.display().to_string();
+    let readings = s.readings();
+    let pick = |route: &str, extra: &[&str]| {
+        let mut args = vec![
+            "route",
+            "pick",
+            route,
+            "--config",
+            &cfg,
+            "--readings",
+            &readings,
+            "--format",
+            "json",
+        ];
+        args.extend_from_slice(extra);
+        s.cedr(&args)
+    };
+    let draft: Value = serde_json::from_slice(&pick("impl", &[]).stdout).unwrap();
+    let id = draft["delegates"][0]["id"].as_str().unwrap();
+    let run = draft["run"].as_str().unwrap();
+    assert_eq!(run.len(), 14);
+    assert!(run.starts_with("r-"));
+    assert!(
+        run[2..]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    );
+    for (route, flag) in [("review.code", "--judges"), ("hard", "--escalates")] {
+        let o = pick(route, &[flag, id]);
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let linked: Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(linked["run"], run);
+        assert_eq!(pick(route, &[flag, "p-unknown"]).status.code(), Some(2));
+        assert_eq!(pick("impl", &[flag, id]).status.code(), Some(2));
+    }
+    assert_eq!(
+        pick("review.code", &["--judges", id, "--escalates", id])
+            .status
+            .code(),
+        Some(2)
+    );
+    let ordinary: Value = serde_json::from_slice(&pick("review.code", &[]).stdout).unwrap();
+    assert!(ordinary["run"].is_null());
+    let ordinary_id = ordinary["delegates"][0]["id"].as_str().unwrap();
+    for flag in ["--judges", "--escalates"] {
+        assert_eq!(
+            pick("review.code", &[flag, ordinary_id]).status.code(),
+            Some(2)
+        );
+    }
+    // A real cascade without an escalation route cannot be used as an escalation link.
+    let self_draft: Value =
+        serde_json::from_slice(&s.pick("impl", &["--format", "json"]).stdout).unwrap();
+    assert_eq!(
+        s.pick(
+            "review.code",
+            &[
+                "--escalates",
+                self_draft["delegates"][0]["id"].as_str().unwrap()
+            ]
+        )
+        .status
+        .code(),
+        Some(2)
+    );
+    let rows: Value = serde_json::from_slice(
+        &s.cedr(&[
+            "route",
+            "history",
+            "--route",
+            "review.code",
+            "--limit",
+            "1",
+            "--format",
+            "json",
+        ])
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    let stats: Value = serde_json::from_slice(
+        &s.cedr(&[
+            "route", "stats", "--config", &cfg, "--route", "impl", "--format", "json",
+        ])
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(stats[0]["judged"], 1);
+    assert_eq!(stats[0]["escalated"], 1);
+    assert_eq!(
+        s.cedr(&["route", "stats", "--config", &cfg, "--since", "yesterday"])
+            .status
+            .code(),
+        Some(2)
+    );
+    assert_eq!(
+        s.cedr(&["route", "history", "--limit", "501"])
+            .status
+            .code(),
+        Some(2)
+    );
+}
+
+#[test]
+fn import_emits_valid_config_and_lists_converted_tiers() {
+    let s = Scratch::new(10.0, 20.0);
+    let source = config().parent().unwrap().join("import.toml");
+    let o = s.cedr(&["route", "import", &source.display().to_string()]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let output = s.dir.path().join("routes.toml");
+    std::fs::write(&output, &o.stdout).unwrap();
+    let list = s.cedr(&["route", "list", "--config", &output.display().to_string()]);
+    assert_eq!(list.status.code(), Some(0));
+    assert!(stdout(&list).contains("off claude/sonnet > self"));
+    std::fs::write(&output, "unsupported = true").unwrap();
+    let bad = s.cedr(&["route", "import", &output.display().to_string()]);
+    assert_eq!(bad.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("unsupported"));
 }

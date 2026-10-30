@@ -197,3 +197,128 @@ fn a_truncated_json_report_is_an_error_even_with_a_member() {
     assert_eq!(o.status.code(), Some(2), "{}", stdout(&o));
     assert!(String::from_utf8_lossy(&o.stderr).contains("not a valid JSON report"));
 }
+
+#[test]
+fn a_blocked_merge_prints_the_revision_brief_until_the_rounds_run_out() {
+    let s = Scratch::new(10.0, 20.0);
+    let path = s.dir.path().join("r.txt");
+    std::fs::write(&path, "src/a.rs:12 - P1 - reads until EOF\n").unwrap();
+    let arg = format!("codex/sol={}", path.display());
+    let text = s.cedr(&["council", "merge", &arg, "--quorum", "1"]);
+    assert!(stdout(&text).ends_with(
+        "next: revise (round 1 of 1): give the author the revision brief (--format brief), then review again with --round 2\n"
+    ), "{}", stdout(&text));
+    let brief = s.cedr(&[
+        "council", "merge", &arg, "--quorum", "1", "--format", "brief",
+    ]);
+    assert_eq!(brief.status.code(), Some(1));
+    assert!(stdout(&brief).starts_with("# Council revision brief (round 1 of 1)\n"));
+    assert!(
+        stdout(&brief)
+            .ends_with("## P1 src/a.rs:12 (codex/sol)\n- codex/sol P1 :12 reads until EOF\n")
+    );
+    let last = s.cedr(&["council", "merge", &arg, "--quorum", "1", "--round", "2"]);
+    assert_eq!(last.status.code(), Some(1));
+    assert!(stdout(&last).ends_with("next: done\n"));
+}
+
+#[test]
+fn plan_shares_run_and_merge_records_counts_or_opts_out() {
+    let s = Scratch::new(10.0, 20.0);
+    let cfg = config().display().to_string();
+    let readings = s.readings();
+    let plan = s.cedr(&[
+        "council",
+        "plan",
+        "council",
+        "--config",
+        &cfg,
+        "--readings",
+        &readings,
+        "--format",
+        "json",
+    ]);
+    let p: Value = serde_json::from_slice(&plan.stdout).unwrap();
+    let run = p["run"].as_str().unwrap();
+    let path = s.dir.path().join("state/cedr/route-history.jsonl");
+    let records: Vec<Value> = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().all(|r| r["run"] == run));
+    let report = s.dir.path().join("report.json");
+    std::fs::write(
+        &report,
+        json!({"member":"codex/sol","findings":[]}).to_string(),
+    )
+    .unwrap();
+    let report = report.display().to_string();
+    let o = s.cedr(&[
+        "council", "merge", &report, "--run", run, "--quorum", "1", "--format", "json",
+    ]);
+    assert_eq!(o.status.code(), Some(0));
+    let merge: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(merge["id"].as_str().unwrap().starts_with("c-"));
+    let history: Value = serde_json::from_slice(
+        &s.cedr(&["route", "history", "--limit", "1", "--format", "json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(history[0]["id"], merge["id"]);
+    assert_eq!(history[0]["run"], run);
+    assert!(history[0]["route"].is_null());
+    assert_eq!(history[0]["findings"], json!({"codex/sol":0}));
+    let before = std::fs::read(&path).unwrap();
+    let o = s.cedr(&[
+        "council",
+        "merge",
+        &report,
+        "--no-record",
+        "--format",
+        "json",
+    ]);
+    let merge: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(merge["id"].is_null());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(
+        s.cedr(&["council", "merge", &report, "--run", "r-unknown"])
+            .status
+            .code(),
+        Some(2)
+    );
+    assert_eq!(
+        s.cedr(&[
+            "council",
+            "merge",
+            &report,
+            "--run",
+            "r-unknown",
+            "--no-record"
+        ])
+        .status
+        .code(),
+        Some(2)
+    );
+    let stats: Value =
+        serde_json::from_slice(&s.cedr(&["council", "stats", "--format", "json"]).stdout).unwrap();
+    assert_eq!(stats[0]["merges"], 1);
+    assert_eq!(stats[0]["pass"], 1);
+    assert_eq!(
+        s.cedr(&["council", "stats", "--since", "invalid"])
+            .status
+            .code(),
+        Some(2)
+    );
+    let text = stdout(&s.cedr(&[
+        "council",
+        "plan",
+        "council",
+        "--config",
+        &cfg,
+        "--readings",
+        &readings,
+    ]));
+    assert!(text.contains("quorum 2: 2 eligible, run r-"));
+}

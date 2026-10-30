@@ -67,12 +67,18 @@ fn parts(id: &str) -> (Vec<&str>, Vec<u64>) {
 /// family whose words end the id's words, and the newest version wins. None without a model list,
 /// with no match, or when the name matches more than one family.
 pub fn resolve(harness: &str, name: &str, readings: &Readings) -> Option<String> {
+    versions(harness, name, readings)?.into_iter().next()
+}
+
+/// Every offered version `name` stands for, newest first: just the id when it is offered as named,
+/// else its family's versions. None as for `resolve`.
+pub fn versions(harness: &str, name: &str, readings: &Readings) -> Option<Vec<String>> {
     let offered = readings.models.get(harness)?;
     if offered.iter().any(|m| m == name) {
-        return Some(name.to_string());
+        return Some(vec![name.to_string()]);
     }
     let want: Vec<&str> = name.split('-').collect();
-    let matches: Vec<(Vec<&str>, Vec<u64>, &String)> = offered
+    let mut matches: Vec<(Vec<&str>, Vec<u64>, &String)> = offered
         .iter()
         .filter_map(|m| {
             let (words, version) = parts(m);
@@ -84,12 +90,10 @@ pub fn resolve(harness: &str, name: &str, readings: &Readings) -> Option<String>
     if families.len() != 1 {
         return None;
     }
-    // The first of equal versions wins ("gpt-6.1-sol" and "gpt-6-1-sol" parse alike);
-    // `min_by` on the reversed order keeps the first.
-    matches
-        .into_iter()
-        .min_by(|a, b| b.1.cmp(&a.1))
-        .map(|(_, _, m)| m.clone())
+    // A stable sort keeps the first of equal versions ahead ("gpt-6.1-sol" and "gpt-6-1-sol"
+    // parse alike).
+    matches.sort_by(|a, b| b.1.cmp(&a.1));
+    Some(matches.into_iter().map(|(_, _, m)| m.clone()).collect())
 }
 
 /// The state of every window that applies to `model`, a short summary for the route tag, and the

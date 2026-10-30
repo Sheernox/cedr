@@ -25,6 +25,21 @@ pub struct RouteServer {
 pub struct PickArgs {
     /// Route id from routes.toml, e.g. "review.code"
     route: String,
+    judges: Option<String>,
+    escalates: Option<String>,
+    /// small, medium (default) or large
+    size: Option<String>,
+    /// Harnesses to skip because they just failed on a limit or capacity
+    avoid: Option<Vec<String>>,
+    /// {"<harness>": [model ids]} the orchestrator offers, replacing the configured lists
+    models: Option<Value>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct PlanArgs {
+    /// Route id from routes.toml, e.g. "review.code"
+    route: String,
     /// small, medium (default) or large
     size: Option<String>,
     /// Harnesses to skip because they just failed on a limit or capacity
@@ -48,10 +63,15 @@ pub struct MergeArgs {
     reports: Vec<Value>,
     /// Council route whose quorum and blocking severity apply
     route: Option<String>,
+    run: Option<String>,
     /// Quorum to use instead of the route's (default 2)
     quorum: Option<usize>,
     /// Least severe finding that blocks: P0, P1 (default), P2 or P3
     block: Option<String>,
+    /// Revision rounds instead of the route's (default 1, at most 3)
+    rounds: Option<u32>,
+    /// The review being merged: 1 (default) for the first, 2 after one revision
+    round: Option<u32>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -65,6 +85,19 @@ pub struct VerdictArgs {
     task: Option<String>,
     /// One line, at most 120 characters
     note: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct StatsArgs {
+    route: Option<String>,
+    since: Option<String>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct HistoryArgs {
+    route: Option<String>,
+    limit: Option<usize>,
 }
 
 fn reply(result: cedr_route::Result<Value>) -> CallToolResult {
@@ -122,9 +155,16 @@ impl RouteServer {
         blocking(move || {
             let size = Size::parse(a.size.as_deref().unwrap_or("medium"))?;
             let session = me.session(a.models)?;
-            let p = session
+            let mut p = session
                 .context()
                 .pick(&a.route, size, &a.avoid.unwrap_or_default())?;
+            history::link_pick(
+                &history::default_path(),
+                &session.loaded.config,
+                &mut p,
+                a.judges.as_deref(),
+                a.escalates.as_deref(),
+            )?;
             history::record_pick(&history::default_path(), &p, size, Utc::now())?;
             crate::route::auto_sync(me.config.as_deref());
             Ok(json(&p))
@@ -173,7 +213,7 @@ impl RouteServer {
     }
 
     #[tool(description = "Name the council members to start for a council route, with its quorum.")]
-    async fn council_plan(&self, Parameters(a): Parameters<PickArgs>) -> CallToolResult {
+    async fn council_plan(&self, Parameters(a): Parameters<PlanArgs>) -> CallToolResult {
         let me = self.clone();
         blocking(move || {
             let size = Size::parse(a.size.as_deref().unwrap_or("medium"))?;
@@ -192,7 +232,7 @@ impl RouteServer {
     }
 
     #[tool(
-        description = "Merge council members' reports into one gate: pass, block (any P0 or P1) or incomplete (below quorum)."
+        description = "Merge council members' reports into one gate: pass, block (at or above the blocking severity) or incomplete (below quorum); a blocked gate with a round left returns next=revise and the author's revision brief."
     )]
     async fn council_merge(&self, Parameters(a): Parameters<MergeArgs>) -> CallToolResult {
         let me = self.clone();
@@ -203,24 +243,83 @@ impl RouteServer {
                     cedr_route::Error::Usage(format!("block {b:?} is not P0, P1, P2 or P3"))
                 })?),
             };
-            let settings = council::settings(a.quorum, block, a.route.as_deref(), || {
-                let cwd = std::env::current_dir().map_err(|source| cedr_route::Error::Io {
-                    path: PathBuf::from("."),
-                    source,
-                })?;
-                Ok(Session::config_only(me.config.as_deref(), &cwd)?.config)
-            })?;
+            let settings = council::settings(
+                a.quorum,
+                block,
+                a.rounds,
+                a.round,
+                a.route.as_deref(),
+                || {
+                    let cwd = std::env::current_dir().map_err(|source| cedr_route::Error::Io {
+                        path: PathBuf::from("."),
+                        source,
+                    })?;
+                    Ok(Session::config_only(me.config.as_deref(), &cwd)?.config)
+                },
+            )?;
             let reports = a
                 .reports
                 .into_iter()
                 .map(|r| Report::from_json(r, None))
                 .collect::<cedr_route::Result<Vec<_>>>()?;
-            Ok(json(council::merge(&reports, settings)))
+            let mut merged = council::merge(&reports, settings);
+            history::record_council(
+                &history::default_path(),
+                &mut merged,
+                a.route.as_deref(),
+                a.run.as_deref(),
+                Utc::now(),
+            )?;
+            crate::route::auto_sync(me.config.as_deref());
+            Ok(json(merged))
         })
         .await
     }
 
-    #[tool(description = "Routes and their tier chains.")]
+    #[tool(description = "Picks, verdicts, latency and cascade outcomes per route and model.")]
+    async fn route_stats(&self, Parameters(a): Parameters<StatsArgs>) -> CallToolResult {
+        let me = self.clone();
+        blocking(move || {
+            let cwd = std::env::current_dir().map_err(|source| cedr_route::Error::Io {
+                path: PathBuf::from("."),
+                source,
+            })?;
+            let loaded = Session::config_only(me.config.as_deref(), &cwd)?;
+            Ok(json(history::stats(
+                &history::default_path(),
+                a.route.as_deref(),
+                a.since.as_deref(),
+                &loaded.config,
+            )?))
+        })
+        .await
+    }
+    #[tool(description = "Latest picks with verdicts and council results, newest first.")]
+    async fn route_history(&self, Parameters(a): Parameters<HistoryArgs>) -> CallToolResult {
+        blocking(move || {
+            Ok(json(history::history(
+                &history::default_path(),
+                a.route.as_deref(),
+                a.limit.unwrap_or(20),
+            )?))
+        })
+        .await
+    }
+    #[tool(description = "Council merge totals and revision outcomes per route.")]
+    async fn council_stats(&self, Parameters(a): Parameters<StatsArgs>) -> CallToolResult {
+        blocking(move || {
+            Ok(json(history::council_stats(
+                &history::default_path(),
+                a.route.as_deref(),
+                a.since.as_deref(),
+            )?))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Routes with their tier chains, and each cascade's judge and escalate routes."
+    )]
     async fn route_list(&self) -> CallToolResult {
         let me = self.clone();
         blocking(move || {
