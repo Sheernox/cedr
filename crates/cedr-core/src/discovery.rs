@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::Result;
+use crate::config::GuardConfig;
 use crate::error::{io_err, parse_err};
 use crate::source::Source;
 
@@ -130,6 +131,10 @@ pub struct Workspace {
     pub instructions: Vec<String>,
     pub skills: Vec<SkillDir>,
     pub servers: Vec<Server>,
+    /// Skill directories (or whole skill roots) skipped because they link outside the root,
+    /// relative to the root; lint reports them as CG010.
+    pub skipped: Vec<String>,
+    pub config: GuardConfig,
 }
 
 pub const INSTRUCTION_FILES: [&str; 3] = ["AGENTS.md", "CLAUDE.md", "GEMINI.md"];
@@ -140,11 +145,15 @@ pub fn discover(root: &Path) -> Result<Workspace> {
     if !meta.is_dir() {
         return Err(parse_err(root, "not a directory"));
     }
+    let config = GuardConfig::load(root)?;
+    let (skills, skipped) = skills(root, &config.skills)?;
     Ok(Workspace {
         root: root.to_path_buf(),
         instructions: instruction_files(root)?,
-        skills: skills(root)?,
+        skills,
         servers: servers(root)?,
+        skipped,
+        config,
     })
 }
 
@@ -185,23 +194,33 @@ fn instruction_files(root: &Path) -> Result<Vec<String>> {
 
 /// Reject directory and instruction links that escape the scan boundary.
 pub(crate) fn ensure_inside(root: &Path, path: &Path) -> Result<PathBuf> {
-    let real = fs::canonicalize(path).map_err(io_err(path))?;
-    if !real.starts_with(root) {
-        return Err(parse_err(path, "canonical path escapes the scanned root"));
-    }
-    Ok(real)
+    inside(root, path)?.ok_or_else(|| parse_err(path, "canonical path escapes the scanned root"))
 }
 
-fn skills(root: &Path) -> Result<Vec<SkillDir>> {
+/// The canonical path of `path`, or `None` when it escapes `root`.
+fn inside(root: &Path, path: &Path) -> Result<Option<PathBuf>> {
+    let real = fs::canonicalize(path).map_err(io_err(path))?;
+    Ok(real.starts_with(root).then_some(real))
+}
+
+/// Skill directories under the standard roots and the config's extra ones, and the paths
+/// skipped because they link outside the root.
+fn skills(root: &Path, extra: &[String]) -> Result<(Vec<SkillDir>, Vec<String>)> {
     let canonical_root = fs::canonicalize(root).map_err(io_err(root))?;
     let mut found = Vec::new();
+    let mut skipped = Vec::new();
     // `.claude/skills` entries are often symlinks into `.agents/skills`; a skill
     // reached twice is one skill.
     let mut seen = HashSet::new();
-    for base in SKILL_ROOTS {
+    for base in SKILL_ROOTS
+        .iter()
+        .copied()
+        .chain(extra.iter().map(String::as_str))
+    {
         let dir = root.join(base);
-        if dir.exists() {
-            ensure_inside(&canonical_root, &dir)?;
+        if dir.exists() && inside(&canonical_root, &dir)?.is_none() {
+            skipped.push(base.to_string());
+            continue;
         }
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
@@ -219,7 +238,10 @@ fn skills(root: &Path) -> Result<Vec<SkillDir>> {
             if !path.join("SKILL.md").is_file() {
                 continue;
             }
-            let real_path = ensure_inside(&canonical_root, &path)?;
+            let Some(real_path) = inside(&canonical_root, &path)? else {
+                skipped.push(format!("{base}/{name}"));
+                continue;
+            };
             if !seen.insert(real_path.clone()) {
                 continue;
             }
@@ -230,7 +252,7 @@ fn skills(root: &Path) -> Result<Vec<SkillDir>> {
             });
         }
     }
-    Ok(found)
+    Ok((found, skipped))
 }
 
 fn servers(root: &Path) -> Result<Vec<Server>> {
@@ -339,7 +361,8 @@ struct CodexConfig {
 }
 
 fn codex_servers(rel: &str, text: &str, path: &Path) -> Result<Vec<Server>> {
-    let config: CodexConfig = toml::from_str(text).map_err(|e| parse_err(path, e))?;
+    let config: CodexConfig =
+        toml::from_str(text).map_err(|e| crate::error::toml_err(path, text, &e))?;
     config
         .mcp_servers
         .into_iter()

@@ -26,8 +26,7 @@ fn harness(id: &str) -> &str {
 
 /// Converts and validates before returning any output. The source path labels parse errors only.
 pub fn convert(text: &str, path: &Path) -> Result<String> {
-    let source: Value =
-        toml::from_str(text).map_err(|e| Error::Usage(format!("{}: {e}", path.display())))?;
+    let source: Value = toml::from_str(text).map_err(|e| crate::error::toml_err(path, text, &e))?;
     keys(
         &source,
         &[

@@ -1,4 +1,4 @@
-//! `cedr lint`: rules CG001-CG009 from the design contract.
+//! `cedr lint`: rules CG001-CG010 from the design contract, less what `.cedr/guard.toml` suppresses.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -33,7 +33,16 @@ pub fn lint(root: &Path) -> Result<Report> {
     }
     findings.extend(server_findings(&ws));
     findings.extend(broad_permissions(root)?);
-    Ok(Report::new(findings))
+    findings.extend(ws.skipped.iter().map(|path| {
+        Finding::new(
+            Rule::Cg010,
+            Severity::Error,
+            path,
+            None,
+            "skill directory links outside the repo; it was skipped, not read",
+        )
+    }));
+    Ok(Report::new(ws.config.suppress(findings)))
 }
 
 static NPM_RUN: LazyLock<Regex> = LazyLock::new(|| {
@@ -528,9 +537,10 @@ fn server_findings(ws: &Workspace) -> Vec<Finding> {
                 &server.config_path,
                 server.line,
                 format!(
-                    "MCP server \"{}\" ({}) is not pinned: {source}",
+                    "MCP server \"{}\" ({}) is not pinned: {}",
                     server.name,
-                    server.client.as_str()
+                    server.client.as_str(),
+                    crate::source::public_source(&source.to_string())
                 ),
             ));
         }
@@ -543,9 +553,10 @@ fn server_findings(ws: &Workspace) -> Vec<Finding> {
                 &server.config_path,
                 server.line,
                 format!(
-                    "MCP server \"{}\" ({}) uses plain http: {url}",
+                    "MCP server \"{}\" ({}) uses plain http: {}",
                     server.name,
-                    server.client.as_str()
+                    server.client.as_str(),
+                    crate::source::redact_url(url)
                 ),
             ));
         }
@@ -607,7 +618,8 @@ fn broad_permissions(root: &Path) -> Result<Vec<Finding>> {
     let rel = ".codex/config.toml";
     let path = root.join(rel);
     if let Some(text) = read_optional(&path)? {
-        let table: toml::Table = toml::from_str(&text).map_err(|e| parse_err(&path, e))?;
+        let table: toml::Table =
+            toml::from_str(&text).map_err(|e| crate::error::toml_err(&path, &text, &e))?;
         for (key, broad, why) in [
             (
                 "sandbox_mode",

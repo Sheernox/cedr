@@ -30,7 +30,7 @@
 <tr valign="top">
 <td>Picks the agent, model and effort for each kind of work from your <code>routes.toml</code>. Equally suited work goes to the plan with the most room left, and plans near their limits are skipped.</td>
 <td>Starts one reviewer per vendor, merges their reports, groups findings that point at the same place and decides the gate. Any P0 or P1 blocks; too few reports is never a silent pass.</td>
-<td>Lints your agent setup, pins every skill and MCP server in <code>cedr.lock</code>, and fails CI when a server's tools, descriptions or network hosts change after you pinned it.</td>
+<td>Lints your agent setup, pins every skill and MCP server in <code>.cedr/guard.lock</code>, and fails CI when a server's tools, descriptions or network hosts change after you pinned it.</td>
 </tr>
 </table>
 
@@ -131,10 +131,22 @@ $ cedr route verdict p-979e77351990 accepted
 | `cedr council merge <reports>...` | Merge their reports and decide the gate |
 | `cedr mcp` | Serve the Route and Council tools over MCP on stdio |
 | `cedr lint` | Find problems in a repo's agent setup |
-| `cedr lock` | Pin every skill and MCP server in `cedr.lock` |
-| `cedr verify` | Fail when the setup no longer matches `cedr.lock` (offline) |
+| `cedr lock` | Pin every skill and MCP server in `.cedr/guard.lock` |
+| `cedr verify` | Fail when the setup no longer matches the lock (offline) |
+| `cedr push` | Send a repo's pins and findings to your cedr.dev organization's Guard page |
 
-Run `cedr <command> --help` for every option. Every config field, output shape and exit code is specified in the design docs for [Route](docs/route.md), [Council](docs/council.md) and [Guard](docs/design.md).
+Run `cedr <command> --help` for every option, and `cedr completions bash|zsh|fish|powershell|elvish` for a shell completion script. Every config field, output shape and exit code is specified in the design docs for [Route](docs/route.md), [Council](docs/council.md) and [Guard](docs/design.md).
+
+## 🛡️ Check every pull request
+
+The Guard action installs a released `cedr` (checked against the release's `SHA256SUMS`), runs `cedr lint` and `cedr verify`, and shows each finding as an annotation on the pull request:
+
+```yaml
+- uses: actions/checkout@v5
+- uses: Sheernox/cedr@v0.3.0
+```
+
+Inputs: `version`, `path`, `strict`, `verify` (`auto`, `true` or `false`) and `push-org`, which with a `CEDR_API_KEY` secret also sends each result to the app. Repo-level settings, such as extra skill folders and checks to skip, go in `.cedr/guard.toml`. See the [Guard design](docs/design.md) for every field.
 
 ## 🔌 Use it from your agent
 
@@ -150,6 +162,7 @@ codex mcp add cedr -- cedr mcp
 - cedr never reads your agents' credentials and never calls a vendor API for you. Plan usage comes from your agents' own status line and CLI, or from a feed you point it at.
 - Picks, verdicts and stats stay on your machine. `cedr route sync` sends them to cedr.dev only when you add a `[sync]` section and a cedr.dev API key.
 - `cedr lock` runs an MCP server only when you pass `--introspect`, and warns before it does.
+- `cedr push` sends names, versions, hashes and findings, never file contents, environment values or how a server is started.
 
 ## 🤝 Contributing
 

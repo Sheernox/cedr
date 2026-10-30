@@ -82,9 +82,12 @@ pub enum RouteCommand {
         /// Harness to skip (it just failed on a limit or capacity); repeatable
         #[arg(long)]
         avoid: Vec<String>,
-        #[arg(long, conflicts_with = "escalates")]
+        /// Pick a judge for the recorded draft pick P (this route must be the draft route's judge)
+        #[arg(long, value_name = "P", conflicts_with = "escalates")]
         judges: Option<String>,
-        #[arg(long)]
+        /// Pick where draft pick P escalates after its judge said ESCALATE (this route must be the
+        /// draft route's escalate)
+        #[arg(long, value_name = "P")]
         escalates: Option<String>,
         #[arg(long, value_enum, default_value_t = PickFormat::Text)]
         format: PickFormat,
@@ -126,8 +129,10 @@ pub enum RouteCommand {
     },
     /// Picks and verdicts per route and model
     Stats {
-        #[arg(long)]
+        /// Count picks made on or after this day (YYYY-MM-DD, UTC)
+        #[arg(long, value_name = "YYYY-MM-DD")]
         since: Option<String>,
+        /// Only this route
         #[arg(long)]
         route: Option<String>,
         #[arg(long, value_enum, default_value_t = ListFormat::Text)]
@@ -135,8 +140,10 @@ pub enum RouteCommand {
     },
     /// Latest picks and council results
     History {
+        /// Only this route
         #[arg(long)]
         route: Option<String>,
+        /// Records to show, newest first (at most 500)
         #[arg(long, default_value_t = 20)]
         limit: usize,
         #[arg(long, value_enum, default_value_t = ListFormat::Text)]
@@ -155,8 +162,10 @@ pub enum RouteCommand {
     },
     /// Push history, pull the org's shared routes and send this machine's snapshot to the cedr.dev app
     Sync {
+        /// Only send history; do not pull routes or send the snapshot
         #[arg(long, conflicts_with = "pull_only")]
         push_only: bool,
+        /// Only pull the org's shared routes
         #[arg(long)]
         pull_only: bool,
         /// Print only errors (background syncs)

@@ -295,6 +295,33 @@ impl fmt::Display for Source {
     }
 }
 
+/// A URL without its user info, query or fragment, which can carry tokens: what output and
+/// pushes may show of a remote server.
+pub fn redact_url(url: &str) -> String {
+    let url = url.split(['?', '#']).next().unwrap_or_default();
+    let (scheme, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (format!("{scheme}://"), rest),
+        None => (String::new(), url),
+    };
+    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    let host = authority.rsplit('@').next().unwrap_or_default();
+    format!("{scheme}{host}{path}")
+}
+
+/// A source as findings and `cedr push` show it: a `url:` source through [`redact_url`], and a
+/// `command:` source as its program name only, so neither a token nor a local path leaves the
+/// machine. Other sources are unchanged.
+pub fn public_source(source: &str) -> String {
+    if let Some(url) = source.strip_prefix("url:") {
+        return format!("url:{}", redact_url(url));
+    }
+    if let Some(command) = source.strip_prefix("command:") {
+        let program = command.rsplit(['/', '\\']).next().unwrap_or_default();
+        return format!("command:{program}");
+    }
+    source.to_string()
+}
+
 impl FromStr for Source {
     type Err = Error;
 

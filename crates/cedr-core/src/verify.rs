@@ -1,16 +1,22 @@
-//! `cedr verify`: compares the repo with its `cedr.lock` without touching the network.
+//! `cedr verify`: compares the repo with its lock without touching the network.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::discovery::{self, Client};
 use crate::finding::{Finding, Report, Rule, Severity};
-use crate::lock::{self, LOCK_FILE};
-use crate::source::Source;
+use crate::lock;
+use crate::source::{Source, public_source};
 use crate::{Result, skill};
 
-pub fn verify(root: &Path) -> Result<Report> {
-    let lock = lock::read_lock(root)?;
+pub struct Verification {
+    pub report: Report,
+    /// Skill directories skipped because they link outside the repo.
+    pub skipped: Vec<String>,
+}
+
+pub fn verify(root: &Path) -> Result<Verification> {
+    let (lock, lock_file) = lock::read_lock(root)?;
     let ws = discovery::discover(root)?;
     let mut findings = Vec::new();
     let error = |rule, path: &str, line, message: String| {
@@ -49,7 +55,7 @@ pub fn verify(root: &Path) -> Result<Report> {
                 &dir.path,
                 None,
                 format!(
-                    "skill \"{}\" was added and is not in {LOCK_FILE}",
+                    "skill \"{}\" was added and is not in {lock_file}",
                     dir.dir_name
                 ),
             ));
@@ -66,7 +72,7 @@ pub fn verify(root: &Path) -> Result<Report> {
         let Some(server) = current_servers.get(&(entry.client, entry.name.as_str())) else {
             findings.push(error(
                 Rule::Cv003,
-                LOCK_FILE,
+                lock_file,
                 None,
                 format!("{label} was removed since it was pinned"),
             ));
@@ -95,7 +101,11 @@ pub fn verify(root: &Path) -> Result<Report> {
                 Rule::Cv004,
                 &server.config_path,
                 server.line,
-                format!("{label} source changed: {} -> {current}", entry.source),
+                format!(
+                    "{label} source changed: {} -> {}",
+                    public_source(&entry.source),
+                    public_source(&current.to_string())
+                ),
             ));
         }
     }
@@ -110,12 +120,15 @@ pub fn verify(root: &Path) -> Result<Report> {
                 &server.config_path,
                 server.line,
                 format!(
-                    "MCP server \"{}\" ({}) was added and is not in {LOCK_FILE}",
+                    "MCP server \"{}\" ({}) was added and is not in {lock_file}",
                     server.name,
                     server.client.as_str()
                 ),
             ));
         }
     }
-    Ok(Report::new(findings))
+    Ok(Verification {
+        report: Report::new(findings),
+        skipped: ws.skipped,
+    })
 }

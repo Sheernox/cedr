@@ -57,12 +57,14 @@ impl ChangeSeverity {
 /// `detail` is the host or capability for egress and capability changes, the
 /// new description for `description_changed`, the new schema for
 /// `schema_changed`, and the tool's description for `tool_added` and
-/// `tool_removed` (empty when there is none).
+/// `tool_removed` (empty when there is none). `before` is the old description
+/// or schema for `description_changed` and `schema_changed`, `None` otherwise.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Change {
     pub kind: ChangeKind,
     pub tool: Option<String>,
     pub detail: String,
+    pub before: Option<String>,
     pub severity: ChangeSeverity,
 }
 
@@ -81,7 +83,8 @@ impl Diff {
         serde_json::to_string(self).expect("diff serializes")
     }
 
-    /// One change per line: `severity kind tool: detail`.
+    /// One change per line, `severity kind tool: detail`, and a `  was: <before>` line under
+    /// changed descriptions and schemas.
     pub fn to_text(&self) -> String {
         let mut out = format!("{} -> {}\n", self.from, self.to);
         for c in &self.changes {
@@ -96,6 +99,9 @@ impl Diff {
                 c.severity.as_str(),
                 c.kind.as_str()
             ));
+            if let Some(before) = &c.before {
+                out.push_str(&format!("  was: {}\n", before.replace('\n', " ")));
+            }
         }
         out
     }
@@ -109,9 +115,18 @@ pub fn diff(old: &Surface, new: &Surface) -> Diff {
             kind,
             tool: tool.map(str::to_string),
             detail: detail.to_string(),
+            before: None,
             severity,
         })
     };
+    let changed = |kind, tool: &str, detail: String, before: String, severity| Change {
+        kind,
+        tool: Some(tool.to_string()),
+        detail,
+        before: Some(before),
+        severity,
+    };
+    let mut edits = Vec::new();
     let old_tools: BTreeMap<&str, &Tool> = old.tools.iter().map(|t| (t.name.as_str(), t)).collect();
     let new_tools: BTreeMap<&str, &Tool> = new.tools.iter().map(|t| (t.name.as_str(), t)).collect();
     let text = |s: &Option<String>| s.clone().unwrap_or_default();
@@ -132,20 +147,22 @@ pub fn diff(old: &Surface, new: &Surface) -> Diff {
                     } else {
                         ChangeSeverity::Medium
                     };
-                    push(
+                    edits.push(changed(
                         ChangeKind::DescriptionChanged,
-                        Some(name),
-                        &detail,
+                        name,
+                        detail,
+                        text(&before.description),
                         severity,
-                    );
+                    ));
                 }
                 if before.schema != tool.schema {
-                    push(
+                    edits.push(changed(
                         ChangeKind::SchemaChanged,
-                        Some(name),
-                        &text(&tool.schema),
+                        name,
+                        text(&tool.schema),
+                        text(&before.schema),
                         ChangeSeverity::Medium,
-                    );
+                    ));
                 }
             }
         }
@@ -190,6 +207,7 @@ pub fn diff(old: &Surface, new: &Surface) -> Diff {
             ChangeSeverity::Low,
         );
     }
+    changes.extend(edits);
     changes.sort_by(|a, b| {
         (a.severity, a.kind, &a.tool, &a.detail).cmp(&(b.severity, b.kind, &b.tool, &b.detail))
     });

@@ -59,8 +59,12 @@ impl Registry {
         }
         let url = format!("{REGISTRY}/{}/{version}", name.replacen('/', "%2F", 1));
         let body = self.get(&url, MAX_METADATA_BYTES)?;
-        serde_json::from_slice(&body)
-            .map_err(|e| Error::Registry(format!("{url}: unexpected registry response: {e}")))
+        serde_json::from_slice(&body).map_err(|e| {
+            Error::Registry(format!(
+                "{}: unexpected registry response: {e}",
+                url_label(&url)
+            ))
+        })
     }
 
     /// Downloads a version's tarball and checks it against `dist.integrity`.
@@ -74,7 +78,7 @@ impl Registry {
         if !doc.dist.tarball.starts_with("https://") {
             return Err(Error::Registry(format!(
                 "tarball URL is not https: {}",
-                doc.dist.tarball
+                url_label(&doc.dist.tarball)
             )));
         }
         let bytes = self.get(&doc.dist.tarball, MAX_TARBALL_BYTES)?;
@@ -83,23 +87,25 @@ impl Registry {
     }
 
     fn get(&self, url: &str, limit: u64) -> Result<Vec<u8>> {
+        // Signed tarball URLs carry credentials in their query: messages name scheme and host only.
+        let label = url_label(url);
         let response = self
             .client
             .get(url)
             .send()
-            .map_err(|e| Error::Registry(format!("{url}: {e}")))?;
+            .map_err(|e| Error::Registry(format!("{label}: {}", e.without_url())))?;
         let status = response.status();
         if !status.is_success() {
-            return Err(Error::Registry(format!("{url}: HTTP {status}")));
+            return Err(Error::Registry(format!("{label}: HTTP {status}")));
         }
         let mut body = Vec::new();
         response
             .take(limit + 1)
             .read_to_end(&mut body)
-            .map_err(|e| Error::Registry(format!("{url}: {e}")))?;
+            .map_err(|e| Error::Registry(format!("{label}: {e}")))?;
         if body.len() as u64 > limit {
             return Err(Error::Registry(format!(
-                "{url}: response is larger than {limit} bytes"
+                "{label}: response is larger than {limit} bytes"
             )));
         }
         Ok(body)
@@ -212,9 +218,26 @@ fn source_files_limited(
     Ok(files)
 }
 
+/// A URL as error messages may name it: scheme and host only, never its path or query.
+fn url_label(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(u) => format!("{}://{}", u.scheme(), u.host_str().unwrap_or("")),
+        Err(_) => "an invalid URL".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_labels_keep_scheme_and_host_only() {
+        assert_eq!(
+            url_label("https://cdn.example.net/pkg.tgz?X-Sig=s3cret"),
+            "https://cdn.example.net"
+        );
+        assert_eq!(url_label("not a url"), "an invalid URL");
+    }
 
     fn tarball(entries: &[(&str, u8, usize)]) -> Vec<u8> {
         let mut builder = tar::Builder::new(Vec::new());

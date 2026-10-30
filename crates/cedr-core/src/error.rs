@@ -37,3 +37,67 @@ pub(crate) fn parse_err(path: &Path, message: impl std::fmt::Display) -> Error {
         message: message.to_string(),
     }
 }
+
+/// A TOML error as `line L, column C: <reason>`, without the source excerpt the parser adds and
+/// with any URL in the reason cut to scheme and host, so a token in the file never reaches output.
+pub(crate) fn toml_err(path: &Path, text: &str, e: &toml::de::Error) -> Error {
+    let reason = redact_urls(e.message());
+    let message = match e.span() {
+        Some(span) => {
+            let before = &text[..span.start.min(text.len())];
+            let line = before.matches('\n').count() + 1;
+            let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+            format!("line {line}, column {column}: {reason}")
+        }
+        None => reason,
+    };
+    parse_err(path, message)
+}
+
+/// Every `scheme://...` in `s` cut to `scheme://host`.
+fn redact_urls(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find("://") {
+        let (head, tail) = rest.split_at(i + 3);
+        out.push_str(head);
+        let end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | ')' | ']' | '>'))
+            .unwrap_or(tail.len());
+        let authority = &tail[..end];
+        let host = authority
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or("")
+            .rsplit('@')
+            .next()
+            .unwrap_or("");
+        out.push_str(host);
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+mod toml_tests {
+    use super::*;
+
+    #[test]
+    fn toml_errors_drop_the_excerpt_and_url_secrets() {
+        let text = "version = 1\nurl = \"https://u:p{}h.example/x?token=s3cret\"\nbad =\n";
+        let text = text.replace("{}", &'@'.to_string());
+        let e = toml::from_str::<toml::Table>(&text).unwrap_err();
+        let shown = toml_err(Path::new("f.toml"), &text, &e).to_string();
+        assert!(shown.starts_with("f.toml: line 3, column"), "{shown}");
+        assert!(!shown.contains("s3cret"), "{shown}");
+        assert_eq!(
+            redact_urls(
+                "see \"https://u:p{}h.example/x?t=1\" now"
+                    .replace("{}", &'@'.to_string())
+                    .as_str()
+            ),
+            "see \"https://h.example\" now"
+        );
+    }
+}

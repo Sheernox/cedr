@@ -1,6 +1,48 @@
 # Changelog
 
-Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server) and [docs/council.md](docs/council.md) (Council); the user guide is [cedr.dev/docs/route](https://cedr.dev/docs/route).
+Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council) and [docs/design.md](docs/design.md) (Guard); the user guides are [cedr.dev/docs/route](https://cedr.dev/docs/route) and [cedr.dev/docs/guard](https://cedr.dev/docs/guard).
+
+## v0.3.0 (2026-10-30)
+
+**v0.3.0** · 9 changes from 1 contributor
+
+### Highlights
+Guard is back, in preview. Check the skills and MCP servers your agents load on every pull request with the new GitHub Action, keep all of Guard's files in `.cedr/`, tune lint per repo with `.cedr/guard.toml`, and send each repo's pins and findings to the app's new Guard page with `cedr push`. Upgrade step: run `cedr lock` once in each locked repo; it moves `cedr.lock` to `.cedr/guard.lock` (0.3.0 still reads the old path). The hosted MCP server moved to `https://mcp.cedr.dev/mcp`.
+
+### Fixes
+- Findings, registry errors and config parse errors no longer show a URL's user info, query or fragment, and parse errors no longer quote the offending line.
+- A skill folder that links outside the repo is reported as CG010 and skipped, instead of stopping the whole run.
+- `cedr lock` writes through a temporary file and never writes through a link that leaves the repo.
+- Piping output into a command that exits early (`cedr route history | head`) ends quietly instead of panicking.
+- Every flag has help text, and a missing `routes.toml` points at a starter file.
+
+### Features
+- **GitHub Action.** `uses: Sheernox/cedr@v0.3.0` installs a released `cedr` checked against `SHA256SUMS`, then runs `cedr lint` and `cedr verify` with findings as pull request annotations. Inputs: `version`, `path`, `strict`, `verify` and `push-org`. ([docs](docs/design.md#github-action), [guide](https://cedr.dev/docs/guard#check-every-pull-request))
+- **`--format github`.** `cedr lint` and `cedr verify` print GitHub Actions workflow commands with a summary line. ([docs](docs/design.md#lint-rules))
+- **`.cedr/` repo files and `.cedr/guard.toml`.** The lock lives at `.cedr/guard.lock` next to `.cedr/surfaces/`. `guard.toml` adds skill folders and skips lint rules everywhere or under some paths; `verify` is never suppressed. ([docs](docs/design.md#repo-files))
+- **`cedr push`.** Sends a repo's pinned skills and servers, its lint findings and its drift from the lock to your cedr.dev organization's Guard page. It never sends file contents, env values, launch commands or URL queries; in CI, `--org` alone never reads the checkout's config. A list cut to the app's limits prints a warning. ([docs](docs/design.md#push))
+- **Old text in `cedr diff`.** Description and schema changes carry `before`, and text output prints it on a `was:` line. ([docs](docs/design.md#diff))
+- **`cedr completions <shell>`.** Completion scripts for bash, zsh, fish, PowerShell and Elvish, plus examples in `cedr --help`.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* docs(guard): contract the .cedr/ repo files, guard.toml, CG010, github annotations, cedr push and the action
+* feat(guard): keep guard files in .cedr/, add guard.toml, CG010, github annotations, cedr push and the action
+* docs(guard): describe the .cedr/ lock, cedr push and the github action in the readmes
+* fix(guard): redact url secrets in findings, keep lock writes inside the repo, and stop ci config redirecting the push key
+* fix(cli): keep url secrets out of registry and toml errors, explain every flag, and end quietly on a closed pipe
+* fix(guard): match the app's 2 MiB push limit and record its per-org storage cap
+* feat(guard): warn when cedr push cuts a list to the app's limits
+* docs: changelog for 0.3.0
+* chore(release): cedr 0.3.0
+
+Changes land in the cedr.dev source tree and arrive here together in one export commit, so this release has no pull requests of its own.
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.2.0...v0.3.0
+
+</details>
 
 ## v0.2.0 (2026-10-30)
 

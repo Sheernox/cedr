@@ -31,9 +31,11 @@ pub enum CouncilCommand {
     },
     /// Recorded council outcomes per route
     Stats {
+        /// Only this council route
         #[arg(long)]
         route: Option<String>,
-        #[arg(long)]
+        /// Count merges on or after this day (YYYY-MM-DD, UTC)
+        #[arg(long, value_name = "YYYY-MM-DD")]
         since: Option<String>,
         #[arg(long, value_enum, default_value_t = route::ListFormat::Text)]
         format: route::ListFormat,
@@ -46,8 +48,10 @@ pub enum CouncilCommand {
         /// Council route whose quorum and blocking severity apply
         #[arg(long)]
         route: Option<String>,
+        /// The run id `council plan` printed, so the result joins that plan in history
         #[arg(long)]
         run: Option<String>,
+        /// Do not record the result in the local history (merges record by default)
         #[arg(long)]
         no_record: bool,
         /// Quorum to use instead of the route's (default 2)

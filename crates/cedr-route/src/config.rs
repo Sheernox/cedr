@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::error::{Error, Result, io_err, parse_err};
+use crate::error::{Error, Result, io_err, parse_err, toml_err};
 
 pub const CONFIG_VERSION: i64 = 1;
 
@@ -330,7 +330,7 @@ pub struct Loaded {
 impl Config {
     /// Parses and validates config text; `path` only labels errors.
     pub fn parse(text: &str, path: &Path) -> Result<Config> {
-        let config: Config = toml::from_str(text).map_err(|e| parse_err(path, e))?;
+        let config: Config = toml::from_str(text).map_err(|e| toml_err(path, text, &e))?;
         // A file that takes its harnesses from the org's shared routes names them in its readers
         // before they are loaded; `load` checks those readers again against the merged config.
         let overlay = config
@@ -633,7 +633,8 @@ pub fn locate(explicit: Option<&Path>, cwd: &Path) -> Result<PathBuf> {
         return Ok(user);
     }
     Err(Error::Config(format!(
-        "no routes.toml found: pass --config, set CEDR_ROUTES, add .cedr/routes.toml, or create {}",
+        "no routes.toml found: pass --config, set CEDR_ROUTES, add .cedr/routes.toml, or create {} \
+         (a starter file and the app's generator: https://cedr.dev/docs/route)",
         user.display()
     )))
 }

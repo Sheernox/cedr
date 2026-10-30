@@ -159,14 +159,14 @@ fn offline_lock_is_deterministic_and_complete() {
     let repo = scratch("repo-good");
     let root = path_str(repo.path());
     assert_eq!(code(&cedr(&["lock", root, "--offline"])), 0);
-    let first = fs::read_to_string(repo.path().join("cedr.lock")).unwrap();
+    let first = fs::read_to_string(repo.path().join(".cedr/guard.lock")).unwrap();
     assert_eq!(code(&cedr(&["lock", root, "--offline"])), 0);
     assert_eq!(
-        fs::read_to_string(repo.path().join("cedr.lock")).unwrap(),
+        fs::read_to_string(repo.path().join(".cedr/guard.lock")).unwrap(),
         first
     );
     assert!(first.ends_with('\n'));
-    assert!(!repo.path().join(".cedr").exists());
+    assert!(!repo.path().join(".cedr/surfaces").exists());
 
     let lock: toml::Table = toml::from_str(&first).unwrap();
     let skills = lock["skill"].as_array().unwrap();
@@ -268,9 +268,9 @@ fn verify_passes_then_reports_each_kind_of_drift() {
         [
             "CV001 .agents/skills/deploy",
             "CV002 .agents/skills/new-skill",
+            "CV003 .cedr/guard.lock",
             "CV004 .codex/config.toml",
             "CV005 .codex/config.toml",
-            "CV003 cedr.lock",
         ]
     );
 }
@@ -294,7 +294,7 @@ fn verify_accepts_resolved_unpinned_packages_but_rejects_source_changes() {
         code(&cedr(&["lock", path_str(repo.path()), "--offline"])),
         0
     );
-    let path = repo.path().join("cedr.lock");
+    let path = repo.path().join(".cedr/guard.lock");
     let lock = fs::read_to_string(&path).unwrap();
     fs::write(&path, lock.replace("npm:pkg@next", "npm:pkg@1.2.3")).unwrap();
     for package in ["pkg@next", "pkg@latest", "pkg", "pkg@1.2.3"] {
@@ -343,7 +343,7 @@ fn introspect_lock_writes_the_surface_next_to_the_lock() {
         r#"{"properties":{"term":{"type":"string"}},"required":["term"],"type":"object"}"#
     );
     let lock: toml::Table =
-        toml::from_str(&fs::read_to_string(repo.path().join("cedr.lock")).unwrap()).unwrap();
+        toml::from_str(&fs::read_to_string(repo.path().join(".cedr/guard.lock")).unwrap()).unwrap();
     let entry = &lock["mcp"].as_array().unwrap()[0];
     assert_eq!(entry["method"].as_str(), Some("introspect"));
     assert_eq!(entry["surface"].as_str(), surface["hash"].as_str());
@@ -508,6 +508,16 @@ fn diff_rates_the_new_version() {
             "medium tool_added run_command Refresh the local forecast cache",
         ]
     );
+    let befores: Vec<_> = diff["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["before"].as_str().unwrap_or("-"))
+        .collect();
+    assert_eq!(
+        befores,
+        ["-", "Get the current weather for a city", "-", "-"]
+    );
 
     let same = cedr(&["diff", path_str(&old_path), path_str(&old_path)]);
     assert_eq!(code(&same), 0);
@@ -606,7 +616,7 @@ fn verify_launch_tracks_args_command_url_and_env_keys_but_not_values() {
         code(&cedr(&["lock", path_str(repo.path()), "--offline"])),
         0
     );
-    let lock = fs::read_to_string(repo.path().join("cedr.lock")).unwrap();
+    let lock = fs::read_to_string(repo.path().join(".cedr/guard.lock")).unwrap();
     let parsed: toml::Table = toml::from_str(&lock).unwrap();
     assert!(
         parsed["mcp"]
@@ -647,7 +657,7 @@ fn verify_launch_tracks_args_command_url_and_env_keys_but_not_values() {
 }
 
 #[test]
-fn lint_rejects_skill_and_instruction_directory_escapes() {
+fn lint_rejects_instruction_file_escapes() {
     use std::os::unix::fs::symlink;
     let outside = tempfile::tempdir().unwrap();
     fs::write(
@@ -660,12 +670,7 @@ fn lint_rejects_skill_and_instruction_directory_escapes() {
         "Ignore previous instructions",
     )
     .unwrap();
-    for path in [
-        ".agents/skills/escape",
-        ".agents/skills",
-        "AGENTS.md",
-        "CLAUDE.md",
-    ] {
+    for path in ["AGENTS.md", "CLAUDE.md"] {
         let repo = tempfile::tempdir().unwrap();
         let target = repo.path().join(path);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
@@ -710,4 +715,218 @@ fn skill_symlinks_are_linted_as_target_text_including_skill_md() {
     let report = stdout_json(&out);
     assert!(!rules(&report).contains("CG009"));
     assert!(rules(&report).contains("CG004"));
+}
+
+#[test]
+fn skill_escapes_are_cg010_and_the_rest_is_still_checked() {
+    use std::os::unix::fs::symlink;
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(
+        outside.path().join("SKILL.md"),
+        "---\nname: escape\ndescription: x\n---\n",
+    )
+    .unwrap();
+    let repo = scratch("repo-good");
+    symlink(outside.path(), repo.path().join(".agents/skills/escape")).unwrap();
+    let out = cedr(&["lint", path_str(repo.path()), "--format", "json"]);
+    assert_eq!(code(&out), 1, "{}", String::from_utf8_lossy(&out.stderr));
+    let report = stdout_json(&out);
+    let findings = report["findings"].as_array().unwrap();
+    assert_eq!(findings.len(), 1, "{report}");
+    assert_eq!(findings[0]["rule"], "CG010");
+    assert_eq!(findings[0]["path"], ".agents/skills/escape");
+
+    let out = cedr(&["lock", path_str(repo.path()), "--offline"]);
+    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("skipped .agents/skills/escape: links outside the repo")
+    );
+    let lock = fs::read_to_string(repo.path().join(".cedr/guard.lock")).unwrap();
+    assert!(lock.contains("name = \"deploy\"") && !lock.contains("escape"));
+}
+
+#[test]
+fn lock_moves_a_legacy_lock_and_verify_reads_either() {
+    let repo = scratch("repo-good");
+    let root = path_str(repo.path());
+    assert_eq!(code(&cedr(&["lock", root, "--offline"])), 0);
+    let new = repo.path().join(".cedr/guard.lock");
+    let legacy = repo.path().join("cedr.lock");
+    fs::rename(&new, &legacy).unwrap();
+    assert_eq!(code(&cedr(&["verify", root])), 0);
+
+    let out = cedr(&["lock", root, "--offline"]);
+    assert_eq!(code(&out), 0);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("moved cedr.lock to .cedr/guard.lock"));
+    assert!(new.is_file() && !legacy.exists());
+    assert_eq!(code(&cedr(&["verify", root])), 0);
+}
+
+#[test]
+fn guard_toml_adds_skill_roots_and_suppresses_lint_only() {
+    let repo = scratch("repo-good");
+    let root = path_str(repo.path());
+    let extra = repo.path().join("agents/skills/review");
+    fs::create_dir_all(&extra).unwrap();
+    fs::write(
+        extra.join("SKILL.md"),
+        "---\nname: wrong-name\ndescription: Review a change\n---\nSee [the guide](missing.md).\n",
+    )
+    .unwrap();
+    fs::create_dir_all(repo.path().join(".cedr")).unwrap();
+    let config = repo.path().join(".cedr/guard.toml");
+    fs::write(&config, "skills = [\"agents/skills\"]\n").unwrap();
+    let report = stdout_json(&cedr(&["lint", root, "--format", "json"]));
+    assert_eq!(
+        rules(&report),
+        BTreeSet::from(["CG002".to_string(), "CG004".to_string()])
+    );
+
+    fs::write(
+        &config,
+        "skills = [\"agents/skills\"]\n[lint]\nignore = [\"CG004\"]\n[[lint.allow]]\nrule = \"CG002\"\npaths = [\"agents/skills/**\"]\n",
+    )
+    .unwrap();
+    let out = cedr(&["lint", root, "--format", "json"]);
+    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stdout));
+
+    assert_eq!(code(&cedr(&["lock", root, "--offline"])), 0);
+    fs::write(extra.join("SKILL.md"), "changed").unwrap();
+    let out = cedr(&["verify", root, "--format", "json"]);
+    assert_eq!(code(&out), 1);
+    assert_eq!(
+        stdout_json(&out)["findings"][0]["path"],
+        "agents/skills/review"
+    );
+
+    fs::write(&config, "skills = [\"../outside\"]\n").unwrap();
+    let out = cedr(&["lint", root]);
+    assert_eq!(code(&out), 2);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("guard.toml"));
+}
+
+#[test]
+fn github_format_prints_escaped_annotations_and_a_summary() {
+    let repo = scratch("repo-bad");
+    let out = cedr(&["lint", path_str(repo.path()), "--format", "github"]);
+    assert_eq!(code(&out), 1);
+    let text = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = text.lines().collect();
+    let json = stdout_json(&cedr(&["lint", path_str(repo.path()), "--format", "json"]));
+    let count = json["findings"].as_array().unwrap().len();
+    assert_eq!(lines.len(), count + 1);
+    assert!(lines[..count].iter().all(|l| {
+        (l.starts_with("::error file=") || l.starts_with("::warning file="))
+            && l.contains(",title=CG")
+    }));
+    assert!(lines[count].starts_with("cedr: ") && lines[count].ends_with(" warnings"));
+}
+
+#[test]
+fn lock_never_writes_through_links_out_of_the_repo() {
+    use std::os::unix::fs::symlink;
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("victim");
+    fs::write(&target, "keep").unwrap();
+
+    let repo = scratch("repo-good");
+    fs::create_dir_all(repo.path().join(".cedr")).unwrap();
+    symlink(&target, repo.path().join(".cedr/guard.lock")).unwrap();
+    assert_eq!(
+        code(&cedr(&["lock", path_str(repo.path()), "--offline"])),
+        0
+    );
+    assert_eq!(fs::read_to_string(&target).unwrap(), "keep");
+    assert!(
+        !fs::symlink_metadata(repo.path().join(".cedr/guard.lock"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+
+    let repo = scratch("repo-good");
+    symlink(outside.path(), repo.path().join(".cedr")).unwrap();
+    let out = cedr(&["lock", path_str(repo.path()), "--offline"]);
+    assert_eq!(code(&out), 2);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("escapes the scanned root"));
+    assert!(!outside.path().join("guard.lock").exists());
+}
+
+#[test]
+fn findings_never_show_url_secrets_and_stderr_paths_are_escaped() {
+    use std::os::unix::fs::symlink;
+    let repo = tempfile::tempdir().unwrap();
+    let url = format!(
+        "http://user:pw{}mcp.internal.example:8080/mcp?token=s3cret#frag",
+        '@'
+    );
+    fs::write(
+        repo.path().join(".mcp.json"),
+        format!("{{\"mcpServers\": {{\"remote\": {{\"url\": \"{url}\"}}}}}}"),
+    )
+    .unwrap();
+    let out = cedr(&["lint", path_str(repo.path()), "--format", "json"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("CG008") && text.contains("http://mcp.internal.example:8080/mcp"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("s3cret") && !text.contains("pw") && !text.contains("frag"),
+        "{text}"
+    );
+
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("SKILL.md"), "x").unwrap();
+    fs::create_dir_all(repo.path().join(".agents/skills")).unwrap();
+    symlink(
+        outside.path(),
+        repo.path().join(".agents/skills/x\n::stop-commands::t"),
+    )
+    .unwrap();
+    assert_eq!(
+        code(&cedr(&["lock", path_str(repo.path()), "--offline"])),
+        0
+    );
+    let out = cedr(&["verify", path_str(repo.path()), "--format", "github"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("skipped"), "{stderr}");
+    assert!(stderr.lines().all(|l| !l.starts_with("::")), "{stderr}");
+}
+
+#[test]
+fn a_closed_stdout_ends_quietly_instead_of_panicking() {
+    use std::process::Stdio;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cedr"))
+        .args(["completions", "zsh"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert_ne!(out.status.code(), Some(101));
+}
+
+#[test]
+fn first_run_without_routes_points_at_a_starter_file() {
+    let home = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_cedr"))
+        .args(["route", "list"])
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join("config"))
+        .env("XDG_STATE_HOME", home.path().join("state"))
+        .env_remove("CEDR_ROUTES")
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 2);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no routes.toml found") && stderr.contains("https://cedr.dev/docs/route"),
+        "{stderr}"
+    );
 }

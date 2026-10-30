@@ -1,5 +1,6 @@
-//! `cedr.lock`: every skill and MCP server with its pin, plus the surface
-//! snapshots in `.cedr/surfaces/` next to it.
+//! `.cedr/guard.lock`: every skill and MCP server with its pin, plus the surface
+//! snapshots in `.cedr/surfaces/` next to it. A lock at the legacy root path
+//! `cedr.lock` is still read, and moved by the next `cedr lock`.
 
 use std::fs;
 use std::path::Path;
@@ -14,7 +15,9 @@ use crate::source::{Source, is_dist_tag};
 use crate::surface::{self, Method, Surface};
 use crate::{Result, introspect};
 
-pub const LOCK_FILE: &str = "cedr.lock";
+pub const LOCK_FILE: &str = ".cedr/guard.lock";
+/// Where 0.2.0 and earlier wrote the lock.
+pub const LEGACY_LOCK_FILE: &str = "cedr.lock";
 pub const SURFACE_DIR: &str = ".cedr/surfaces";
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -63,12 +66,17 @@ pub struct LockOutcome {
     pub lock: Lock,
     /// Servers recorded without a surface, and why.
     pub warnings: Vec<String>,
+    /// Skill directories skipped because they link outside the repo.
+    pub skipped: Vec<String>,
+    /// A legacy `cedr.lock` was removed in favour of `.cedr/guard.lock`.
+    pub moved: bool,
 }
 
 impl Lock {
     pub fn read(path: &Path) -> Result<Lock> {
         let text = fs::read_to_string(path).map_err(io_err(path))?;
-        let lock: Lock = toml::from_str(&text).map_err(|e| parse_err(path, e))?;
+        let lock: Lock =
+            toml::from_str(&text).map_err(|e| crate::error::toml_err(path, &text, &e))?;
         if lock.version != 1 {
             return Err(parse_err(
                 path,
@@ -163,8 +171,8 @@ pub fn surface_file_name(client: Client, name: &str) -> String {
     format!("{}.{safe}.json", client.as_str())
 }
 
-/// Builds the lock for `root`, writes `cedr.lock` and the surface files, and
-/// removes surface files no entry refers to any more.
+/// Builds the lock for `root`, writes `.cedr/guard.lock` and the surface files,
+/// removes surface files no entry refers to any more, and removes a legacy `cedr.lock`.
 pub fn lock(root: &Path, options: LockOptions) -> Result<LockOutcome> {
     let ws = discovery::discover(root)?;
     let mut skills = Vec::new();
@@ -217,8 +225,19 @@ pub fn lock(root: &Path, options: LockOptions) -> Result<LockOutcome> {
     };
     write_surfaces(root, &surfaces)?;
     let path = root.join(LOCK_FILE);
-    fs::write(&path, lock.to_toml()).map_err(io_err(&path))?;
-    Ok(LockOutcome { lock, warnings })
+    guard_dir(root, false)?;
+    write_atomic(&path, lock.to_toml().as_bytes())?;
+    let legacy = root.join(LEGACY_LOCK_FILE);
+    let moved = legacy.is_file();
+    if moved {
+        fs::remove_file(&legacy).map_err(io_err(&legacy))?;
+    }
+    Ok(LockOutcome {
+        lock,
+        warnings,
+        skipped: ws.skipped,
+        moved,
+    })
 }
 
 fn server_entry(
@@ -321,12 +340,12 @@ fn write_surfaces(root: &Path, surfaces: &[(String, Surface)]) -> Result<()> {
         }
     }
     let dir = root.join(SURFACE_DIR);
-    if !surfaces.is_empty() {
-        fs::create_dir_all(&dir).map_err(io_err(&dir))?;
+    if surfaces.is_empty() && !dir.exists() {
+        return Ok(());
     }
+    guard_dir(root, true)?;
     for (file, surface) in surfaces {
-        let path = dir.join(file);
-        fs::write(&path, surface.to_json_pretty()).map_err(io_err(&path))?;
+        write_atomic(&dir.join(file), surface.to_json_pretty().as_bytes())?;
     }
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -345,13 +364,65 @@ fn write_surfaces(root: &Path, surfaces: &[(String, Surface)]) -> Result<()> {
     Ok(())
 }
 
-/// Reads `cedr.lock` under `root`, explaining how to create one when absent.
-pub fn read_lock(root: &Path) -> Result<Lock> {
-    let path = root.join(LOCK_FILE);
-    if !path.exists() {
-        return Err(parse_err(&path, "not found; run cedr lock first"));
+/// Creates `.cedr/` (and `.cedr/surfaces/` with `surfaces`) under `root` and checks each stays
+/// inside the root, so a linked `.cedr` never sends a write or a removal elsewhere.
+fn guard_dir(root: &Path, surfaces: bool) -> Result<()> {
+    let canonical_root = fs::canonicalize(root).map_err(io_err(root))?;
+    let dirs: &[&str] = if surfaces {
+        &[".cedr", SURFACE_DIR]
+    } else {
+        &[".cedr"]
+    };
+    for rel in dirs {
+        let dir = root.join(rel);
+        match fs::create_dir(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(io_err(&dir)(e)),
+        }
+        discovery::ensure_inside(&canonical_root, &dir)?;
     }
-    Lock::read(&path)
+    Ok(())
+}
+
+/// Writes `path` through a temporary file in the same directory and a rename: a failed write
+/// never leaves a partial file, and a symlink at `path` is replaced, never written through.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{name}.tmp"));
+    let _ = fs::remove_file(&tmp);
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .and_then(|mut f| {
+            std::io::Write::write_all(&mut f, bytes)?;
+            f.sync_all()
+        })
+        .and_then(|()| fs::rename(&tmp, path));
+    if let Err(e) = written {
+        let _ = fs::remove_file(&tmp);
+        return Err(io_err(path)(e));
+    }
+    Ok(())
+}
+
+/// Reads the lock under `root` (`.cedr/guard.lock`, else the legacy `cedr.lock`) with its
+/// path relative to the root, explaining how to create one when neither exists.
+pub fn read_lock(root: &Path) -> Result<(Lock, &'static str)> {
+    for rel in [LOCK_FILE, LEGACY_LOCK_FILE] {
+        let path = root.join(rel);
+        if path.exists() {
+            return Ok((Lock::read(&path)?, rel));
+        }
+    }
+    Err(parse_err(
+        &root.join(LOCK_FILE),
+        "no lock: run cedr lock first",
+    ))
 }
 
 #[cfg(test)]

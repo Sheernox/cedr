@@ -371,15 +371,25 @@ fn clip(s: &str, max: usize) -> String {
 
 /// Sends the machine snapshot; the app keeps only the latest one per machine.
 pub fn send_machine(sync: &Sync, key: &str, body: &Value) -> Result<()> {
+    put_json(sync, key, "/route/machine", "snapshot", body)
+}
+
+/// Sends a repo's Guard inventory (docs/design.md, Push); the app keeps only the latest push
+/// per organization and repo.
+pub fn send_guard(sync: &Sync, key: &str, body: &Value) -> Result<()> {
+    put_json(sync, key, "/guard/repo", "push", body)
+}
+
+fn put_json(sync: &Sync, key: &str, path: &str, step: &str, body: &Value) -> Result<()> {
     let response = client(sync.url())?
-        .put(format!("{}/route/machine", sync.url()))
+        .put(format!("{}{path}", sync.url()))
         .bearer_auth(key)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(body.to_string())
         .send()
-        .map_err(|e| sync_err("snapshot", request_error(e)))?;
+        .map_err(|e| sync_err(step, request_error(e)))?;
     if !response.status().is_success() {
-        return Err(reply_error("snapshot", response, key));
+        return Err(reply_error(step, response, key));
     }
     Ok(())
 }

@@ -30,6 +30,7 @@ pub enum Rule {
     Cg007,
     Cg008,
     Cg009,
+    Cg010,
     Cv001,
     Cv002,
     Cv003,
@@ -49,12 +50,34 @@ impl Rule {
             Rule::Cg007 => "CG007",
             Rule::Cg008 => "CG008",
             Rule::Cg009 => "CG009",
+            Rule::Cg010 => "CG010",
             Rule::Cv001 => "CV001",
             Rule::Cv002 => "CV002",
             Rule::Cv003 => "CV003",
             Rule::Cv004 => "CV004",
             Rule::Cv005 => "CV005",
         }
+    }
+}
+
+/// Lint rules, in order; `.cedr/guard.toml` may name only these.
+pub const LINT_RULES: [Rule; 10] = [
+    Rule::Cg001,
+    Rule::Cg002,
+    Rule::Cg003,
+    Rule::Cg004,
+    Rule::Cg005,
+    Rule::Cg006,
+    Rule::Cg007,
+    Rule::Cg008,
+    Rule::Cg009,
+    Rule::Cg010,
+];
+
+impl Rule {
+    /// The lint rule with this id (`CG001`-`CG010`); verify checks are never named in config.
+    pub fn lint(id: &str) -> Option<Rule> {
+        LINT_RULES.into_iter().find(|r| r.as_str() == id)
     }
 }
 
@@ -141,6 +164,46 @@ impl Report {
         }
         out
     }
+
+    /// GitHub Actions workflow commands, one per finding, so a pull request shows them as
+    /// annotations, then a `cedr: <n> errors, <m> warnings` summary line.
+    pub fn to_github(&self) -> String {
+        let mut out = String::new();
+        for f in &self.findings {
+            let mut props = format!("file={}", github_property(&f.path));
+            if let Some(line) = f.line {
+                props.push_str(&format!(",line={line}"));
+            }
+            props.push_str(&format!(",title={}", f.rule.as_str()));
+            out.push_str(&format!(
+                "::{} {props}::{}\n",
+                f.severity.as_str(),
+                github_data(&f.message)
+            ));
+        }
+        let errors = self
+            .findings
+            .iter()
+            .filter(|f| f.severity == Severity::Error)
+            .count();
+        out.push_str(&format!(
+            "cedr: {errors} errors, {} warnings\n",
+            self.findings.len() - errors
+        ));
+        out
+    }
+}
+
+/// A workflow command's message, escaped as the runner expects.
+fn github_data(s: &str) -> String {
+    s.replace('%', "%25")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A")
+}
+
+/// A workflow command property value: the message escapes plus `:` and `,`.
+fn github_property(s: &str) -> String {
+    github_data(s).replace(':', "%3A").replace(',', "%2C")
 }
 
 /// 1-based line number of a byte offset.
