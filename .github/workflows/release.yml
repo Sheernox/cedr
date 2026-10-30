@@ -65,6 +65,11 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      # Only CHANGELOG.md: its entry for the tag is the release notes. Checked out first, since checkout cleans the workspace.
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -73,7 +78,13 @@ jobs:
       - uses: actions/attest-build-provenance@v2
         with:
           subject-path: dist/cedr-*
+      - name: Release notes from CHANGELOG.md
+        run: |
+          # The tag's entry, from the line after its "## vX.Y.Z (" heading to the next release heading.
+          awk -v v="${GITHUB_REF_NAME#v}" '$0 ~ "^## v" v " " {f=1; next} f && /^## v/ {exit} f' CHANGELOG.md \
+            | sed -e '/./,$!d' > "$RUNNER_TEMP/notes.md"
+          [ -s "$RUNNER_TEMP/notes.md" ] || { echo "::error title=release::CHANGELOG.md has no entry for $GITHUB_REF_NAME"; exit 1; }
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "cedr $GITHUB_REF_NAME" --generate-notes --verify-tag
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "cedr $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
