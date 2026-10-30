@@ -424,6 +424,10 @@ pub fn lock() -> Result<Option<Lock>> {
 }
 
 fn lock_at(path: &Path, now: SystemTime) -> Result<Option<Lock>> {
+    lock_stale_after(path, now, LOCK_STALE)
+}
+
+fn lock_stale_after(path: &Path, now: SystemTime, stale_after: Duration) -> Result<Option<Lock>> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(io_err(dir))?;
     }
@@ -445,7 +449,7 @@ fn lock_at(path: &Path, now: SystemTime) -> Result<Option<Lock>> {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 let stale = std::fs::metadata(path)
                     .and_then(|m| m.modified())
-                    .map(|t| now.duration_since(t).unwrap_or_default() > LOCK_STALE)
+                    .map(|t| now.duration_since(t).unwrap_or_default() > stale_after)
                     .unwrap_or(true);
                 if !stale || attempt == 1 {
                     return Ok(None);
@@ -537,6 +541,13 @@ pub fn monitor_auto_lock() -> Result<Option<Lock>> {
 /// Validates a destination without making a request, using Route's transport policy.
 pub fn validate_url(url: &str) -> Result<()> {
     client(url).map(|_| ())
+}
+
+/// A nonce-protected lock on `$XDG_STATE_HOME/cedr/<name>`, for other background CLI work (telemetry
+/// flushes, self-updates) that must run one at a time per machine. `stale_after` must exceed the
+/// longest the holder can run, or a second holder takes it over while the first still works.
+pub fn state_lock(name: &str, stale_after: Duration) -> Result<Option<Lock>> {
+    lock_stale_after(&state_file(name), SystemTime::now(), stale_after)
 }
 
 /// An independent nonce-protected lock for monitor pushes.

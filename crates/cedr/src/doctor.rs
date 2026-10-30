@@ -265,12 +265,22 @@ pub fn checks(root: &Path) -> Vec<Check> {
                     crate::common::clip(tag, 64)
                 );
                 check.fix = if newer {
-                    Some("Install the latest cedr release".into())
+                    Some("Run cedr update".into())
                 } else {
                     None
                 };
             }
         }
+    }
+    if let Some(error) = crate::update::last_error()
+        && let Some(check) = out.iter_mut().find(|c| c.id == "cli.version")
+    {
+        check.state = "warn".into();
+        check.message = format!(
+            "{}; the last automatic update failed: {error}",
+            check.message
+        );
+        check.fix = Some("Run cedr update".into());
     }
     let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
     let statusline = std::fs::read(home.join(".claude/settings.json"))
@@ -590,6 +600,11 @@ pub fn run(args: Args) -> Result<ExitCode, String> {
     }
     let checks = checks(&args.path);
     let failures = checks.iter().filter(|c| c.state == "fail").count();
+    crate::telemetry::count("doctor_fail", failures);
+    crate::telemetry::count(
+        "doctor_warn",
+        checks.iter().filter(|c| c.state == "warn").count(),
+    );
     match args.format {
         crate::Format::Json => println!("{}", json!({"checks":checks})),
         crate::Format::Text => {

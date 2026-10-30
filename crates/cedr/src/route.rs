@@ -354,6 +354,7 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
                 sources.readings.as_deref(),
                 sources.models.as_deref(),
             )?;
+            crate::telemetry::count("route_routes", session.loaded.config.routes.len());
             let mut p = session.context().pick(&route, size.into(), &avoid)?;
             history::link_pick(
                 &history::default_path(),

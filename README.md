@@ -77,6 +77,8 @@ To build from source instead, use a current stable [Rust toolchain](https://rust
 cargo install --locked --git https://github.com/Sheernox/cedr cedr
 ```
 
+From 0.5.0 on, cedr keeps itself up to date: once a day it checks for a release in the background, verifies the archive against `SHA256SUMS` and replaces itself. `cedr update` updates right away, `cedr update --check` only reports, and `cedr update --auto off` (or `CEDR_NO_AUTO_UPDATE=1`) turns the daily update off. It never updates in CI, and a `cargo install` tells you to update with cargo instead. See [docs/update.md](docs/update.md).
+
 ## 🚀 Quick start
 
 **1. Describe your plans and routes** in `~/.config/cedr/routes.toml`. The [Route page](https://cedr.dev/docs/route/) in the cedr.dev app can generate this file for you.
@@ -150,6 +152,8 @@ $ cedr route verdict p-979e77351990 accepted
 | `cedr verify` | Fail when the setup no longer matches the lock (offline) |
 | `cedr outdated` | Inspect newer npm versions and their surface changes without running them |
 | `cedr push` | Send pins and findings to your organization's Guard page; `--updates` includes npm updates |
+| `cedr update` | Install the latest release now; `--check` only reports, `--auto off` stops the daily update |
+| `cedr telemetry status\|off\|on` | Show or change whether cedr sends anonymous usage data |
 
 Run `cedr <command> --help` for every option, and `cedr completions bash|zsh|fish|powershell|elvish` for a shell completion script. Every config field, output shape and exit code is specified in the design docs for [Route](docs/route.md), [Council](docs/council.md) and [Guard](docs/design.md).
 
@@ -181,6 +185,7 @@ codex mcp add cedr -- cedr mcp
 - Picks, verdicts and stats stay on your machine. `cedr route sync` sends them to cedr.dev only when you add a `[sync]` section and a cedr.dev API key.
 - `cedr lock` runs an MCP server only when you pass `--introspect`, and warns before it does.
 - `cedr push` sends names, versions, hashes and findings, never file contents, environment values or how a server is started.
+- cedr sends anonymous usage data (command names, exit codes, timing, version, OS and which agents are installed) with a random install ID, after telling you on its first run. Never arguments, paths, repo names or code. `cedr telemetry off`, `CEDR_TELEMETRY=0` or `DO_NOT_TRACK=1` turn it off. Every field: [docs/telemetry.md](docs/telemetry.md).
 
 ## Sync
 

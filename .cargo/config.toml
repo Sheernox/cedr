@@ -1,0 +1,5 @@
+# Builds run from this checkout (cargo test, cargo run) never send usage data or replace
+# themselves; tests that cover those turn them back on explicitly. Installed binaries are unaffected.
+[env]
+CEDR_TELEMETRY = "0"
+CEDR_NO_AUTO_UPDATE = "1"

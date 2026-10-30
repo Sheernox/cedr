@@ -1,6 +1,33 @@
 # Changelog
 
-Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor) and [docs/doctor.md](docs/doctor.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
+Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
+
+## v0.5.0 (2026-10-30)
+
+![cedr v0.5.0: self-updating](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.5.0.png)
+
+**v0.5.0** · 5 changes from 1 contributor
+
+### Highlights
+cedr now keeps itself up to date. `cedr update` installs the latest release after checking it against the release's SHA-256 checksums and test-running the new binary, and once a day cedr does the same in the background. It never updates itself in CI, and an install from `cargo install` or in a directory you cannot write to tells you how to update instead. cedr also sends anonymous usage data, so we can see which commands, platforms and agents matter: the first run says what is sent, and `cedr telemetry off` turns it off. **Upgrade step:** this is the last manual upgrade. Download 0.5.0 as before and replace your `cedr`; from here on it updates itself.
+
+### Features
+- **`cedr update`** finds the latest stable release, downloads this platform's archive, checks it against `SHA256SUMS`, confirms the new binary starts and reports the right version, then swaps it in (an atomic rename on Linux and macOS; on Windows the old binary is moved aside and back on failure). `--check` only reports, `--version X.Y.Z` installs a particular release, older ones included, and `--format json` prints the result for scripts. Contract: [docs/update.md](https://github.com/Sheernox/cedr/blob/main/docs/update.md).
+- **Daily background update**, on by default: at most once a day a command starts the check in the background, never delaying it, and the next command prints `cedr: updated to 0.5.x`. It only moves forward to a stable release. Turn it off with `cedr update --auto off` or `CEDR_NO_AUTO_UPDATE=1`; a failed update shows in `cedr doctor`, whose version check now points at `cedr update`.
+- **Anonymous usage data**: each command records its name, exit code, duration, the cedr version, OS and architecture, which coding agents have their settings folder on the machine, and a few counts, with a random install ID that is not linked to you or your account. Never arguments, paths, repo names, error text or code. Events are sent in the background at most once an hour. `cedr telemetry status` shows what is on; `cedr telemetry off`, `CEDR_TELEMETRY=0` or `DO_NOT_TRACK=1` turn it off, and `off` deletes the install ID and anything not yet sent. Every field: [cedr.dev/docs/cli/telemetry](https://cedr.dev/docs/cli/telemetry); contract: [docs/telemetry.md](https://github.com/Sheernox/cedr/blob/main/docs/telemetry.md).
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* feat(cli): self-update with cedr update and opt-out anonymous telemetry
+* docs(agents): open every changelog entry with a hero image of the release
+* build(banner): render release banners alongside the readme banner
+* docs: changelog for 0.5.0
+* chore(release): cedr 0.5.0
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.4.2...v0.5.0
+</details>
 
 ## v0.4.2 (2026-10-30)
 

@@ -132,6 +132,10 @@ fn execute(a: MonitorArgs) -> Result<()> {
                 ));
             }
             let db = monitor::collect()?;
+            if let Ok(sources) = db.source_values() {
+                let found = sources.iter().filter(|s| s["state"] == "ok").count();
+                crate::telemetry::count("monitor_agents", found);
+            }
             match command {
                 None | Some(MonitorCommand::Report(_)) => {
                     let r = match command {

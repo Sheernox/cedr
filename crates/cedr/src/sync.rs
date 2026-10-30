@@ -74,6 +74,7 @@ pub fn run(args: Args) -> Result<ExitCode, String> {
         Some(Command::Push(a)) => push(a)?,
         None => {
             let p = cedr_sync::plan(&args.path)?;
+            crate::telemetry::count("sync_agents", p.config.targets.len());
             if args.dry_run {
                 for f in &p.files {
                     print!("{}", f.diff);

@@ -7,19 +7,24 @@ mod council;
 mod doctor;
 mod mcp;
 mod monitor;
+mod net;
 mod push;
 mod route;
+mod settings;
 mod sync;
+mod telemetry;
+mod update;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Instant;
 
 use cedr_core::finding::Report;
 use cedr_core::lock::{self, LockOptions};
 use cedr_core::source::Source;
 use cedr_core::surface::{self, Surface};
 use cedr_core::{diff, lint, verify};
-use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 const EXAMPLES: &str = "\
 Examples:
@@ -34,6 +39,8 @@ Examples:
   cedr outdated --fail-on high          inspect newer npm server surfaces
   cedr push --updates                   report pins, findings and available updates
   claude mcp add cedr -- cedr mcp        give an agent the route and council tools
+  cedr update                           install the latest release
+  cedr telemetry off                    stop sending anonymous usage data
 
 Start with a routes.toml: https://cedr.dev/docs/route (the app can generate one).";
 
@@ -155,6 +162,13 @@ enum Command {
     },
     /// Send this repo's pinned inventory and findings to the cedr.dev app
     Push(push::PushArgs),
+    /// Update cedr to the latest release, or turn the daily automatic update on or off
+    Update(update::Args),
+    /// Show or change whether cedr sends anonymous usage data
+    Telemetry {
+        #[command(subcommand)]
+        command: telemetry::TelemetryCommand,
+    },
     /// Print a shell completion script, e.g. `cedr completions zsh > ~/.zfunc/_cedr`
     Completions { shell: clap_complete::Shell },
     /// Print the surface of npm:<pkg>@<ver> or file:<path-to.tgz> as JSON
@@ -177,7 +191,59 @@ fn main() -> ExitCode {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
-    let outcome = match Cli::parse().command {
+    let started = Instant::now();
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    let path = command_path(&matches);
+    let background = match &cli.command {
+        Command::Update(args) => args.background(),
+        Command::Telemetry { command } => {
+            matches!(command, telemetry::TelemetryCommand::Flush)
+        }
+        _ => false,
+    };
+    let quiet = telemetry::silent(&path, background);
+    if !quiet {
+        if !settings::Settings::load().valid {
+            eprintln!(
+                "cedr: warning: {} does not parse, so telemetry and automatic updates are off until it is fixed",
+                settings::path().display()
+            );
+        }
+        update::announce();
+        if !matches!(cli.command, Command::Update(_)) {
+            update::auto_start();
+        }
+    }
+    let code = dispatch(cli.command);
+    if !quiet {
+        telemetry::record(&path, exit_number(&code), started.elapsed());
+    }
+    code
+}
+
+/// The subcommand path, at most two words (`route pick`), for usage events.
+fn command_path(matches: &clap::ArgMatches) -> String {
+    let mut parts = Vec::new();
+    let mut current = matches;
+    while let Some((name, sub)) = current.subcommand() {
+        parts.push(name);
+        if parts.len() == 2 {
+            break;
+        }
+        current = sub;
+    }
+    parts.join(" ")
+}
+
+fn exit_number(code: &ExitCode) -> u8 {
+    (0..=u8::MAX)
+        .find(|n| ExitCode::from(*n) == *code)
+        .unwrap_or(2)
+}
+
+fn dispatch(command: Command) -> ExitCode {
+    let outcome = match command {
         Command::Route { config, command } => {
             route::run(command, &config).map_err(|e| e.to_string())
         }
@@ -191,6 +257,8 @@ fn main() -> ExitCode {
         Command::Doctor(args) => doctor::run(args),
         Command::Push(args) => push::run(&args),
         Command::Monitor(args) => monitor::run(args),
+        Command::Update(args) => update::run(args),
+        Command::Telemetry { command } => telemetry::run(command),
         Command::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "cedr", &mut std::io::stdout());
             Ok(ExitCode::SUCCESS)
@@ -215,6 +283,8 @@ fn run(command: Command) -> cedr_core::Result<ExitCode> {
         | Command::Mcp { .. }
         | Command::Monitor(_)
         | Command::Push(_)
+        | Command::Update(_)
+        | Command::Telemetry { .. }
         | Command::Completions { .. } => {
             unreachable!("handled in main")
         }
@@ -252,6 +322,8 @@ fn run(command: Command) -> cedr_core::Result<ExitCode> {
             if outcome.moved {
                 println!("moved {} to {}", lock::LEGACY_LOCK_FILE, lock::LOCK_FILE);
             }
+            telemetry::count("guard_skills", outcome.lock.skill.len());
+            telemetry::count("guard_servers", outcome.lock.mcp.len());
             println!(
                 "wrote {}: {} skills, {} MCP servers",
                 path.join(lock::LOCK_FILE).display(),
