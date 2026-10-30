@@ -38,3 +38,23 @@ fn empty_sources_and_json_report() {
         }
     }
 }
+#[test]
+fn a_push_with_nowhere_to_send_fails_before_reading_any_log() {
+    let d = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_cedr"))
+        .args(["monitor", "push", "--quiet"])
+        .current_dir(d.path())
+        .env("HOME", d.path())
+        .env("XDG_STATE_HOME", d.path().join("state"))
+        .env("XDG_CONFIG_HOME", d.path().join("config"))
+        .env("XDG_DATA_HOME", d.path().join("data"))
+        .env_remove("CEDR_API_KEY")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no organization"));
+    assert!(
+        !d.path().join("state/cedr/monitor.sqlite").exists(),
+        "collected logs before finding there was nowhere to send them"
+    );
+}

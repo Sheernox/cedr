@@ -124,7 +124,11 @@ impl Report {
                 .replace('%', "%25")
                 .replace('\r', "%0D")
                 .replace('\n', "%0A");
-            out.push_str(&format!("::{level} title=cedr outdated::{escaped}\n"));
+            // Pointed at the lock, where the pin lives, so the annotation lands on a file instead of the workflow.
+            out.push_str(&format!(
+                "::{level} file={},title=cedr outdated::{escaped}\n",
+                lock::LOCK_FILE
+            ));
         }
         out
     }
@@ -418,7 +422,7 @@ mod tests {
         };
         let github = report.to_github();
         assert_eq!(github.lines().count(), 1);
-        assert!(github.starts_with("::error title=cedr outdated::"));
+        assert!(github.starts_with("::error file=.cedr/guard.lock,title=cedr outdated::"));
         assert!(github.contains("x%25%0A::error%0D"));
         report.updates[0].severity = UpdateSeverity::None;
         assert!(report.to_github().starts_with("::warning "));

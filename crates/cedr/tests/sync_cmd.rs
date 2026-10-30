@@ -451,3 +451,53 @@ fn import_reports_mixed_native_execpolicy_entries() {
             .contains(&"shell:git status".into())
     );
 }
+#[test]
+fn a_repo_without_permissions_or_hooks_gets_no_empty_settings_files() {
+    let d = tempfile::tempdir().unwrap();
+    fs::create_dir_all(d.path().join(".cedr/rules")).unwrap();
+    fs::write(d.path().join(".cedr/rules/10-tests.md"), "Run the tests.\n").unwrap();
+    fs::write(
+        d.path().join(".cedr/sync.toml"),
+        "version = 1\ntargets = [\"agents\", \"claude\", \"cursor\", \"codex\"]\n\n[mcp.docs]\nurl = \"https://mcp.example.com/mcp\"\n",
+    )
+    .unwrap();
+    let out = run(d.path(), &["sync"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for absent in [
+        ".claude/settings.json",
+        ".cursor/cli.json",
+        ".cursor/hooks.json",
+        ".codex/hooks.json",
+        ".codex/rules/cedr.rules",
+    ] {
+        assert!(
+            !d.path().join(absent).exists(),
+            "{absent} was written with nothing in it"
+        );
+    }
+    assert!(d.path().join(".mcp.json").exists());
+    let printed = String::from_utf8_lossy(&out.stdout);
+    assert!(!printed.contains("not supported by agents"), "{printed}");
+    assert!(run(d.path(), &["sync", "check"]).status.success());
+}
+#[test]
+fn servers_with_only_the_agents_target_are_reported_once() {
+    let d = tempfile::tempdir().unwrap();
+    fs::create_dir_all(d.path().join(".cedr")).unwrap();
+    fs::write(
+        d.path().join(".cedr/sync.toml"),
+        "version = 1\ntargets = [\"agents\"]\n\n[mcp.docs]\nurl = \"https://mcp.example.com/mcp\"\n",
+    )
+    .unwrap();
+    let out = run(d.path(), &["sync"]);
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(all.matches("reach no agent").count(), 1, "{all}");
+}

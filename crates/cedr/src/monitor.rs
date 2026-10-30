@@ -110,6 +110,27 @@ fn execute(a: MonitorArgs) -> Result<()> {
         }
         Some(MonitorCommand::Schedule { every, remove }) => schedule(every, remove)?,
         command => {
+            // A push settles its lock, organization and key before collecting, so a machine with nowhere to send
+            // counts says so at once instead of after reading every log.
+            let mut push_target = None;
+            let mut _push_lock = None;
+            if let Some(MonitorCommand::Push {
+                org, config, quiet, ..
+            }) = &command
+            {
+                let Some(lock) = cedr_route::sync::monitor_lock()? else {
+                    if *quiet {
+                        return Ok(());
+                    }
+                    return Err("another monitor push is running".into());
+                };
+                _push_lock = Some(lock);
+                let c = monitor::config::Config::load()?;
+                push_target = Some((
+                    monitor::push::settings(org.as_deref(), config.as_deref(), &c)?,
+                    cedr_route::sync::api_key()?,
+                ));
+            }
             let db = monitor::collect()?;
             match command {
                 None | Some(MonitorCommand::Report(_)) => {
@@ -150,15 +171,7 @@ fn execute(a: MonitorArgs) -> Result<()> {
                     quiet,
                     full,
                 }) => {
-                    let Some(_lock) = cedr_route::sync::monitor_lock()? else {
-                        if quiet {
-                            return Ok(());
-                        }
-                        return Err("another monitor push is running".into());
-                    };
-                    let c = monitor::config::Config::load()?;
-                    let sync = monitor::push::settings(org.as_deref(), config.as_deref(), &c)?;
-                    let key = cedr_route::sync::api_key()?;
+                    let (sync, key) = push_target.take().expect("resolved before collecting");
                     let machine_config = if org.is_some() && config.is_none() {
                         None
                     } else {
@@ -468,12 +481,17 @@ fn schedule(every: u32, remove: bool) -> Result<()> {
                 println!("Check: launchctl list dev.cedr.monitor");
             }
             "windows" => {
+                let task = home.join(&files[0].relative);
                 checked(
                     Command::new("schtasks")
                         .args(["/Create", "/TN", "cedr monitor", "/XML"])
-                        .arg(home.join(&files[0].relative))
+                        .arg(&task)
                         .arg("/F"),
                 )?;
+                // Task Scheduler keeps its own copy; the XML was only the way in.
+                if let Err(e) = std::fs::remove_file(&task) {
+                    eprintln!("cedr: warning: could not remove {}: {e}", task.display());
+                }
                 println!("Check: schtasks /Query /TN \"cedr monitor\"");
             }
             _ => {}

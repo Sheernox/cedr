@@ -35,7 +35,7 @@ pub fn files(os: &str, exe: &str, minutes: u32) -> Result<Vec<File>> {
                 File {
                     relative: ".config/systemd/user/cedr-monitor.timer".into(),
                     contents: format!(
-                        "[Unit]\nDescription=Cedr Monitor timer\n[Timer]\nOnBootSec=2min\nOnUnitActiveSec={minutes}min\nPersistent=true\n[Install]\nWantedBy=timers.target\n"
+                        "[Unit]\nDescription=Cedr Monitor timer\n[Timer]\nOnBootSec=2min\nOnUnitActiveSec={minutes}min\nRandomizedDelaySec=10min\nPersistent=true\n[Install]\nWantedBy=timers.target\n"
                     ),
                 },
             ])
@@ -51,7 +51,7 @@ pub fn files(os: &str, exe: &str, minutes: u32) -> Result<Vec<File>> {
         "windows" => Ok(vec![File {
             relative: "cedr-monitor.xml".into(),
             contents: format!(
-                "<?xml version=\"1.0\"?><Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><Triggers><TimeTrigger><Repetition><Interval>PT{minutes}M</Interval></Repetition><StartBoundary>2026-01-01T00:00:00</StartBoundary></TimeTrigger></Triggers><Principals><Principal id=\"Author\"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Actions Context=\"Author\"><Exec><Command>{}</Command><Arguments>monitor push --quiet</Arguments></Exec></Actions></Task>",
+                "<?xml version=\"1.0\"?><Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><Triggers><TimeTrigger><Repetition><Interval>PT{minutes}M</Interval></Repetition><StartBoundary>2026-01-01T00:00:00</StartBoundary><RandomDelay>PT10M</RandomDelay></TimeTrigger></Triggers><Principals><Principal id=\"Author\"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Actions Context=\"Author\"><Exec><Command>{}</Command><Arguments>monitor push --quiet</Arguments></Exec></Actions></Task>",
                 xml(exe)
             ),
         }]),

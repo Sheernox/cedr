@@ -2,6 +2,32 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor) and [docs/doctor.md](docs/doctor.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.4.1 (2026-10-30)
+
+**v0.4.1** · 5 changes from 1 contributor
+
+### Highlights
+Fixes from running the GitHub Action, the hourly push timer and Sync end to end on real repos, Linux and Windows. No upgrade step; if you pinned the action, move to `Sheernox/cedr@v0.4.1`.
+
+### Fixes
+- `cedr sync` no longer writes settings files that hold only empty lists when a repo has no permissions or hooks, and says once, instead of per entry, when MCP servers, permissions and hooks reach no agent.
+- `cedr monitor push` checks its organization and key before reading any log, so a machine with nowhere to send counts says so at once.
+- Scheduled pushes start up to ten random minutes late, so machines do not all push on the hour, and Windows no longer leaves the task XML in the home folder.
+- `cedr outdated --format github` puts each annotation on `.cedr/guard.lock` instead of the workflow file.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* fix(sync): write no empty settings files, and note unused servers once instead of per entry
+* fix(monitor): check where a push goes before reading logs, spread scheduled pushes, and tidy the windows task
+* fix(guard): put cedr outdated annotations on the lock file instead of the workflow
+* docs: changelog for 0.4.1
+* chore(release): cedr 0.4.1
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.4.0...v0.4.1
+</details>
+
 ## v0.4.0 (2026-10-30)
 
 **v0.4.0** · 14 changes from 1 contributor

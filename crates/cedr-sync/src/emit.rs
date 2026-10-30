@@ -25,8 +25,23 @@ fn raw(out: &mut Outputs, path: &str, target: &str, text: String) {
 fn doc(out: &mut Outputs, path: &str, target: &str, text: String) {
     raw(out, path, target, crate::with_header(&text));
 }
-fn object(out: &mut Outputs, path: &str, target: &str, value: Value) {
-    let keys = value.as_object().expect("object").keys().cloned().collect();
+/// Whether an owned value says nothing: an empty list or map, or a map of only such values (`{"allow": [], "deny": []}`).
+fn is_empty(v: &Value) -> bool {
+    match v {
+        Value::Array(a) => a.is_empty(),
+        Value::Object(o) => o.values().all(is_empty),
+        _ => false,
+    }
+}
+/// A merged settings file of the keys Sync owns. Keys with nothing in them are left out, and a file left with only its
+/// format `version` is not written at all, so a repo without permissions or hooks gets no empty settings files.
+fn object(out: &mut Outputs, path: &str, target: &str, mut value: Value) {
+    let map = value.as_object_mut().expect("object");
+    map.retain(|k, v| k == "version" || !is_empty(v));
+    if map.keys().all(|k| k == "version") {
+        return;
+    }
+    let keys = map.keys().cloned().collect();
     out.insert(
         path.into(),
         Output {
@@ -293,18 +308,14 @@ pub fn emit(c: &Config, rules: &[Rule], skills: &Skills, org: &str) -> (Outputs,
     for target in &c.targets {
         let target = target.as_str();
         if target == "agents" {
-            for entry in c.permissions.allow.iter().chain(&c.permissions.deny) {
-                note(&mut notes, target, entry);
-            }
-            for hook in &c.hooks {
-                if selected(&hook.agents, target) {
-                    note(&mut notes, target, &format!("hook {}", hook.event));
-                }
-            }
-            for (name, server) in &c.mcp {
-                if selected(&server.agents, target) {
-                    note(&mut notes, target, &format!("mcp.{name}"));
-                }
+            // `agents` is only AGENTS.md and shared skills. Say so once, and only when no other target would carry
+            // the servers, permissions and hooks, since then they reach no agent at all.
+            let unused = !c.mcp.is_empty()
+                || !c.permissions.allow.is_empty()
+                || !c.permissions.deny.is_empty()
+                || !c.hooks.is_empty();
+            if unused && c.targets.iter().all(|t| t == "agents") {
+                notes.push("MCP servers, permissions and hooks reach no agent: add a target such as claude or codex".into());
             }
             continue;
         }
@@ -457,7 +468,9 @@ pub fn emit(c: &Config, rules: &[Rule], skills: &Skills, org: &str) -> (Outputs,
                         }
                     }
                 }
-                raw(&mut out, ".codex/rules/cedr.rules", target, text);
+                if !text.is_empty() {
+                    raw(&mut out, ".codex/rules/cedr.rules", target, text);
+                }
                 object(&mut out, ".codex/hooks.json", target, json!({"hooks":h}));
             }
             "cursor" => {
@@ -487,12 +500,18 @@ pub fn emit(c: &Config, rules: &[Rule], skills: &Skills, org: &str) -> (Outputs,
                     target,
                     json!({"context":{"fileName":if own.is_empty(){vec!["AGENTS.md"]}else{vec!["AGENTS.md","GEMINI.md"]}},"mcpServers":servers,"tools":{"allowed":p},"hooks":h}),
                 );
-                out.get_mut(".gemini/settings.json").expect("output").keys = vec![
-                    "context.fileName".into(),
-                    "mcpServers".into(),
-                    "tools.allowed".into(),
-                    "hooks".into(),
-                ];
+                // Gemini's settings always carry context.fileName; the other owned keys only when they say something.
+                let gemini = out.get_mut(".gemini/settings.json").expect("output");
+                let present: Value = serde_json::from_slice(&gemini.bytes).expect("json");
+                gemini.keys = ["context.fileName", "mcpServers", "tools.allowed", "hooks"]
+                    .into_iter()
+                    .filter(|k| {
+                        k.split('.')
+                            .try_fold(&present, |v, part| v.get(part))
+                            .is_some()
+                    })
+                    .map(String::from)
+                    .collect();
             }
             "copilot" => {
                 object(
