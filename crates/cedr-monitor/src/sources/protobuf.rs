@@ -83,9 +83,19 @@ pub fn collect(path: &Path, c: &Config, db: &Store) -> Result<u64> {
         [],
         |r| r.get(0),
     )?;
-    if generations != steps {
+    // A generation is written before its step, so a conversation with more generations than steps is either being
+    // written (retry next run) or was cut off (an interrupted turn, never completed). Only a recent change means the
+    // first; a settled one is read as far as its steps go and the unfinished generations count as malformed.
+    let settled = [path.to_path_buf(), path.with_extension("db-wal")]
+        .iter()
+        .filter_map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+        .max()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age >= SETTLED);
+    if generations != steps && !settled {
         return Err("mid-write".into());
     }
+    let unfinished = (generations - steps).max(0) as u64;
     let cwd = std::fs::read(path.with_extension("meta"))
         .ok()
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
@@ -140,8 +150,10 @@ pub fn collect(path: &Path, c: &Config, db: &Store) -> Result<u64> {
             Err(_) => malformed += 1,
         }
     }
-    Ok(malformed)
+    Ok(malformed + unfinished)
 }
+/// How long a conversation must go unchanged before a missing step means an interrupted turn, not one being written.
+const SETTLED: std::time::Duration = std::time::Duration::from_secs(600);
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -221,6 +233,44 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(counts, (1, 100, 25));
+    }
+    #[test]
+    fn an_interrupted_conversation_is_read_once_it_settles() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("interrupted.db");
+        conversation(&path);
+        // A second generation whose turn never finished: no step follows it.
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let data: Vec<u8> = conn
+            .query_row("SELECT data FROM gen_metadata", [], |r| r.get(0))
+            .unwrap();
+        conn.execute("INSERT INTO gen_metadata VALUES(1,?)", [data])
+            .unwrap();
+        drop(conn);
+        let db = Store::open(&d.path().join("monitor.sqlite")).unwrap();
+        assert!(
+            collect(&path, &Config::default(), &db)
+                .unwrap_err()
+                .to_string()
+                .contains("mid-write")
+        );
+        let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(hour_ago)
+            .unwrap();
+        assert_eq!(
+            collect(&path, &Config::default(), &db).unwrap(),
+            1,
+            "the unfinished generation counts as malformed"
+        );
+        let n: i64 = db
+            .db
+            .query_row("SELECT count(*) FROM responses", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
     }
     #[test]
     fn decode_and_reject_truncated() {

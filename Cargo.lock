@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "cedr"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "cedr-core",
  "cedr-monitor",
@@ -201,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "cedr-core"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "base64",
  "flate2",
@@ -227,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "cedr-monitor"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "cedr-route",
  "chrono",
@@ -242,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "cedr-route"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "chrono",
  "getrandom 0.4.3",
@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "cedr-sync"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "cedr-core",
  "regex",

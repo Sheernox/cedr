@@ -2,6 +2,30 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.5.2 (2026-10-31)
+
+![cedr v0.5.2: nothing skipped](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.5.2.png)
+
+**v0.5.2** · 4 changes from 1 contributor
+
+### Highlights
+Monitor now counts Antigravity conversations that an interrupted turn cut off. Before, such a conversation looked as if it were still being written, so it was skipped on every run and `cedr monitor sources` kept reporting Antigravity as an error. **Upgrade step:** none; cedr updates itself.
+
+### Fixes
+- An Antigravity conversation with more generations than finished steps is treated as being written only if it changed in the last 10 minutes. Once it has settled, its finished generations are counted, and the unfinished ones show as malformed in `cedr monitor sources`. Contract: [docs/monitor.md](https://github.com/Sheernox/cedr/blob/main/docs/monitor.md).
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* fix(monitor): read interrupted antigravity conversations instead of skipping them
+* build(banner): render the v0.5.2 release hero
+* docs: changelog for 0.5.2
+* chore(release): cedr 0.5.2
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.5.1...v0.5.2
+</details>
+
 ## v0.5.1 (2026-10-31)
 
 ![cedr v0.5.1: counted right](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.5.1.png)
