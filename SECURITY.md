@@ -17,4 +17,4 @@ cedr runs on developer machines and in CI next to AI coding agents, so we especi
 
 ## Supported versions
 
-cedr is in preview; fixes go into the latest release only.
+cedr is in beta; fixes go into the latest release only.

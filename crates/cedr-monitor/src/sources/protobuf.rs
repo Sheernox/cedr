@@ -143,7 +143,7 @@ pub fn collect(path: &Path, c: &Config, db: &Store) -> Result<u64> {
     Ok(malformed)
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     fn pb_bytes(tag: u8, b: &[u8]) -> Vec<u8> {
         let mut out = if tag < 16 {
@@ -163,6 +163,26 @@ mod tests {
         }
         out.push(n as u8);
         out
+    }
+    /// A finished one-generation conversation: 100 fresh input, 20 output and 5 thinking, at 2026-10-30 10:00 UTC.
+    pub(crate) fn conversation(path: &std::path::Path) {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch("CREATE TABLE gen_metadata(idx INTEGER,data BLOB); CREATE TABLE steps(idx INTEGER,step_type INTEGER,metadata BLOB);").unwrap();
+        let usage = [
+            pb_number(2, 100),
+            pb_number(3, 20),
+            pb_number(5, 50),
+            pb_number(10, 5),
+        ]
+        .concat();
+        let one = [pb_bytes(4, &usage), pb_bytes(19, b"gemini-4-argon")].concat();
+        conn.execute("INSERT INTO gen_metadata VALUES(0,?)", [pb_bytes(1, &one)])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO steps VALUES(0,15,?)",
+            [pb_bytes(1, &pb_number(1, 1793354400))],
+        )
+        .unwrap();
     }
     #[test]
     fn generation_and_mid_write() {

@@ -2,6 +2,35 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.5.1 (2026-10-31)
+
+![cedr v0.5.1: counted right](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.5.1.png)
+
+**v0.5.1** · 4 changes from 1 contributor
+
+### Highlights
+Monitor counts Codex usage under the thread that produced it, and repairs what it already sent. A Codex rollout can carry responses from another thread (a subagent's or a forked thread's), and until now they all counted as one session. After updating, the first `cedr monitor` run rereads your Codex logs once, and the next `cedr monitor push` resends the affected hours so your organization's totals are not counted twice. Monitor also finds Antigravity conversations that T3 Code runs, and `cedr monitor push --start now` lets a machine send only usage from now on. **Upgrade step:** none; 0.5.0 updates itself.
+
+### Fixes
+- Codex responses with a `thread_id` count under that thread's session, not the rollout's ([Sheernox/cedr#1](https://github.com/Sheernox/cedr/issues/1)). Token totals were already right; session counts now are too.
+- Hours already pushed under the old sessions are resent once per organization, with an empty row for each old session left without usage, so the app replaces them rather than adding to them.
+
+### Features
+- **Antigravity in T3 Code**: conversations under `~/.t3/userdata/providers/antigravity/` are read alongside `~/.gemini/antigravity*/`; a conversation found in both counts once. Contract: [docs/monitor.md](https://github.com/Sheernox/cedr/blob/main/docs/monitor.md).
+- **`cedr monitor push --start all|now|<date>`** chooses where your organization's usage begins. It is saved per organization before anything is sent, and every later push (scheduled, automatic or `--full`) keeps to it. Moving it earlier sends the older usage once; moving it later stops sending older usage from the next whole hour but never removes what the app has. Without a choice, the first push sends your history as before and says so. Setup: [cedr.dev/docs/monitor/setup](https://cedr.dev/docs/monitor/setup).
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* fix(monitor): attribute codex responses to their thread and repair sent hours
+* build(banner): render the v0.5.1 release hero
+* docs: changelog for 0.5.1
+* chore(release): cedr 0.5.1
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.5.0...v0.5.1
+</details>
+
 ## v0.5.0 (2026-10-30)
 
 ![cedr v0.5.0: self-updating](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.5.0.png)

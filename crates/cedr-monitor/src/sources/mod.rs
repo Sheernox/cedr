@@ -401,6 +401,12 @@ fn parse(
             } else if typ == "token_usage_record" {
                 state["has_records"] = json!(true);
                 db.db.execute("DELETE FROM responses WHERE harness='codex' AND session=? AND id LIKE 'legacy:%'",[&r.session])?;
+                // A rollout can carry another thread's responses (a subagent's, a forked thread's); each belongs to
+                // the thread that made it, not to the rollout's own session.
+                let thread = s(p, "thread_id");
+                if !thread.is_empty() {
+                    r.session = format!("s-{}", &crate::digest(&format!("codex:{thread}"))[..12]);
+                }
                 r.id = s(p, "response_id").into();
                 counts(
                     &mut r,
@@ -634,7 +640,7 @@ fn sanitize_state(state: &mut Value) {
         });
     }
 }
-fn patterns(h: &str, c: &Config) -> Vec<String> {
+fn patterns(h: &str, c: &Config, home: &str) -> Vec<String> {
     if let Some(p) = c.paths.get(h) {
         let p = crate::config::expand(p).to_string_lossy().into_owned();
         if p.contains('*') || Path::new(&p).is_file() {
@@ -642,7 +648,6 @@ fn patterns(h: &str, c: &Config) -> Vec<String> {
         }
         return vec![format!("{p}/**/*")];
     }
-    let home = std::env::var("HOME").unwrap_or_default();
     let data = cedr_route::config::xdg_dir("XDG_DATA_HOME", ".local/share");
     match h {
         "claude" => vec![format!(
@@ -668,14 +673,21 @@ fn patterns(h: &str, c: &Config) -> Vec<String> {
             format!("{}/opencode/storage/message/**/*.json", data.display()),
             format!("{}/opencode/storage/part/**/*.json", data.display()),
         ],
-        "antigravity" => vec![format!("{home}/.gemini/antigravity*/**/conversations/*.db")],
+        "antigravity" => vec![
+            format!("{home}/.gemini/antigravity*/**/conversations/*.db"),
+            // T3 Code runs Antigravity with a home of its own per provider instance.
+            format!("{home}/.t3/userdata/providers/antigravity/*/**/conversations/*.db"),
+        ],
         _ => vec![],
     }
 }
 /// Read-only source discovery for diagnostics; does not collect or write usage.
 pub fn files(h: &str, c: &Config) -> Result<Vec<PathBuf>> {
+    files_in(h, c, &std::env::var("HOME").unwrap_or_default())
+}
+fn files_in(h: &str, c: &Config, home: &str) -> Result<Vec<PathBuf>> {
     let mut out = vec![];
-    for p in patterns(h, c) {
+    for p in patterns(h, c, home) {
         for path in glob::glob(&p)? {
             let path = path?;
             if path.is_file()
@@ -695,11 +707,26 @@ pub fn files(h: &str, c: &Config) -> Result<Vec<PathBuf>> {
     out.dedup();
     Ok(out)
 }
+/// Readers whose attribution changed, with the revision a store must have read their files at. A store behind it
+/// rereads every file of that harness once from the start, so stored rows move to the corrected identity (rows are
+/// keyed by response, so nothing is counted twice). Codex 2: responses take their own `thread_id` as session.
+const REREADS: &[(&str, i64)] = &[("codex", 2)];
+
 pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
     for &h in crate::HARNESSES {
         if !c.harnesses.is_empty() && !c.harnesses.iter().any(|x| x == h) {
             continue;
         }
+        let revision = REREADS.iter().find(|(x, _)| *x == h).map(|(_, r)| *r);
+        let read_at: i64 = db
+            .db
+            .query_row(
+                "SELECT value FROM meta WHERE key=?",
+                [format!("reader:{h}")],
+                |r| r.get(0),
+            )
+            .unwrap_or(1);
+        let reread = revision.is_some_and(|r| read_at < r);
         let mut count = 0;
         let mut malformed = 0u64;
         let mut error = None;
@@ -716,7 +743,8 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
                                 [key.as_ref()],
                                 |r| r.get::<_, String>(0),
                             )
-                            .ok();
+                            .ok()
+                            .filter(|_| !reread);
                         let mut cursor = old
                             .and_then(|x| serde_json::from_str::<Cursor>(&x).ok())
                             .unwrap_or_default();
@@ -829,6 +857,14 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
             "INSERT OR REPLACE INTO sources VALUES(?,?)",
             params![h, v.to_string()],
         )?;
+        // A response that moves session records its old key in `repairs` (the store's `response_moved` trigger, in
+        // the same transaction as the move), so an interrupted reread loses nothing and simply runs again.
+        if let Some(r) = revision.filter(|_| reread && error.is_none()) {
+            db.db.execute(
+                "INSERT OR REPLACE INTO meta VALUES(?,?)",
+                params![format!("reader:{h}"), r],
+            )?;
+        }
     }
     Ok(())
 }
@@ -921,6 +957,132 @@ mod tests {
             .unwrap();
         }
         assert_eq!(usage(&db), (1, 60, 20));
+    }
+    #[test]
+    fn codex_responses_take_their_own_thread_as_session() {
+        let d = tempfile::tempdir().unwrap();
+        let db = Store::open(&d.path().join("db")).unwrap();
+        let mut state = json!({});
+        let lines = [
+            json!({"timestamp":"2026-10-30T10:00:00Z","type":"session_meta","payload":{"id":"parent-session","cwd":"/example"}}),
+            json!({"timestamp":"2026-10-30T10:00:01Z","type":"turn_context","payload":{"model":"gpt-6.1-sol","cwd":"/example"}}),
+            json!({"timestamp":"2026-10-30T10:00:02Z","type":"token_usage_record","payload":{"response_id":"response-parent","thread_id":"parent-session","usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":10,"reasoning_output_tokens":2}}}),
+            json!({"timestamp":"2026-10-30T10:00:03Z","type":"token_usage_record","payload":{"response_id":"response-child","thread_id":"child-session","usage":{"input_tokens":200,"cached_input_tokens":100,"output_tokens":20,"reasoning_output_tokens":4}}}),
+            json!({"timestamp":"2026-10-30T10:00:04Z","type":"token_usage_record","payload":{"response_id":"response-bare","usage":{"input_tokens":10,"output_tokens":1}}}),
+        ];
+        // Replaying the rollout (a reread after the tail changed) must not add or move anything.
+        for _ in 0..2 {
+            for (i, v) in lines.iter().enumerate() {
+                parse("codex", v, i as u64, &mut state, &Config::default(), &db).unwrap();
+            }
+        }
+        let session = |id: &str| -> String {
+            db.db
+                .query_row("SELECT session FROM responses WHERE id=?", [id], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        let digest =
+            |native: &str| format!("s-{}", &crate::digest(&format!("codex:{native}"))[..12]);
+        assert_eq!(session("response-parent"), digest("parent-session"));
+        assert_eq!(session("response-child"), digest("child-session"));
+        assert_eq!(session("response-bare"), digest("parent-session"));
+        assert_eq!(usage(&db), (3, 50 + 100 + 10, 31));
+    }
+    #[test]
+    fn a_store_read_before_thread_attribution_rereads_codex_once() {
+        let (dir, mut db) = fixture("codex", "codex.jsonl");
+        db.db
+            .execute_batch(
+                "UPDATE responses SET session='s-stale'; DELETE FROM meta; DELETE FROM repairs",
+            )
+            .unwrap();
+        let mut c = Config {
+            harnesses: vec!["codex".into()],
+            ..Config::default()
+        };
+        c.paths.insert(
+            "codex".into(),
+            format!(
+                "{}/../../fixtures/monitor/codex.jsonl",
+                env!("CARGO_MANIFEST_DIR")
+            ),
+        );
+        collect(&c, &mut db).unwrap();
+        let stale: i64 = db
+            .db
+            .query_row(
+                "SELECT count(*) FROM responses WHERE session='s-stale'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((stale, usage(&db)), (0, (1, 60, 20)));
+        let repairs: Vec<String> = db
+            .db
+            .prepare("SELECT session FROM repairs")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            repairs,
+            ["s-stale"],
+            "the old key is kept for the app's copy"
+        );
+        db.db
+            .execute_batch("UPDATE responses SET session='s-stale'")
+            .unwrap();
+        collect(&c, &mut db).unwrap();
+        let kept: i64 = db
+            .db
+            .query_row(
+                "SELECT count(*) FROM responses WHERE session='s-stale'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            kept, 1,
+            "a store already at the revision resumes from its cursors"
+        );
+        drop(dir);
+    }
+    #[test]
+    fn antigravity_conversations_run_by_t3_are_found_and_counted_once() {
+        let home = tempfile::tempdir().unwrap();
+        let roots = [
+            home.path().join(".gemini/antigravity/conversations"),
+            home.path()
+                .join(".t3/userdata/providers/antigravity/ab12/antigravity-acp/conversations"),
+        ];
+        for root in &roots {
+            std::fs::create_dir_all(root).unwrap();
+        }
+        // The same conversation copied into both roots, and one only T3 has.
+        for (root, name) in [
+            (&roots[0], "shared"),
+            (&roots[1], "shared"),
+            (&roots[1], "t3-only"),
+        ] {
+            protobuf::tests::conversation(&root.join(format!("{name}.db")));
+        }
+        let found = files_in(
+            "antigravity",
+            &Config::default(),
+            &home.path().to_string_lossy(),
+        )
+        .unwrap();
+        assert_eq!(found.len(), 3);
+        let db = Store::open(&home.path().join("monitor.sqlite")).unwrap();
+        for _ in 0..2 {
+            for path in &found {
+                protobuf::collect(path, &Config::default(), &db).unwrap();
+            }
+        }
+        assert_eq!(usage(&db), (2, 200, 50));
     }
     #[test]
     fn codex_legacy_growing_only() {

@@ -79,6 +79,10 @@ enum MonitorCommand {
         /// Send everything in the local store, not just what changed since the last push
         #[arg(long)]
         full: bool,
+        /// Where this org's usage starts: all (the default), now (only new usage), YYYY-MM-DD or an RFC 3339 time.
+        /// Saved, so scheduled, automatic and --full pushes keep to it until changed
+        #[arg(long)]
+        start: Option<String>,
     },
     /// Install or remove a per-user timer that pushes on a schedule
     Schedule {
@@ -174,7 +178,12 @@ fn execute(a: MonitorArgs) -> Result<()> {
                     config,
                     quiet,
                     full,
+                    start,
                 }) => {
+                    let start = start
+                        .as_deref()
+                        .map(monitor::push::parse_start)
+                        .transpose()?;
                     let (sync, key) = push_target.take().expect("resolved before collecting");
                     let machine_config = if org.is_some() && config.is_none() {
                         None
@@ -185,9 +194,21 @@ fn execute(a: MonitorArgs) -> Result<()> {
                                 .and_then(|cwd| cedr_route::config::locate(None, &cwd).ok())
                         })
                     };
-                    let v = monitor::push::send(&db, &sync, &key, full, machine_config.as_deref())?;
+                    let v = monitor::push::send(
+                        &db,
+                        &sync,
+                        &key,
+                        full,
+                        start,
+                        machine_config.as_deref(),
+                    )?;
                     if !quiet {
                         println!("accepted {} rows, skipped {}", v["accepted"], v["skipped"]);
+                        if v["defaulted"] == true {
+                            println!(
+                                "sent all local usage history (no --start chosen); it cannot be taken back, but `--start now` stops sending older usage"
+                            );
+                        }
                     }
                 }
                 _ => unreachable!(),

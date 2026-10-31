@@ -1,6 +1,6 @@
 # Cedr Guard: design contract
 
-The frozen contract for Guard, in preview: its commands, JSON shapes, lint rules and lock fields. A change to any shape below lands here first, then in the code.
+The frozen contract for Guard: its commands, JSON shapes, lint rules and lock fields. A change to any shape below lands here first, then in the code.
 
 ## Scope
 

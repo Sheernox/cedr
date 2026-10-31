@@ -17,7 +17,7 @@
 `cedr` is the command line tool behind [cedr.dev](https://cedr.dev). It picks which AI coding agent, model and effort should take each kind of work, merges reviews from several vendors into one pass or block decision, and pins the skills and MCP servers your agents load. It works with Claude Code, Codex, Cursor and Gemini, and any agent that speaks MCP can call it directly.
 
 > [!NOTE]
-> cedr is in preview. Commands and file formats may still change before 1.0.
+> cedr is in public beta. Commands and file formats may still change before 1.0.
 
 ## Monitor
 
@@ -40,7 +40,7 @@ Configure collection and optional automatic pushes in `~/.config/cedr/monitor.to
 <tr>
 <th width="33%">🧭 Route</th>
 <th width="33%">⚖️ Council</th>
-<th width="33%">🔒 Guard <sub>preview</sub></th>
+<th width="33%">🔒 Guard</th>
 </tr>
 <tr valign="top">
 <td>Picks the agent, model and effort for each kind of work from your <code>routes.toml</code>. Equally suited work goes to the plan with the most room left, and plans near their limits are skipped.</td>

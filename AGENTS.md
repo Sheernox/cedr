@@ -1,6 +1,6 @@
 # AGENTS.md - cedr
 
-The open-source `cedr` CLI from [cedr.dev](https://cedr.dev): Route picks the AI coding agent, model and effort for each kind of work, Council merges multi-vendor reviews into one gate, Sync compiles one agent setup into every agent's files, Monitor reports every agent's usage, spend and plan limits, and Guard (preview) lints, pins and verifies the skills and MCP servers agents load. Human contributors: see [CONTRIBUTING.md](CONTRIBUTING.md).
+The open-source `cedr` CLI from [cedr.dev](https://cedr.dev): Route picks the AI coding agent, model and effort for each kind of work, Council merges multi-vendor reviews into one gate, Sync compiles one agent setup into every agent's files, Monitor reports every agent's usage, spend and plan limits, and Guard lints, pins and verifies the skills and MCP servers agents load. Human contributors: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## How this repo works
 - It is published from the cedr.dev source tree. Accepted pull requests are applied there and return with the next release, so keep each change small and self-contained.
