@@ -239,7 +239,7 @@ It reads the lock (exit 2 with `no lock: run cedr guard lock first` when there i
 
 ## GitHub Action
 
-The public repo's root `action.yml` is a composite action: `uses: Sheernox/cedr@v0.3.0`.
+The public repo's root `action.yml` is a composite action: `uses: Sheernox/cedr@vX.Y.Z`.
 
 | Input | Default | What |
 |---|---|---|

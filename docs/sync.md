@@ -187,7 +187,7 @@ Organizations on a plan with org rules (Team and Business) set them in the app. 
 
 ## GitHub Action
 
-The action (`uses: Sheernox/cedr@v0.4.0`) gains two inputs:
+The action (`uses: Sheernox/cedr@vX.Y.Z`) gains two inputs:
 
 | Input | Default | What |
 |---|---|---|

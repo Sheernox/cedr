@@ -16,7 +16,7 @@ cedr update --auto on|off
 - JSON: `{"current": "0.4.2", "latest": "0.5.0", "updated": bool, "auto": bool, "install": "archive" | "cargo" | "read-only", "fix": string | null}`.
 - Exit 0 when up to date or updated (or `--check` ran), 2 on any failure. On failure the running binary is untouched.
 
-Only stable releases count: a tag with a pre-release part (`v0.6.0-rc.1`) is never picked as latest.
+Only stable releases count: a tag with a pre-release part (`vX.Y.Z-rc.1`) is never picked as latest.
 
 ## Install kinds
 

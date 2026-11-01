@@ -11,7 +11,7 @@ branding:
 # The steps call Guard's old top-level names so that a `version` pinned before 0.6.0 keeps working.
 inputs:
   version:
-    description: cedr release to install (for example v0.3.0); default the action's own tag, else the latest release
+    description: cedr release to install (for example vX.Y.Z); default the action's own tag, else the latest release
     default: ""
   path:
     description: Repo root to check
@@ -49,7 +49,7 @@ runs:
         if [ -z "$version" ] && [[ $ACTION_REF =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then version=$ACTION_REF; fi
         # A release tag only: anything else could point the download at another repository's release.
         if [ -n "$version" ] && ! [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
-          echo "::error title=cedr::version must be a release tag such as v0.3.0"
+          echo "::error title=cedr::version must be a release tag such as vX.Y.Z"
           exit 1
         fi
         case "$RUNNER_OS/$RUNNER_ARCH" in

@@ -89,6 +89,7 @@ Never put customers, pricing, business strategy, hosted-service plans, private i
 
 - Most changes need no new docs. Add text only for a decision or constraint that the code cannot show. When one changes, rewrite the old text instead of appending to it.
 - Comments explain why, not what.
+- Avoid naming specific versions, so docs don't go stale: write `vX.Y.Z` and link the latest release. Name a version only to say what it changed.
 - Do not commit plans, research notes or agent scratch files. Track work in the issue that owns it. The merged pull request is the implementation record.
 
 ## Where code lives
