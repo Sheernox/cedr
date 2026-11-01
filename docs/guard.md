@@ -12,7 +12,6 @@ Guard is in beta, like every cedr product. Its files live in `.cedr/`, the GitHu
 
 - `cedr guard latest` follows the registry's `latest` dist-tag. For `server-filesystem` that is 2.1.0, even though later calendar versions (2026.x) exist under other tags.
 - PyPI (`uvx`), OCI digests and git-sourced skills have no upstream version check yet.
-- A skill symlink that escapes the root stops the whole run with exit 2 instead of reporting a finding.
 - `description_changed` reports only the new text. Showing the old text alongside needs a contract change to the diff shape.
 - Skills outside the standard paths are not discovered.
 - Guard scans the repo root, so it shows less than Grok Build loads. Grok Build also reads user-level files (`~/.grok/`, and by default `~/.claude/` and `~/.cursor/` rules, skills, servers and hooks), a `.grok/config.toml` in each directory below the repo root, and `.grok/rules/*.md`. It loads `.mcp.json` and `.cursor/mcp.json` too; Guard lists those under `claude` and `cursor`, so a server named in both is two entries. `grok inspect --json` can name the wrong config file as a server's source, so Guard parses the files instead.
