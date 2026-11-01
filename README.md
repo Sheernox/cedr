@@ -264,7 +264,7 @@ codex mcp add cedr -- cedr mcp
 
 ## 🤝 Contributing
 
-Bug reports and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first, and report security issues privately as described in [SECURITY.md](SECURITY.md).
+Bug reports and ideas are welcome, and focused fixes can go straight to a pull request. Read [CONTRIBUTING.md](CONTRIBUTING.md) first, and report security issues privately as described in [SECURITY.md](SECURITY.md).
 
 ## 📄 License
 
