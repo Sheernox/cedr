@@ -686,14 +686,24 @@ fn grok(v: &Value, base: &Row, native: &str, db: &Store) -> Result<bool> {
     }
     // Tool events read before the session's first usage row carry `turn_started`'s model name, which no response has.
     if let Some(primary) = v["session"]["primaryModelId"].as_str() {
+        let stale = "harness='grok' AND session=?1 AND model<>?2 AND model NOT IN (SELECT model FROM responses WHERE harness='grok' AND session=?1)";
+        grok_repair_events(db, stale, params![base.session, bounded(primary)])?;
         db.db.execute(
-            "UPDATE events SET model=?1 WHERE harness='grok' AND session=?2 AND model NOT IN (SELECT model FROM responses WHERE harness='grok' AND session=?2)",
-            params![bounded(primary), base.session],
+            &format!("UPDATE events SET model=?2 WHERE {stale}"),
+            params![base.session, bounded(primary)],
         )?;
     }
     Ok(ok)
 }
 const GROK_TICKS_PER_USD: f64 = 1e10;
+/// Records the hourly keys of events about to change key, so the app's copy of those rows is replaced on the next push.
+fn grok_repair_events(db: &Store, filter: &str, args: impl rusqlite::Params) -> Result<()> {
+    db.db.execute(
+        &format!("INSERT INTO repairs(hour,harness,model,effort,project,session,sidechain) SELECT DISTINCT at/3600*3600,harness,model,effort,project,session,sidechain FROM events WHERE {filter}"),
+        args,
+    )?;
+    Ok(())
+}
 /// Grok URL-encodes the working directory to name a session's group directory.
 fn url_decoded(text: &str) -> String {
     let bytes = text.as_bytes();
@@ -903,6 +913,15 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
                     )?;
                     db.db.execute(
                         "DELETE FROM responses WHERE harness='grok' AND session=?1",
+                        [&session],
+                    )?;
+                    grok_repair_events(
+                        db,
+                        "harness='grok' AND session=?1 AND NOT sidechain",
+                        [&session],
+                    )?;
+                    db.db.execute(
+                        "UPDATE events SET sidechain=1 WHERE harness='grok' AND session=?1 AND NOT sidechain",
                         [&session],
                     )?;
                 }
@@ -1423,7 +1442,11 @@ mod tests {
         let mut db = Store::open(&root.path().join("monitor.sqlite")).unwrap();
         let tree = root.path().join("sessions");
         let c = grok_config(&tree);
-        grok_session(&tree, "01child", Some(&grok_usage("01child", 700)), "");
+        let tool = concat!(
+            r#"{"ts":"2026-10-30T10:00:01.000Z","type":"tool_started"}"#,
+            "\n"
+        );
+        grok_session(&tree, "01child", Some(&grok_usage("01child", 700)), tool);
         collect(&c, &mut db).unwrap();
         assert_eq!(usage(&db), (1, 700, 5));
         grok_session(&tree, "01parent", Some(&grok_usage("01parent", 1000)), "");
@@ -1438,13 +1461,26 @@ mod tests {
             .db
             .query_row("SELECT count(*) FROM repairs", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(repairs, 1, "the app's copy of the child's row is replaced");
+        assert_eq!(
+            repairs, 2,
+            "the app's copies of the child's response and tool rows are replaced"
+        );
+        let marked: i64 = db
+            .db
+            .query_row("SELECT count(*) FROM events WHERE sidechain", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            marked, 1,
+            "an event stored before the parent was seen is marked too"
+        );
         collect(&c, &mut db).unwrap();
         let repairs: i64 = db
             .db
             .query_row("SELECT count(*) FROM repairs", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(repairs, 1);
+        assert_eq!(repairs, 2);
     }
     #[test]
     fn tool_events_read_before_usage_exists_move_to_the_billed_model() {
@@ -1466,9 +1502,22 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(model(&db), "grok-4.7");
-        grok_session(&tree, "01s", Some(&grok_usage("01s", 10)), events);
+        // Only usage.json appears: the events log stays as it was, so its cursor does not replay it.
+        std::fs::write(
+            tree.join("%2Fexample%2Fdemo/01s/usage.json"),
+            grok_usage("01s", 10).to_string(),
+        )
+        .unwrap();
         collect(&c, &mut db).unwrap();
         assert_eq!(model(&db), "grok-4.7-build");
+        let repaired: String = db
+            .db
+            .query_row("SELECT model FROM repairs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            repaired, "grok-4.7",
+            "the app's row under the old model is replaced"
+        );
     }
     #[test]
     fn grok_never_opens_a_session_file_holding_conversation_text() {
