@@ -684,6 +684,13 @@ fn grok(v: &Value, base: &Row, native: &str, db: &Store) -> Result<bool> {
             }
         }
     }
+    // Tool events read before the session's first usage row carry `turn_started`'s model name, which no response has.
+    if let Some(primary) = v["session"]["primaryModelId"].as_str() {
+        db.db.execute(
+            "UPDATE events SET model=?1 WHERE harness='grok' AND session=?2 AND model NOT IN (SELECT model FROM responses WHERE harness='grok' AND session=?2)",
+            params![bounded(primary), base.session],
+        )?;
+    }
     Ok(ok)
 }
 const GROK_TICKS_PER_USD: f64 = 1e10;
@@ -887,6 +894,18 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
                 } else {
                     HashSet::new()
                 };
+                // A session may be read before its parent's `subagents/` entry is, so its usage can already be stored.
+                for child in &children {
+                    let session = format!("s-{}", &crate::digest(&format!("grok:{child}"))[..12]);
+                    db.db.execute(
+                        "INSERT INTO repairs(hour,harness,model,effort,project,session,sidechain) SELECT at/3600*3600,harness,model,effort,project,session,sidechain FROM responses WHERE harness='grok' AND session=?1",
+                        [&session],
+                    )?;
+                    db.db.execute(
+                        "DELETE FROM responses WHERE harness='grok' AND session=?1",
+                        [&session],
+                    )?;
+                }
                 for path in paths {
                     if h == "grok"
                         && path.file_name().is_some_and(|x| x == "usage.json")
@@ -1374,6 +1393,82 @@ mod tests {
             )
             .unwrap();
         assert_eq!(models, 0);
+    }
+    /// A one-session Grok tree, for the states the fixture's finished sessions cannot show.
+    fn grok_session(root: &Path, id: &str, usage: Option<&Value>, events: &str) {
+        let dir = root.join("%2Fexample%2Fdemo").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("events.jsonl"), events).unwrap();
+        if let Some(u) = usage {
+            std::fs::write(dir.join("usage.json"), u.to_string()).unwrap();
+        }
+    }
+    fn grok_usage(id: &str, input: i64) -> Value {
+        let u = json!({"inputTokens": input, "cachedReadTokens": 0, "outputTokens": 5, "reasoningTokens": 0});
+        json!({"sessionId": id, "session": {"primaryModelId": "grok-4.7-build"},
+               "turns": [{"endedAt": format!("2026-10-30T10:00:00.{input:09}+00:00"), "modelUsage": {"grok-4.7-build": u}}]})
+    }
+    fn grok_config(root: &Path) -> Config {
+        let mut c = Config {
+            harnesses: vec!["grok".into()],
+            ..Config::default()
+        };
+        c.paths
+            .insert("grok".into(), root.to_string_lossy().into_owned());
+        c
+    }
+    #[test]
+    fn a_session_found_to_be_a_subagent_gives_up_the_usage_it_already_stored() {
+        let root = tempfile::tempdir().unwrap();
+        let mut db = Store::open(&root.path().join("monitor.sqlite")).unwrap();
+        let tree = root.path().join("sessions");
+        let c = grok_config(&tree);
+        grok_session(&tree, "01child", Some(&grok_usage("01child", 700)), "");
+        collect(&c, &mut db).unwrap();
+        assert_eq!(usage(&db), (1, 700, 5));
+        grok_session(&tree, "01parent", Some(&grok_usage("01parent", 1000)), "");
+        std::fs::create_dir_all(tree.join("%2Fexample%2Fdemo/01parent/subagents/01child")).unwrap();
+        collect(&c, &mut db).unwrap();
+        assert_eq!(
+            usage(&db),
+            (1, 1000, 5),
+            "the parent's usage includes the child"
+        );
+        let repairs: i64 = db
+            .db
+            .query_row("SELECT count(*) FROM repairs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(repairs, 1, "the app's copy of the child's row is replaced");
+        collect(&c, &mut db).unwrap();
+        let repairs: i64 = db
+            .db
+            .query_row("SELECT count(*) FROM repairs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(repairs, 1);
+    }
+    #[test]
+    fn tool_events_read_before_usage_exists_move_to_the_billed_model() {
+        let root = tempfile::tempdir().unwrap();
+        let mut db = Store::open(&root.path().join("monitor.sqlite")).unwrap();
+        let tree = root.path().join("sessions");
+        let c = grok_config(&tree);
+        let events = concat!(
+            r#"{"ts":"2026-10-30T10:00:00.000Z","type":"turn_started","model_id":"grok-4.7"}"#,
+            "\n",
+            r#"{"ts":"2026-10-30T10:00:01.000Z","type":"tool_started"}"#,
+            "\n"
+        );
+        grok_session(&tree, "01s", None, events);
+        collect(&c, &mut db).unwrap();
+        let model = |db: &Store| -> String {
+            db.db
+                .query_row("SELECT model FROM events", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(model(&db), "grok-4.7");
+        grok_session(&tree, "01s", Some(&grok_usage("01s", 10)), events);
+        collect(&c, &mut db).unwrap();
+        assert_eq!(model(&db), "grok-4.7-build");
     }
     #[test]
     fn grok_never_opens_a_session_file_holding_conversation_text() {

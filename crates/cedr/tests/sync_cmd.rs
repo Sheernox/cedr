@@ -666,6 +666,24 @@ fn grok_import_reports_rules_it_cannot_translate() {
     assert!(rule.contains("Be brief.") && rule.contains("grok"));
 }
 #[test]
+fn a_grok_hook_with_arguments_keeps_its_path_through_an_import() {
+    let d = tempfile::tempdir().unwrap();
+    fs::create_dir_all(d.path().join(".grok/hooks")).unwrap();
+    fs::write(
+        d.path().join(".grok/hooks/mine.json"),
+        r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"../../bin/a.sh --fast"},{"type":"command","command":"../../bin/b.sh"}]}]}}"#,
+    )
+    .unwrap();
+    cedr_sync::import::init(d.path(), None).unwrap();
+    let commands: Vec<_> = cedr_sync::load_config(d.path())
+        .unwrap()
+        .hooks
+        .into_iter()
+        .map(|h| h.command)
+        .collect();
+    assert_eq!(commands, ["../../bin/a.sh --fast", "bin/b.sh"]);
+}
+#[test]
 fn a_server_grok_cannot_namespace_is_left_out_and_named() {
     let d = tempfile::tempdir().unwrap();
     fs::create_dir_all(d.path().join(".cedr")).unwrap();

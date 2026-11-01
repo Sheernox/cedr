@@ -625,7 +625,11 @@ pub fn init(root: &Path, targets: Option<Vec<String>>) -> Result<Vec<String>> {
                             {
                                 hooks.push(config::Hook {
                                     event: event.into(),
-                                    command: if target == "grok" {
+                                    // Only a bare path is taken from the hook file's folder; with arguments
+                                    // it runs in a shell at the repo root, where `../../` means what it says.
+                                    command: if target == "grok"
+                                        && !command.contains(char::is_whitespace)
+                                    {
                                         command.strip_prefix("../../").unwrap_or(command).into()
                                     } else {
                                         command.into()
