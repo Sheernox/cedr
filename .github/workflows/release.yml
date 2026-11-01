@@ -25,9 +25,10 @@ jobs:
           - { target: aarch64-apple-darwin, asset: macos-arm64, os: macos-latest }
           - { target: x86_64-pc-windows-msvc, asset: windows-x86_64, os: windows-latest }
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - name: Check the tag matches the crate version
         if: startsWith(github.ref, 'refs/tags/v')
@@ -50,7 +51,7 @@ jobs:
             cp "target/${{ matrix.target }}/release/cedr" "dist/$name/"
             tar -C dist -czf "dist/$name.tar.gz" "$name"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cedr-${{ matrix.asset }}
           path: dist/cedr-${{ matrix.asset }}.*
@@ -67,16 +68,16 @@ jobs:
       attestations: write
     steps:
       # Only CHANGELOG.md: its entry for the tag is the release notes. Checked out first, since checkout cleans the workspace.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           sparse-checkout: CHANGELOG.md
           sparse-checkout-cone-mode: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
       - run: cd dist && sha256sum cedr-* > SHA256SUMS
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: dist/cedr-*
       - name: Release notes from CHANGELOG.md
