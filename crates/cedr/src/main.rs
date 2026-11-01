@@ -39,7 +39,7 @@ Examples:
   cedr guard verify                     fail when the setup no longer matches the lock
   cedr guard outdated --fail-on high    inspect newer npm server surfaces
   cedr guard push --updates             report pins, findings and available updates
-  claude mcp add cedr -- cedr mcp        give an agent the route and council tools
+  claude mcp add cedr -- cedr mcp        give an agent cedr's tools
   cedr update                           install the latest release
   cedr telemetry off                    stop sending anonymous usage data
 
@@ -49,7 +49,7 @@ Start with a routes.toml: https://cedr.dev/docs/route (the app can generate one)
 #[command(
     name = "cedr",
     version,
-    about = "Route work to AI coding agents, and pin the skills and MCP servers they load",
+    about = "Route, review, pin, sync and monitor the work of AI coding agents",
     after_help = EXAMPLES
 )]
 struct Cli {
@@ -118,7 +118,7 @@ enum Command {
         #[command(subcommand)]
         command: GuardCommand,
     },
-    /// Serve the route and council tools over MCP on stdio
+    /// Serve the route, council, sync, monitor and doctor tools over MCP on stdio
     Mcp {
         /// routes.toml to use instead of the usual search
         #[arg(long)]

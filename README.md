@@ -1,6 +1,6 @@
 <div align="center">
 
-<a href="https://cedr.dev"><img src="assets/banner.png" alt="cedr.dev: developer tools for humans and agents. Route the work to the right agent, review it across vendors, and pin what your agents load. One open-source CLI." width="100%"></a>
+<a href="https://cedr.dev"><img src="assets/banner.png" alt="cedr.dev: developer tools for humans and agents. Every coding agent, one control panel. One open-source CLI." width="100%"></a>
 
 <a href="https://github.com/Sheernox/cedr/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Sheernox/cedr/ci.yml?branch=main&style=for-the-badge&label=CI&labelColor=555555" alt="CI status"></a>
 <a href="https://github.com/Sheernox/cedr/releases/latest"><img src="https://img.shields.io/github/v/release/Sheernox/cedr?style=for-the-badge&label=Release&color=2F7A57&labelColor=555555" alt="Latest release"></a>
@@ -14,40 +14,49 @@
 
 <br>
 
-`cedr` is the command line tool behind [cedr.dev](https://cedr.dev). It picks which AI coding agent, model and effort should take each kind of work, merges reviews from several vendors into one pass or block decision, and pins the skills and MCP servers your agents load. It works with Claude Code, Codex, Cursor and Gemini, and any agent that speaks MCP can call it directly.
+`cedr` is the command line tool behind [cedr.dev](https://cedr.dev): every coding agent, one control panel. It picks the agent, model and effort for each kind of work, merges reviews from several vendors into one gate, pins the skills and MCP servers your agents load, compiles one setup into each agent's own files, and reports usage, spend and plan limits across them. Any agent that speaks MCP can call it directly.
 
 > [!NOTE]
 > cedr is in public beta. Commands and file formats may still change before 1.0.
 
-## Monitor
-
-`cedr monitor` reads local coding-agent usage and reports tokens, cache use and API-equivalent cost estimates. It sends counts only when you run `push` or enable automatic pushes.
-
-```sh
-cedr monitor --since 7d --by model
-cedr monitor sources
-cedr monitor sessions
-cedr monitor limits
-cedr monitor push --org your-org
-cedr monitor schedule
-```
-
-Configure collection and optional automatic pushes in `~/.config/cedr/monitor.toml`. `cedr monitor reset` removes the local store so the next report rebuilds it from the logs still available. Missing usage stays unknown.
-
-## ✨ What it does
+## ✨ Products
 
 <table>
 <tr>
-<th width="33%">🧭 Route</th>
-<th width="33%">⚖️ Council</th>
-<th width="33%">🔒 Guard</th>
+<th>Product</th>
+<th>What it does</th>
+<th>Start with</th>
 </tr>
 <tr valign="top">
+<td nowrap><img src="assets/products/route.svg" width="40" height="40" align="middle" alt="">&nbsp; <a href="https://cedr.dev/docs/route"><b>Route</b></a></td>
 <td>Picks the agent, model and effort for each kind of work from your <code>routes.toml</code>. Equally suited work goes to the plan with the most room left, and plans near their limits are skipped.</td>
+<td><code>cedr route pick review.code</code></td>
+</tr>
+<tr valign="top">
+<td nowrap><img src="assets/products/council.svg" width="40" height="40" align="middle" alt="">&nbsp; <a href="https://cedr.dev/docs/council"><b>Council</b></a></td>
 <td>Starts one reviewer per vendor, merges their reports, groups findings that point at the same place and decides the gate. Any P0 or P1 blocks; too few reports is never a silent pass.</td>
+<td><code>cedr council plan review.council</code></td>
+</tr>
+<tr valign="top">
+<td nowrap><img src="assets/products/guard.svg" width="40" height="40" align="middle" alt="">&nbsp; <a href="https://cedr.dev/docs/guard"><b>Guard</b></a></td>
 <td>Lints your agent setup, pins every skill and MCP server in <code>.cedr/guard.lock</code>, and fails CI when a server's tools, descriptions or network hosts change after you pinned it.</td>
+<td><code>cedr guard lint</code></td>
+</tr>
+<tr valign="top">
+<td nowrap><img src="assets/products/sync.svg" width="40" height="40" align="middle" alt="">&nbsp; <a href="https://cedr.dev/docs/sync"><b>Sync</b></a></td>
+<td>Write rules, skills, MCP servers, permissions and hooks once in <code>.cedr/</code>, and cedr writes each agent's own files. CI fails on drift, and hand edits are never overwritten unless you pass <code>--force</code>.</td>
+<td><code>cedr sync init</code></td>
+</tr>
+<tr valign="top">
+<td nowrap><img src="assets/products/monitor.svg" width="40" height="40" align="middle" alt="">&nbsp; <a href="https://cedr.dev/docs/monitor"><b>Monitor</b></a></td>
+<td>Reads each agent's local logs and reports tokens, cache use, API-equivalent cost, sessions and how close each plan is to its limit. Counts leave your machine only when you push them.</td>
+<td><code>cedr monitor limits</code></td>
 </tr>
 </table>
+
+**Not sure where you stand?** `cedr doctor` checks your account, Route, MCP, Monitor, Sync and Guard setup and prints the fix for whatever is missing. It never changes anything.
+
+**Coming next:** **Bench** (know a change helps before it merges) and **Index** (one code graph every agent shares). See the [product line](https://cedr.dev/#products).
 
 ## 📦 Install
 
@@ -79,7 +88,7 @@ cargo install --locked --git https://github.com/Sheernox/cedr cedr
 
 From 0.5.0 on, cedr keeps itself up to date: once a day it checks for a release in the background, verifies the archive against `SHA256SUMS` and replaces itself. `cedr update` updates right away, `cedr update --check` only reports, and `cedr update --auto off` (or `CEDR_NO_AUTO_UPDATE=1`) turns the daily update off. It never updates in CI, and a `cargo install` tells you to update with cargo instead. See [docs/update.md](docs/update.md).
 
-## 🚀 Quick start
+## 🚀 Quick start with Route
 
 **1. Describe your plans and routes** in `~/.config/cedr/routes.toml`. The [Route page](https://cedr.dev/docs/route/) in the cedr.dev app can generate this file for you.
 
@@ -134,7 +143,12 @@ $ cedr route verdict p-979e77351990 accepted
 
 `cedr route stats` then shows which model does each kind of work best.
 
+Sync and Monitor need no config to try: run `cedr sync init` in a repo, or `cedr monitor limits` anywhere.
+
 ## 🧰 Commands
+
+<details>
+<summary><b>Route</b></summary>
 
 | Command | What it does |
 | --- | --- |
@@ -144,35 +158,94 @@ $ cedr route verdict p-979e77351990 accepted
 | `cedr route verdict <pick> <verdict>` | Record whether the work was accepted, reworked, redone or rejected |
 | `cedr route stats` | Picks and verdicts per route and model |
 | `cedr route sync` | Share history and routes with your cedr.dev organization |
+
+</details>
+
+<details>
+<summary><b>Council</b></summary>
+
+| Command | What it does |
+| --- | --- |
 | `cedr council plan <route>` | Name the reviewers to start, one per vendor, and the quorum |
 | `cedr council merge <reports>...` | Merge their reports and decide the gate |
-| `cedr mcp` | Serve the Route and Council tools over MCP on stdio |
+
+</details>
+
+<details>
+<summary><b>Guard</b></summary>
+
+| Command | What it does |
+| --- | --- |
 | `cedr guard lint` | Find problems in a repo's agent setup |
 | `cedr guard lock` | Pin every skill and MCP server in `.cedr/guard.lock` |
 | `cedr guard verify` | Fail when the setup no longer matches the lock (offline) |
 | `cedr guard outdated` | Inspect newer npm versions and their surface changes without running them |
 | `cedr guard push` | Send pins and findings to your organization's Guard page; `--updates` includes npm updates |
+
+</details>
+
+<details>
+<summary><b>Sync</b></summary>
+
+| Command | What it does |
+| --- | --- |
+| `cedr sync init` | Import a repo's existing agent files into `.cedr/` |
+| `cedr sync` | Write each agent's native files; `--dry-run` prints the diffs instead |
+| `cedr sync check` | Fail when generated files drifted or an organization rule is broken (offline) |
+| `cedr sync pull --org <id>` | Vendor your organization rules into the repo |
+| `cedr sync push --org <id>` | Report drift to the app, without file contents or environment values |
+
+Commit the sources, generated files and `.cedr/sync.lock`. Sync refuses unmanaged Markdown and hand edits unless `--force` is supplied.
+
+</details>
+
+<details>
+<summary><b>Monitor</b></summary>
+
+| Command | What it does |
+| --- | --- |
+| `cedr monitor` | Report tokens, cache use and API-equivalent cost; for example `--since 7d --by model` |
+| `cedr monitor limits` | Each plan window's use, reset, projection and outlook |
+| `cedr monitor sessions` | The costliest sessions |
+| `cedr monitor sources` | What Monitor found for each agent, and why one has no data |
+| `cedr monitor push --org <id>` | Send hourly counts and plan readings to your organization |
+| `cedr monitor schedule` | Install or remove a per-user timer that pushes on a schedule |
+| `cedr monitor reset` | Delete the local store; the next report rebuilds it from the logs still available |
+
+Configure collection and optional automatic pushes in `~/.config/cedr/monitor.toml`. Missing usage stays unknown.
+
+</details>
+
+<details>
+<summary><b>Everything else</b></summary>
+
+| Command | What it does |
+| --- | --- |
+| `cedr doctor` | Diagnose account setup, Route, MCP, Monitor, Sync and Guard; `--format json` for agents. Failures exit 1; warnings alone exit 0 |
+| `cedr mcp` | Serve the Route, Council, Sync, Monitor and Doctor tools over MCP on stdio |
 | `cedr update` | Install the latest release now; `--check` only reports, `--auto off` stops the daily update |
 | `cedr telemetry status\|off\|on` | Show or change whether cedr sends anonymous usage data |
 
-Run `cedr <command> --help` for every option, and `cedr completions bash|zsh|fish|powershell|elvish` for a shell completion script. Every config field, output shape and exit code is specified in the design docs for [Route](docs/route.md), [Council](docs/council.md) and [Guard](docs/design.md).
+</details>
+
+Run `cedr <command> --help` for every option, and `cedr completions bash|zsh|fish|powershell|elvish` for a shell completion script. Every config field, output shape and exit code is specified in the design docs for [Route](docs/route.md), [Council](docs/council.md), [Guard](docs/design.md), [Sync](docs/sync.md), [Monitor](docs/monitor.md) and [Doctor](docs/doctor.md).
 
 ## 🛡️ Check every pull request
 
 Guard discovers Claude, Codex, Cursor, Gemini, Copilot, opencode and Antigravity MCP configs, plus their standard skill folders.
 
-The Guard action installs a released `cedr` (checked against the release's `SHA256SUMS`), runs `cedr guard lint` and `cedr guard verify`, and shows each finding as an annotation on the pull request:
+The cedr action installs a released `cedr` (checked against the release's `SHA256SUMS`), runs `cedr guard lint` and `cedr guard verify`, and shows each finding as an annotation on the pull request. When `.cedr/sync.toml` exists it also fails on Sync drift:
 
 ```yaml
 - uses: actions/checkout@v5
-- uses: Sheernox/cedr@v0.3.0
+- uses: Sheernox/cedr@v0.6.0
 ```
 
 Inputs: `version`, `path`, `strict`, `verify` (`auto`, `true` or `false`), `sync`, `sync-fix`, `outdated` (default `true`, annotations never fail the job) and `push-org`, which with a `CEDR_API_KEY` secret also sends each result and npm updates to the app. Repo-level settings, such as extra skill folders and checks to skip, go in `.cedr/guard.toml`. See the [Guard design](docs/design.md) for every field.
 
 ## 🔌 Use it from your agent
 
-`cedr mcp` offers the same tools to any agent that speaks MCP:
+`cedr mcp` offers the Route, Council, Sync, Monitor and Doctor tools to any agent that speaks MCP:
 
 ```sh
 claude mcp add cedr -- cedr mcp
@@ -185,24 +258,9 @@ codex mcp add cedr -- cedr mcp
 - Picks, verdicts and stats stay on your machine. `cedr route sync` sends them to cedr.dev only when you add a `[sync]` section and a cedr.dev API key.
 - `cedr guard lock` runs an MCP server only when you pass `--introspect`, and warns before it does.
 - `cedr guard push` sends names, versions, hashes and findings, never file contents, environment values or how a server is started.
+- `cedr monitor` stays local until you run `push` or enable automatic pushes, and then sends counts only: never prompts, responses, file paths or credentials.
+- `cedr sync push` reports drift without sending file contents or environment values.
 - cedr sends anonymous usage data (command names, exit codes, timing, version, OS and which agents are installed) with a random install ID, after telling you on its first run. Never arguments, paths, repo names or code. `cedr telemetry off`, `CEDR_TELEMETRY=0` or `DO_NOT_TRACK=1` turn it off. Every field: [docs/telemetry.md](docs/telemetry.md).
-
-## Sync
-
-Keep agent instructions, skills, MCP servers, permissions and hooks in `.cedr/`, then compile them into each agent's native files:
-
-```bash
-cedr sync init
-cedr sync --dry-run
-cedr sync
-cedr sync check --format github
-```
-
-Commit the sources, generated files and `.cedr/sync.lock`. Sync refuses unmanaged Markdown and hand edits unless `--force` is supplied. `cedr sync pull --org <id>` vendors organization rules; `cedr sync push --org <id>` reports drift without sending file contents or environment values.
-
-## Doctor
-
-Run `cedr doctor` to diagnose account setup, Route, MCP registration, Monitor, Sync and Guard. `cedr doctor --format json` returns checks with states and repair steps. Doctor reads without changing configuration; offline account checks are skipped or reported as warnings. Failures exit 1; warnings alone exit 0.
 
 ## 🤝 Contributing
 
