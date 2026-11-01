@@ -1,0 +1,25 @@
+name: Bug report
+description: Something in cedr does not work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: command
+    attributes:
+      label: What you ran and what you expected
+      description: The full cedr command. Remove API keys, tokens and private paths.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: Include any error output.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: cedr version and operating system
+      description: The output of cedr --version, and your OS.
+    validations:
+      required: true
