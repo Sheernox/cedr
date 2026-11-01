@@ -4,7 +4,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 ## v0.6.0 (2026-11-01)
 
-<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.6.0.png" alt="cedr v0.6.0: cedr guard" width="560">
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.6.0.png" alt="cedr v0.6.0: cedr guard" width="770">
 
 **v0.6.0** · 5 changes from 1 contributor
 
