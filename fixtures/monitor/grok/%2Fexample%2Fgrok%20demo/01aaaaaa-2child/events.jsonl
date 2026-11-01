@@ -1,0 +1,2 @@
+{"ts": "2026-10-30T10:03:00.000Z", "type": "turn_started", "session_id": "01aaaaaa-2child", "turn_number": 0, "model_id": "grok-4.7", "session_relationship": "primary"}
+{"ts": "2026-10-30T10:03:01.000Z", "type": "tool_started", "tool_name": "grep"}

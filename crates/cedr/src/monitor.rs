@@ -24,7 +24,7 @@ pub struct ReportArgs {
     /// One row per value of this; default model
     #[arg(long,value_parser=["harness","model","project","day","hour","session","effort"])]
     by: Option<String>,
-    /// Only this agent (claude, codex, gemini, copilot, opencode, muse, antigravity)
+    /// Only this agent (claude, codex, gemini, copilot, opencode, muse, antigravity, grok)
     #[arg(long)]
     harness: Option<String>,
     /// Only this project, as the report names it

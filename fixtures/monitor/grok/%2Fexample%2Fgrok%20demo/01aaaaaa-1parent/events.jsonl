@@ -1,0 +1,6 @@
+{"ts": "2026-10-30T10:00:00.000Z", "type": "turn_started", "session_id": "01aaaaaa-1parent", "turn_number": 0, "model_id": "grok-4.7", "session_relationship": "primary"}
+{"ts": "2026-10-30T10:00:01.000Z", "type": "tool_started", "tool_name": "read_file"}
+{"ts": "2026-10-30T10:00:02.000Z", "type": "tool_completed", "tool_name": "read_file", "duration_ms": 3, "outcome": "success", "tool_call_id": "call-1"}
+{"ts": "2026-10-30T10:00:03.000Z", "type": "tool_started", "tool_name": "run_terminal_command"}
+{"ts": "2026-10-30T10:00:04.000Z", "type": "tool_completed", "tool_name": "run_terminal_command", "duration_ms": 3, "outcome": "failure", "tool_call_id": "call-2"}
+{"ts": "2026-10-30T10:00:05.000Z", "type": "turn_ended", "outcome": "completed"}

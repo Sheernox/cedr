@@ -1,0 +1,5 @@
+[mcp_servers.grok]
+command = "example-mcp"
+
+[mcp_servers.shared]
+url = "https://mcp.example.com/mcp"

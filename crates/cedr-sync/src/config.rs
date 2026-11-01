@@ -12,6 +12,7 @@ pub const TARGETS: &[&str] = &[
     "copilot",
     "opencode",
     "antigravity",
+    "grok",
 ];
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

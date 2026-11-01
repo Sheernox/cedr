@@ -1,0 +1,106 @@
+{
+ "sessionId": "01aaaaaa-3fork",
+ "updatedAt": "2026-10-30T10:10:05.100000000+00:00",
+ "session": {
+  "inputTokens": 300,
+  "outputTokens": 30,
+  "cachedReadTokens": 0,
+  "cacheCreationTokens": 0,
+  "reasoningTokens": 0,
+  "totalTokens": 330,
+  "modelCalls": 1,
+  "costUsdTicks": 10000000,
+  "turnCount": 1,
+  "primaryModelId": "grok-4.7-build",
+  "modelUsage": {
+   "grok-4.7-build": {
+    "inputTokens": 300,
+    "outputTokens": 30,
+    "cachedReadTokens": 0,
+    "cacheCreationTokens": 0,
+    "reasoningTokens": 0,
+    "totalTokens": 330,
+    "modelCalls": 1,
+    "costUsdTicks": 10000000
+   }
+  }
+ },
+ "turns": [
+  {
+   "turnNumber": 1,
+   "endedAt": "2026-10-30T10:00:05.100000000+00:00",
+   "inputTokens": 1000,
+   "outputTokens": 50,
+   "cachedReadTokens": 100,
+   "cacheCreationTokens": 0,
+   "reasoningTokens": 20,
+   "totalTokens": 1050,
+   "modelCalls": 1,
+   "costUsdTicks": 250000000,
+   "turnCount": 1,
+   "primaryModelId": "grok-4.7-build",
+   "modelUsage": {
+    "grok-4.7-build": {
+     "inputTokens": 1000,
+     "outputTokens": 50,
+     "cachedReadTokens": 100,
+     "cacheCreationTokens": 0,
+     "reasoningTokens": 20,
+     "totalTokens": 1050,
+     "modelCalls": 1,
+     "costUsdTicks": 250000000
+    }
+   }
+  },
+  {
+   "turnNumber": 2,
+   "endedAt": "2026-10-30T10:05:05.100000000+00:00",
+   "inputTokens": 9000,
+   "outputTokens": 70,
+   "cachedReadTokens": 0,
+   "cacheCreationTokens": 0,
+   "reasoningTokens": 0,
+   "totalTokens": 9070,
+   "modelCalls": 1,
+   "turnCount": 1,
+   "primaryModelId": "grok-4.7-build",
+   "modelUsage": {
+    "grok-4.7-build": {
+     "inputTokens": 9000,
+     "outputTokens": 70,
+     "cachedReadTokens": 0,
+     "cacheCreationTokens": 0,
+     "reasoningTokens": 0,
+     "totalTokens": 9070,
+     "modelCalls": 1
+    }
+   }
+  },
+  {
+   "turnNumber": 3,
+   "endedAt": "2026-10-30T10:10:05.100000000+00:00",
+   "inputTokens": 300,
+   "outputTokens": 30,
+   "cachedReadTokens": 0,
+   "cacheCreationTokens": 0,
+   "reasoningTokens": 0,
+   "totalTokens": 330,
+   "modelCalls": 1,
+   "costUsdTicks": 10000000,
+   "turnCount": 1,
+   "primaryModelId": "grok-4.7-build",
+   "modelUsage": {
+    "grok-4.7-build": {
+     "inputTokens": 300,
+     "outputTokens": 30,
+     "cachedReadTokens": 0,
+     "cacheCreationTokens": 0,
+     "reasoningTokens": 0,
+     "totalTokens": 330,
+     "modelCalls": 1,
+     "costUsdTicks": 10000000
+    }
+   }
+  }
+ ]
+}

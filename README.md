@@ -232,7 +232,7 @@ Run `cedr <command> --help` for every option, and `cedr completions bash|zsh|fis
 
 ## 🛡️ Check every pull request
 
-Guard discovers Claude, Codex, Cursor, Gemini, Copilot, opencode and Antigravity MCP configs, plus their standard skill folders.
+Guard discovers Claude, Codex, Cursor, Gemini, Copilot, opencode, Antigravity and Grok Build MCP configs, plus their standard skill folders.
 
 The cedr action installs a released `cedr` (checked against the release's `SHA256SUMS`), runs `cedr guard lint` and `cedr guard verify`, and shows each finding as an annotation on the pull request. When `.cedr/sync.toml` exists it also fails on Sync drift:
 

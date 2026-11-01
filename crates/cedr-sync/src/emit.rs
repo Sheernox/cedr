@@ -168,7 +168,64 @@ fn server(s: &Server, target: &str) -> Option<Value> {
     }
     Some(v)
 }
+/// Grok Build skips the tools of a server whose name it cannot namespace as `<server>__<tool>`.
+fn grok_server_name(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && !name.ends_with('_')
+        && !name.contains("__")
+}
+/// Grok Build resolves a command that is only a relative path against the hook file's folder, and a hook that cannot
+/// start is skipped without a word, so point it back at the repo root. A command with arguments runs in a shell there.
+fn grok_hook_command(command: &str) -> String {
+    let relative = command.contains('/')
+        && !command.starts_with(['/', '~', '$', '"', '\''])
+        && !command.contains(char::is_whitespace);
+    if relative {
+        format!("../../{}", command.strip_prefix("./").unwrap_or(command))
+    } else {
+        command.to_string()
+    }
+}
+/// `[permission] rules` entries. A rule with no `pattern` covers the whole tool.
+fn grok_rules(c: &Config) -> Value {
+    let mut rules = vec![];
+    for (action, entries) in [
+        ("allow", &c.permissions.allow),
+        ("deny", &c.permissions.deny),
+    ] {
+        for entry in entries {
+            let (kind, value) = entry.split_once(':').expect("validated");
+            let mut rule = |tool: &str, pattern: Option<String>| {
+                let mut r = json!({"action": action, "tool": tool});
+                if let Some(p) = pattern {
+                    r["pattern"] = json!(p);
+                }
+                rules.push(r);
+            };
+            match kind {
+                "shell" if value == "*" => rule("bash", None),
+                "shell" => {
+                    rule("bash", Some(value.to_string()));
+                    rule("bash", Some(format!("{value} *")));
+                }
+                "read" | "edit" => rule(kind, Some(value.to_string())),
+                "fetch" => rule("webfetch", Some(format!("domain:{value}"))),
+                _ => rule(
+                    "mcp",
+                    Some(match value.split_once('/') {
+                        Some((server, tool)) => format!("{server}__{tool}"),
+                        None => format!("{value}__*"),
+                    }),
+                ),
+            }
+        }
+    }
+    json!(rules)
+}
 fn permissions(c: &Config, target: &str, notes: &mut Vec<String>) -> Value {
+    if target == "grok" {
+        return grok_rules(c);
+    }
     let mut v = json!({});
     for (decision, entries) in [
         ("allow", &c.permissions.allow),
@@ -238,10 +295,12 @@ fn hooks(c: &Config, target: &str, notes: &mut Vec<String>) -> Value {
             ("antigravity", "after-edit") => {
                 Some(("PostToolUse", Some("write_file|replace_file_content")))
             }
-            ("claude" | "codex" | "gemini" | "antigravity", "session-start") => {
+            ("grok", "before-shell") => Some(("PreToolUse", Some("Bash"))),
+            ("grok", "after-edit") => Some(("PostToolUse", Some("Edit|Write"))),
+            ("claude" | "codex" | "gemini" | "antigravity" | "grok", "session-start") => {
                 Some(("SessionStart", None))
             }
-            ("claude" | "codex" | "antigravity", "stop") => Some(("Stop", None)),
+            ("claude" | "codex" | "antigravity" | "grok", "stop") => Some(("Stop", None)),
             ("gemini", "stop") => Some(("AfterAgent", None)),
             ("cursor", "before-shell") => Some(("beforeShellExecution", None)),
             ("cursor", "after-edit") => Some(("afterFileEdit", None)),
@@ -256,6 +315,9 @@ fn hooks(c: &Config, target: &str, notes: &mut Vec<String>) -> Value {
         };
         let command = if target == "copilot" {
             json!({"type":"command","bash":hook.command,"powershell":hook.command,"cwd":".","timeoutSec":60})
+        } else if target == "grok" {
+            // Grok Build has no `cwd` field: its hooks always run in the workspace root.
+            json!({"type":"command","command":grok_hook_command(&hook.command),"timeout":60})
         } else {
             json!({"type":"command","command":hook.command,"timeout":if target=="gemini" {60000}else{60},"cwd":"."})
         };
@@ -275,6 +337,7 @@ fn hooks(c: &Config, target: &str, notes: &mut Vec<String>) -> Value {
     }
     v
 }
+const GROK_TRUST: &str = "grok: Grok Build holds back this repo's instructions, skills, MCP servers and hooks until the folder is trusted: run grok --trust or /hooks-trust once";
 pub fn emit(c: &Config, rules: &[Rule], skills: &Skills, org: &str) -> (Outputs, Vec<String>) {
     let mut out = Outputs::new();
     let mut notes = vec![];
@@ -303,6 +366,22 @@ pub fn emit(c: &Config, rules: &[Rule], skills: &Skills, org: &str) -> (Outputs,
                     keys: vec![],
                 },
             );
+        }
+    }
+    let both_claude = ["claude", "grok"]
+        .iter()
+        .all(|t| c.targets.iter().any(|x| x == t));
+    if both_claude {
+        for r in rules.iter().filter(|r| selected(&r.meta.agents, "claude")) {
+            if r.meta.paths.is_some() {
+                notes.push(format!("rule {0}: Grok Build also loads .claude/rules/{0}.md, for every file, unless [compat.claude] rules = false in ~/.grok/config.toml", r.id));
+            }
+            if r.meta.agents.is_some() && !selected(&r.meta.agents, "grok") {
+                notes.push(format!(
+                    "rule {}: Grok Build also reads CLAUDE.md, so this rule reaches grok",
+                    r.id
+                ));
+            }
         }
     }
     for target in &c.targets {
@@ -360,6 +439,21 @@ pub fn emit(c: &Config, rules: &[Rule], skills: &Skills, org: &str) -> (Outputs,
                     Some(format!(".github/instructions/{}.instructions.md", r.id))
                 }
                 "antigravity" if scoped || own => Some(format!(".agents/rules/{}.md", r.id)),
+                // Grok Build always reads `CLAUDE.md`, which holds this rule too, so a second copy would only repeat it.
+                "grok" if own && both_claude && selected(&r.meta.agents, "claude") => continue,
+                "grok" if own => {
+                    // Grok Build loads every file in `.grok/rules/` as it is, with no front matter or path scoping.
+                    let heading = r.meta.paths.as_ref().map_or(String::new(), |paths| {
+                        format!("## When working in {}\n\n", paths.join(", "))
+                    });
+                    doc(
+                        &mut out,
+                        &format!(".grok/rules/{}.md", r.id),
+                        target,
+                        format!("{heading}{}{org}", r.body.trim()),
+                    );
+                    continue;
+                }
                 _ => None,
             };
             if own && path.is_none() && instruction.is_none() {
@@ -407,11 +501,15 @@ pub fn emit(c: &Config, rules: &[Rule], skills: &Skills, org: &str) -> (Outputs,
                 );
             }
         }
-        if target == "claude" {
+        if let Some(root) = match target {
+            "claude" => Some(".claude"),
+            "grok" => Some(".grok"),
+            _ => None,
+        } {
             for (name, tree) in skills {
                 for (p, b) in tree {
                     out.insert(
-                        format!(".claude/skills/{name}/{p}"),
+                        format!("{root}/skills/{name}/{p}"),
                         Output {
                             target: target.into(),
                             bytes: b.clone(),
@@ -424,7 +522,9 @@ pub fn emit(c: &Config, rules: &[Rule], skills: &Skills, org: &str) -> (Outputs,
         let mut servers = json!({});
         for (name, s) in &c.mcp {
             if selected(&s.agents, target) {
-                if let Some(v) = server(s, target) {
+                if target == "grok" && !grok_server_name(name) {
+                    note(&mut notes, target, &format!("mcp.{name}"));
+                } else if let Some(v) = server(s, target) {
                     servers[name] = v;
                 } else {
                     note(&mut notes, target, &format!("mcp.{name}"));
@@ -542,6 +642,21 @@ pub fn emit(c: &Config, rules: &[Rule], skills: &Skills, org: &str) -> (Outputs,
                 );
                 out.get_mut("opencode.json").expect("output").keys =
                     vec!["mcp".into(), "permission.bash".into()];
+            }
+            "grok" => {
+                object(
+                    &mut out,
+                    ".grok/config.toml",
+                    target,
+                    json!({"mcp_servers":servers,"permission":{"rules":p}}),
+                );
+                object(
+                    &mut out,
+                    ".grok/hooks/cedr.json",
+                    target,
+                    json!({"hooks":h}),
+                );
+                notes.push(GROK_TRUST.into());
             }
             "antigravity" => {
                 object(

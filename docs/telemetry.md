@@ -76,7 +76,7 @@ A recorded event starts `cedr telemetry flush` (hidden) in the background when t
 - `install`: the install ID; in CI a new random ID per process, so CI never counts as an active install.
 - `ci`: true when `CI` (not `false` or `0`), `GITHUB_ACTIONS`, `GITLAB_CI`, `BUILDKITE`, `CIRCLECI`, `TF_BUILD` or `JENKINS_URL` is set.
 - `os`: `linux`, `macos`, `windows` or `other`; `arch`: `x86_64`, `aarch64` or `other`.
-- `agents`: which of `claude`, `codex`, `gemini`, `copilot`, `opencode`, `muse`, `antigravity`, `cursor` have their home directory on this machine (`~/.claude` or `$CLAUDE_CONFIG_DIR`, `~/.codex` or `$CODEX_HOME`, `~/.gemini`, `~/.copilot` or `$COPILOT_HOME`, `$XDG_DATA_HOME/opencode`, `$XDG_DATA_HOME/muse`, `~/.gemini/antigravity`, `~/.cursor`). Found by checking that the directory exists; nothing is read or run.
+- `agents`: which of `claude`, `codex`, `gemini`, `copilot`, `opencode`, `muse`, `antigravity`, `grok`, `cursor` have their home directory on this machine (`~/.claude` or `$CLAUDE_CONFIG_DIR`, `~/.codex` or `$CODEX_HOME`, `~/.gemini`, `~/.copilot` or `$COPILOT_HOME`, `$XDG_DATA_HOME/opencode`, `$XDG_DATA_HOME/muse`, `~/.gemini/antigravity`, `~/.cursor`). Found by checking that the directory exists; nothing is read or run.
 - `events`: 1-200 events as above.
 
 `CEDR_TELEMETRY_URL` replaces the endpoint for tests; it must be https or loopback http. Builds run from the source tree (`cargo test`, `cargo run`) set `CEDR_TELEMETRY=0` and `CEDR_NO_AUTO_UPDATE=1` in `.cargo/config.toml`.

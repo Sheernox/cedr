@@ -78,8 +78,9 @@ paths = [".agents/skills/security-audit/**"]   # globs over the finding's path, 
 | Copilot | `.github/copilot-instructions.md` | `.github/skills/<name>/SKILL.md` | `.vscode/mcp.json` (`servers`), `.github/mcp.json` (`mcpServers`) | |
 | opencode | | `.opencode/skills/<name>/SKILL.md` | `opencode.json` (`mcp`: `type` `local` with a `command` array, or `remote` with `url`) | |
 | Antigravity | | | `.agents/mcp_config.json` (`mcpServers`; `serverUrl` is remote) | |
+| Grok Build | | `.grok/skills/<name>/SKILL.md` | `.grok/config.toml` (`[mcp_servers.<name>]`) | |
 
-A server entry is stdio (`command`, `args`, `env`) or remote (`url`, `httpUrl`, `serverUrl`, or `type`/`transport` of `http`/`sse`). Clients are `claude`, `codex`, `cursor`, `gemini`, `copilot`, `opencode` and `antigravity`. The same server name in two clients is two lock entries keyed by `client` and `name`.
+A server entry is stdio (`command`, `args`, `env`) or remote (`url`, `httpUrl`, `serverUrl`, or `type`/`transport` of `http`/`sse`). Clients are `claude`, `codex`, `cursor`, `gemini`, `copilot`, `opencode`, `antigravity` and `grok`. The same server name in two clients is two lock entries keyed by `client` and `name`.
 
 Skill directories and the files in them are read only when their canonical path stays inside the canonical root (a `.claude/skills` link into `.agents/skills` is fine). A file symlink inside a skill is never followed: the hash and the lint rules both see its target text. A skill directory whose canonical path escapes the root is skipped, never read: `cedr guard lint` reports it as CG010, and `cedr guard lock` and `cedr guard verify` print `skipped <path>: links outside the repo` on stderr and carry on with the rest.
 

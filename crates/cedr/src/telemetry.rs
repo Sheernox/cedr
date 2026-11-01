@@ -446,6 +446,7 @@ fn agents() -> Vec<&'static str> {
         ("opencode", data.join("opencode")),
         ("muse", data.join("muse")),
         ("antigravity", home.join(".gemini/antigravity")),
+        ("grok", env_or("GROK_HOME", home.join(".grok"))),
         ("cursor", home.join(".cursor")),
     ]
     .into_iter()

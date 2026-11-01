@@ -59,6 +59,46 @@ fn permission(s: &str) -> Option<Vec<String>> {
     s.strip_prefix("mcp__")
         .map(|s| vec![format!("mcp:{}", s.replace("__", "/"))])
 }
+/// Grok Build's `[permission]` table: compact `allow` and `deny` strings use Claude Code's spelling, and `rules` entries
+/// name a tool and an optional pattern. `ask` has no place in Sync's vocabulary, so it is reported.
+fn grok_permissions(v: &Value, path: &str, out: &mut Permissions, notes: &mut Vec<String>) {
+    for (decision, list) in [("allow", &mut out.allow), ("deny", &mut out.deny)] {
+        for p in v[decision]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            match permission(p) {
+                Some(entries) => list.extend(entries),
+                None => notes.push(format!("{path}: permission.{decision}: no translation")),
+            }
+        }
+    }
+    if v["ask"].as_array().is_some_and(|a| !a.is_empty()) {
+        notes.push(format!("{path}: permission.ask: no translation"));
+    }
+    for rule in v["rules"].as_array().into_iter().flatten() {
+        let pattern = rule["pattern"].as_str();
+        let entry = match (rule["tool"].as_str().unwrap_or(""), pattern) {
+            ("bash", None | Some("*")) => Some("shell:*".to_string()),
+            ("bash", Some(p)) => Some(format!("shell:{}", p.strip_suffix(" *").unwrap_or(p))),
+            ("read", Some(p)) => Some(format!("read:{p}")),
+            ("edit", Some(p)) => Some(format!("edit:{p}")),
+            ("webfetch", Some(p)) => p.strip_prefix("domain:").map(|d| format!("fetch:{d}")),
+            ("mcp", Some(p)) => p
+                .strip_suffix("__*")
+                .map(|server| format!("mcp:{server}"))
+                .or_else(|| p.split_once("__").map(|(s, t)| format!("mcp:{s}/{t}"))),
+            _ => None,
+        };
+        match (rule["action"].as_str(), entry) {
+            (Some("allow"), Some(e)) => out.allow.push(e),
+            (Some("deny"), Some(e)) => out.deny.push(e),
+            _ => notes.push(format!("{path}: permission.rules: no translation")),
+        }
+    }
+}
 pub fn init(root: &Path, targets: Option<Vec<String>>) -> Result<Vec<String>> {
     if io::read(root, ".cedr/sync.toml")?.is_some() {
         return Err(".cedr/sync.toml already exists".into());
@@ -78,6 +118,7 @@ pub fn init(root: &Path, targets: Option<Vec<String>>) -> Result<Vec<String>> {
         ".github/mcp.json",
         "opencode.json",
         ".agents/mcp_config.json",
+        ".grok/config.toml",
     ] {
         io::path(root, path)?;
     }
@@ -88,6 +129,7 @@ pub fn init(root: &Path, targets: Option<Vec<String>>) -> Result<Vec<String>> {
         ".gemini/skills",
         ".github/skills",
         ".opencode/skills",
+        ".grok/skills",
     ] {
         io::files(root, rel)?;
     }
@@ -140,6 +182,7 @@ pub fn init(root: &Path, targets: Option<Vec<String>>) -> Result<Vec<String>> {
             ".instructions.md",
             "applyTo",
         ),
+        (".grok/rules", "grok", ".md", "paths"),
     ] {
         for path in io::files(root, rel)? {
             if !path.ends_with(extension) {
@@ -229,7 +272,7 @@ pub fn init(root: &Path, targets: Option<Vec<String>>) -> Result<Vec<String>> {
             if let Some(bytes) = io::read(root, &existing.config_path)?
                 && let Ok(v) = crate::merge::value(&existing.config_path, &bytes)
             {
-                let key = if *target == "codex" {
+                let key = if ["codex", "grok"].contains(target) {
                     "mcp_servers"
                 } else if *target == "copilot" && existing.config_path == ".vscode/mcp.json" {
                     "servers"
@@ -295,6 +338,7 @@ pub fn init(root: &Path, targets: Option<Vec<String>>) -> Result<Vec<String>> {
         ".gemini/skills",
         ".github/skills",
         ".opencode/skills",
+        ".grok/skills",
     ] {
         let imported = sources::skills(root, rel)?;
         let target = match rel {
@@ -303,6 +347,7 @@ pub fn init(root: &Path, targets: Option<Vec<String>>) -> Result<Vec<String>> {
             ".gemini/skills" => "gemini",
             ".github/skills" => "copilot",
             ".opencode/skills" => "opencode",
+            ".grok/skills" => "grok",
             _ => "agents",
         };
         if !imported.is_empty() && !found.iter().any(|s| s == target) {
@@ -376,6 +421,15 @@ pub fn init(root: &Path, targets: Option<Vec<String>>) -> Result<Vec<String>> {
             }
         }
     }
+    let grok_hooks = io::files(root, ".grok/hooks")?;
+    let grok_paths = std::iter::once(".grok/config.toml")
+        .chain(
+            grok_hooks
+                .iter()
+                .map(String::as_str)
+                .filter(|p| p.ends_with(".json")),
+        )
+        .collect();
     for (target, paths) in [
         (
             "codex",
@@ -403,6 +457,7 @@ pub fn init(root: &Path, targets: Option<Vec<String>>) -> Result<Vec<String>> {
             "antigravity",
             vec![".agents/mcp_config.json", ".agents/hooks.json"],
         ),
+        ("grok", grok_paths),
     ] {
         if paths.iter().any(|p| root.join(p).exists()) && !found.iter().any(|s| s == target) {
             found.push(target.into());
@@ -490,6 +545,9 @@ pub fn init(root: &Path, targets: Option<Vec<String>>) -> Result<Vec<String>> {
                     }
                 }
             }
+            if target == "grok" {
+                grok_permissions(&v["permission"], path, &mut permissions, &mut notes);
+            }
             let shell = if target == "copilot" {
                 v.get("chat.tools.terminal.autoApprove")
             } else if target == "opencode" {
@@ -543,6 +601,8 @@ pub fn init(root: &Path, targets: Option<Vec<String>>) -> Result<Vec<String>> {
                             ("codex", "after-edit") => Some("apply_patch"),
                             ("gemini", "before-shell") => Some("run_shell_command"),
                             ("gemini", "after-edit") => Some("write_file|replace"),
+                            ("grok", "before-shell") => Some("Bash"),
+                            ("grok", "after-edit") => Some("Edit|Write"),
                             ("antigravity", "before-shell") => Some("run_command"),
                             ("antigravity", "after-edit") => {
                                 Some("write_file|replace_file_content")
@@ -565,7 +625,11 @@ pub fn init(root: &Path, targets: Option<Vec<String>>) -> Result<Vec<String>> {
                             {
                                 hooks.push(config::Hook {
                                     event: event.into(),
-                                    command: command.into(),
+                                    command: if target == "grok" {
+                                        command.strip_prefix("../../").unwrap_or(command).into()
+                                    } else {
+                                        command.into()
+                                    },
                                     agents: Some(vec![target.into()]),
                                 });
                             } else {

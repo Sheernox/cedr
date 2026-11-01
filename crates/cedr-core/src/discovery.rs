@@ -24,6 +24,7 @@ pub enum Client {
     Copilot,
     Cursor,
     Gemini,
+    Grok,
     Opencode,
 }
 
@@ -34,6 +35,7 @@ impl Client {
             Client::Codex => "codex",
             Client::Cursor => "cursor",
             Client::Gemini => "gemini",
+            Client::Grok => "grok",
             Client::Copilot => "copilot",
             Client::Opencode => "opencode",
             Client::Antigravity => "antigravity",
@@ -144,12 +146,13 @@ pub struct Workspace {
 }
 
 pub const INSTRUCTION_FILES: [&str; 3] = ["AGENTS.md", "CLAUDE.md", "GEMINI.md"];
-const SKILL_ROOTS: [&str; 6] = [
+const SKILL_ROOTS: [&str; 7] = [
     ".agents/skills",
     ".claude/skills",
     ".cursor/skills",
     ".gemini/skills",
     ".github/skills",
+    ".grok/skills",
     ".opencode/skills",
 ];
 
@@ -293,12 +296,16 @@ fn servers(root: &Path) -> Result<Vec<Server>> {
             found.extend(json_servers(client, rel, &text, &root.join(rel))?);
         }
     }
-    let rel = ".codex/config.toml";
-    if root.join(rel).exists() {
-        ensure_inside(&canonical_root, &root.join(rel))?;
-    }
-    if let Some(text) = read_optional(&root.join(rel))? {
-        found.extend(codex_servers(rel, &text, &root.join(rel))?);
+    for (client, rel) in [
+        (Client::Codex, ".codex/config.toml"),
+        (Client::Grok, ".grok/config.toml"),
+    ] {
+        if root.join(rel).exists() {
+            ensure_inside(&canonical_root, &root.join(rel))?;
+        }
+        if let Some(text) = read_optional(&root.join(rel))? {
+            found.extend(toml_servers(client, rel, &text, &root.join(rel))?);
+        }
     }
     found.sort_by(|a, b| (a.client, &a.name).cmp(&(b.client, &b.name)));
     for pair in found.windows(2) {
@@ -450,13 +457,14 @@ fn json_servers(client: Client, rel: &str, text: &str, path: &Path) -> Result<Ve
 }
 
 #[derive(Deserialize)]
-struct CodexConfig {
+struct TomlConfig {
     #[serde(default)]
     mcp_servers: BTreeMap<String, RawServer>,
 }
 
-fn codex_servers(rel: &str, text: &str, path: &Path) -> Result<Vec<Server>> {
-    let config: CodexConfig =
+/// Codex and Grok Build share the `[mcp_servers.<name>]` shape.
+fn toml_servers(client: Client, rel: &str, text: &str, path: &Path) -> Result<Vec<Server>> {
+    let config: TomlConfig =
         toml::from_str(text).map_err(|e| crate::error::toml_err(path, text, &e))?;
     config
         .mcp_servers
@@ -471,7 +479,7 @@ fn codex_servers(rel: &str, text: &str, path: &Path) -> Result<Vec<Server>> {
                 .position(|l| headers.iter().any(|h| l.trim() == h))
                 .map(|i| i + 1);
             Ok(Server {
-                client: Client::Codex,
+                client,
                 line,
                 config_path: rel.to_string(),
                 launch: raw.launch(&name, path)?,

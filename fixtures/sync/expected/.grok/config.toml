@@ -1,0 +1,66 @@
+[mcp_servers.docs]
+url = "https://example.com/mcp"
+[[permission.rules]]
+action = "allow"
+pattern = "git status"
+tool = "bash"
+
+[mcp_servers.docs.headers]
+Authorization = "Bearer ${DOCS_TOKEN}"
+
+[[permission.rules]]
+action = "allow"
+pattern = "git status *"
+tool = "bash"
+
+[mcp_servers.local]
+args = ["-y", "example-mcp@1.2.3"]
+command = "npx"
+
+[[permission.rules]]
+action = "allow"
+pattern = "npm"
+tool = "bash"
+
+[mcp_servers.local.env]
+API_KEY = "${API_KEY}"
+
+[[permission.rules]]
+action = "allow"
+pattern = "npm *"
+tool = "bash"
+
+[[permission.rules]]
+action = "allow"
+pattern = "src/**"
+tool = "read"
+
+[[permission.rules]]
+action = "allow"
+pattern = "domain:example.com"
+tool = "webfetch"
+
+[[permission.rules]]
+action = "allow"
+pattern = "local__tool"
+tool = "mcp"
+
+[[permission.rules]]
+action = "deny"
+pattern = "rm -rf"
+tool = "bash"
+
+[[permission.rules]]
+action = "deny"
+pattern = "rm -rf *"
+tool = "bash"
+
+[[permission.rules]]
+action = "deny"
+pattern = ".env"
+tool = "read"
+
+[[permission.rules]]
+action = "deny"
+pattern = "private/**"
+tool = "edit"

@@ -8,7 +8,10 @@ use crate::{
 };
 use rusqlite::params;
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
     v.get(k).and_then(Value::as_str).unwrap_or("")
 }
@@ -199,6 +202,9 @@ fn parse(
     if h == "copilot" && typ == "session.start" {
         state["session"] = v["data"]["sessionId"].clone();
         state["cwd"] = v["data"]["context"]["cwd"].clone();
+    }
+    if h == "grok" && typ == "turn_started" && s(state, "model").is_empty() {
+        state["model"] = v["model_id"].clone();
     }
     if h == "muse" {
         let record = &p["record"];
@@ -535,6 +541,7 @@ fn parse(
                 event("apiErrors", &r)?;
             }
         }
+        "grok" => return grok(v, &r, &native, db),
         "muse" => {
             let e = &p["event"];
             if s(v, "payload_type") != "runtime.session" || s(e, "kind") != "goal_usage_attribution"
@@ -613,6 +620,132 @@ fn parse(
     db.upsert(&r)?;
     Ok(true)
 }
+/// One Grok record: a session's whole `usage.json`, or one line of its `events.jsonl`. Neither holds prompts or code.
+fn grok(v: &Value, base: &Row, native: &str, db: &Store) -> Result<bool> {
+    let Some(turns) = v["turns"].as_array() else {
+        let mut r = base.clone();
+        r.at = time(&v["ts"]).unwrap_or(r.at);
+        match s(v, "type") {
+            "tool_started" => db.event(&r, native, "toolCalls")?,
+            "tool_completed" if s(v, "outcome") != "success" => {
+                db.event(&r, native, "toolErrors")?
+            }
+            _ => (),
+        }
+        return Ok(true);
+    };
+    let mut ok = true;
+    for t in turns {
+        let Some(models) = t["modelUsage"].as_object() else {
+            ok = false;
+            continue;
+        };
+        for (model, m) in models {
+            let mut r = base.clone();
+            // A fork copies its parent's turns, with the same end times, into its own file. Keying on the end time
+            // rather than the session or turn number is what makes a copied turn the same response.
+            r.id = format!("{}:{model}", s(t, "endedAt"));
+            r.model = bounded(model);
+            r.at = time(&t["endedAt"]).unwrap_or(0);
+            counts(
+                &mut r,
+                m,
+                [
+                    "inputTokens",
+                    "cachedReadTokens",
+                    "cacheCreationTokens",
+                    "outputTokens",
+                    "reasoningTokens",
+                    "unused",
+                ],
+                true,
+                false,
+            );
+            // These are sums over a turn's model calls, so they say nothing about the size of the context.
+            r.context = None;
+            r.reported_cost_usd = n(m, "costUsdTicks")
+                .filter(|ticks| *ticks >= 0)
+                .map(|ticks| ticks as f64 / GROK_TICKS_PER_USD);
+            if !valid(&r) {
+                ok = false;
+                continue;
+            }
+            // The first session to report a turn keeps it, so a fork never moves its parent's usage.
+            let owner: Option<String> = db
+                .db
+                .query_row(
+                    "SELECT session FROM responses WHERE harness='grok' AND id=?",
+                    [&r.id],
+                    |row| row.get(0),
+                )
+                .ok();
+            if owner.is_none_or(|o| o == r.session) {
+                db.upsert(&r)?;
+            }
+        }
+    }
+    Ok(ok)
+}
+const GROK_TICKS_PER_USD: f64 = 1e10;
+/// Grok URL-encodes the working directory to name a session's group directory.
+fn url_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = (bytes[i] == b'%')
+            .then(|| text.get(i + 1..i + 3))
+            .flatten()
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        if let Some(byte) = hex {
+            out.push(byte);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+/// What a Grok session's location says about it, from names and `usage.json` only: session files holding conversation
+/// text stay closed. A group name too long to encode is a slug, with the real path in a `.cwd` file beside the sessions.
+fn grok_state(state: &mut Value, path: &Path, children: &HashSet<String>) {
+    let dir = path.parent().unwrap_or(Path::new(""));
+    let session = dir.file_name().unwrap_or_default().to_string_lossy();
+    state["session"] = json!(session);
+    state["sidechain"] = json!(children.contains(session.as_ref()));
+    if let Some(group) = dir.parent() {
+        let cwd = std::fs::read_to_string(group.join(".cwd"))
+            .map(|c| c.trim().to_string())
+            .unwrap_or_else(|_| {
+                url_decoded(&group.file_name().unwrap_or_default().to_string_lossy())
+            });
+        state["cwd"] = json!(cwd);
+    }
+    // Tool events need the model the usage rows name (`grok-4.7-build`, where `turn_started` says `grok-4.7`), or
+    // reports split a session's tool calls from its tokens.
+    let usage = dir.join("usage.json");
+    let primary = std::fs::metadata(&usage)
+        .ok()
+        .filter(|m| m.len() <= cursors::MAX_LINE as u64)
+        .and_then(|_| std::fs::File::open(&usage).ok())
+        .and_then(|f| serde_json::from_reader::<_, Value>(f).ok())
+        .and_then(|u| u["session"]["primaryModelId"].as_str().map(String::from));
+    if let Some(model) = primary {
+        state["model"] = json!(model);
+    }
+}
+/// Sessions that ran as a subagent, named by the `subagents/<session id>/` directories of their parents. A parent's
+/// usage already includes its subagents' model calls, so a child's own `usage.json` would count them twice.
+fn grok_children(paths: &[PathBuf]) -> HashSet<String> {
+    paths
+        .iter()
+        .filter_map(|p| std::fs::read_dir(p.parent()?.join("subagents")).ok())
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect()
+}
 // Cursors retain bounded primitive metadata, never arbitrary log objects or content.
 fn sanitize_state(state: &mut Value) {
     if let Some(o) = state.as_object_mut() {
@@ -667,6 +800,13 @@ fn patterns(h: &str, c: &Config, home: &str) -> Vec<String> {
             std::env::var("COPILOT_HOME").unwrap_or(format!("{home}/.copilot"))
         )],
         "muse" => vec![format!("{}/muse/sessions/**/session.jsonl", data.display())],
+        "grok" => {
+            let p = std::env::var("GROK_HOME").unwrap_or(format!("{home}/.grok"));
+            vec![
+                format!("{p}/sessions/*/*/usage.json"),
+                format!("{p}/sessions/*/*/events.jsonl"),
+            ]
+        }
         "opencode" => vec![
             std::env::var("OPENCODE_DB")
                 .unwrap_or(format!("{}/opencode/opencode.db", data.display())),
@@ -697,6 +837,15 @@ fn files_in(h: &str, c: &Config, home: &str) -> Result<Vec<PathBuf>> {
                 )
             {
                 if h == "muse" && path.components().any(|x| x.as_os_str() == "subagent") {
+                    continue;
+                }
+                // Also under a `[paths]` directory: the session files beside these hold the conversation.
+                if h == "grok"
+                    && !matches!(
+                        path.file_name().and_then(|x| x.to_str()),
+                        Some("usage.json" | "events.jsonl")
+                    )
+                {
                     continue;
                 }
                 out.push(path);
@@ -733,7 +882,21 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
         match files(h, c) {
             Ok(paths) => {
                 count = paths.len();
+                let children = if h == "grok" {
+                    grok_children(&paths)
+                } else {
+                    HashSet::new()
+                };
                 for path in paths {
+                    if h == "grok"
+                        && path.file_name().is_some_and(|x| x == "usage.json")
+                        && path
+                            .parent()
+                            .and_then(Path::file_name)
+                            .is_some_and(|x| children.contains(x.to_string_lossy().as_ref()))
+                    {
+                        continue;
+                    }
                     let result = (|| -> Result<u64> {
                         let key = path.to_string_lossy();
                         let old = db
@@ -785,6 +948,9 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
                             }
                             let v: Value = serde_json::from_reader(std::fs::File::open(&path)?)?;
                             let mut state = json!({"session":path.file_stem().unwrap_or_default().to_string_lossy(),"cwd":v["directories"][0]});
+                            if h == "grok" {
+                                grok_state(&mut state, &path, &children);
+                            }
                             if let Some(messages) = v["messages"].as_array() {
                                 state["session"] = v["sessionId"].clone();
                                 for (i, m) in messages.iter().enumerate() {
@@ -799,9 +965,17 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
                             if cursor.state.is_null() {
                                 cursor.state = json!({"session":path.parent().and_then(Path::file_name).unwrap_or_default().to_string_lossy(),"file":crate::digest(&key)});
                             }
+                            // Only a log that grew can need a newer model name; collection runs often.
+                            if h == "grok" && stat.len() != cursor.size {
+                                grok_state(&mut cursor.state, &path, &children);
+                            }
                             cursor = cursors::read(&path, cursor, |v, offset, state| {
                                 if !state.is_object() || state.get("file").is_none() {
                                     *state = json!({"session":path.parent().and_then(Path::file_name).unwrap_or_default().to_string_lossy(),"file":crate::digest(&key)});
+                                }
+                                // A cursor that starts over (a new or replaced file) has just dropped its state.
+                                if h == "grok" && state["cwd"].is_null() {
+                                    grok_state(state, &path, &children);
                                 }
                                 let parsed = parse(h, &v, offset, state, c, db)?;
                                 sanitize_state(state);
@@ -1121,6 +1295,121 @@ mod tests {
     fn opencode_disjoint_counts() {
         let (_d, db) = fixture("opencode", "opencode.json");
         assert_eq!(usage(&db), (1, 100, 25));
+    }
+    fn response(db: &Store, id: &str) -> (i64, i64, i64, i64, Option<f64>, Option<i64>, bool) {
+        db.db
+            .query_row(
+                "SELECT input,read,output,reasoning,cost,context,sidechain FROM responses WHERE id=?",
+                [id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            )
+            .unwrap()
+    }
+    #[test]
+    fn grok_counts_uncached_input_and_takes_cost_only_when_reported() {
+        let (_d, db) = fixture("grok", "grok");
+        let first = response(&db, "2026-10-30T10:00:05.100000000+00:00:grok-4.7-build");
+        assert_eq!(first, (900, 100, 50, 20, Some(0.025), None, false));
+        let no_cost = response(&db, "2026-10-30T10:05:05.100000000+00:00:grok-4.7-build");
+        assert_eq!(no_cost.4, None);
+    }
+    #[test]
+    fn a_grok_fork_does_not_count_or_move_the_turns_it_copied() {
+        let (_d, db) = fixture("grok", "grok");
+        // parent: 2 turns, fork: those 2 copied plus 1 of its own. The subagent's 7000 is inside the parent's turn 2.
+        assert_eq!(usage(&db), (3, 900 + 9000 + 300, 50 + 70 + 30));
+        let sessions: i64 = db
+            .db
+            .query_row("SELECT count(DISTINCT session) FROM responses", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(sessions, 2);
+        let parent = format!("s-{}", &crate::digest("grok:01aaaaaa-1parent")[..12]);
+        let kept: i64 = db
+            .db
+            .query_row(
+                "SELECT count(*) FROM responses WHERE session=?",
+                [parent],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 2, "copied turns stay with the session that ran them");
+    }
+    #[test]
+    fn grok_tools_count_from_events_with_the_billed_model_and_subagents_marked() {
+        let (_d, db) = fixture("grok", "grok");
+        let events = |kind: &str| -> i64 {
+            db.db
+                .query_row("SELECT count(*) FROM events WHERE kind=?", [kind], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        // Parent 2 started, one of them failed; subagent 1 started, which a parent-only count would miss.
+        assert_eq!((events("toolCalls"), events("toolErrors")), (3, 1));
+        let side: i64 = db
+            .db
+            .query_row("SELECT count(*) FROM events WHERE sidechain", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(side, 1);
+        let models: i64 = db
+            .db
+            .query_row(
+                "SELECT count(*) FROM events WHERE model<>'grok-4.7-build'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(models, 0);
+    }
+    #[test]
+    fn grok_never_opens_a_session_file_holding_conversation_text() {
+        let dir = format!("{}/../../fixtures/monitor/grok", env!("CARGO_MANIFEST_DIR"));
+        let mut c = Config::default();
+        c.paths.insert("grok".into(), dir);
+        let names: HashSet<String> = files("grok", &c)
+            .unwrap()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            HashSet::from(["usage.json".to_string(), "events.jsonl".to_string()])
+        );
+    }
+    #[test]
+    fn grok_project_comes_from_the_group_directory_or_its_cwd_file() {
+        let (_d, db) = fixture("grok", "grok");
+        let projects: Vec<String> = db
+            .db
+            .prepare("SELECT DISTINCT project FROM responses ORDER BY project")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(projects, ["grok demo"]);
+        assert_eq!(url_decoded("%2Fx%2Fa%20b%zz%"), "/x/a b%zz%");
+        let root = tempfile::tempdir().unwrap();
+        let session = root.path().join("slug-abc123/01bbbbbb");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(root.path().join("slug-abc123/.cwd"), "/long/path/repo\n").unwrap();
+        let mut state = json!({});
+        grok_state(&mut state, &session.join("usage.json"), &HashSet::new());
+        assert_eq!(state["cwd"], "/long/path/repo");
     }
     #[test]
     fn muse_root_usage() {

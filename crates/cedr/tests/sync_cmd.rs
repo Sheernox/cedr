@@ -501,3 +501,188 @@ fn servers_with_only_the_agents_target_are_reported_once() {
     );
     assert_eq!(all.matches("reach no agent").count(), 1, "{all}");
 }
+/// A repo that writes for Grok Build and for agents whose files Grok Build also reads.
+fn grok_repo(targets: &str) -> tempfile::TempDir {
+    let d = tempfile::tempdir().unwrap();
+    fs::create_dir_all(d.path().join(".cedr/rules")).unwrap();
+    fs::write(
+        d.path().join(".cedr/sync.toml"),
+        format!(
+            r#"version = 1
+targets = [{targets}]
+[mcp.local]
+command = "npx"
+args = ["-y", "example-mcp@1.2.3"]
+env = {{ API_KEY = "${{API_KEY}}" }}
+[mcp.docs]
+url = "https://example.com/mcp"
+headers = {{ Authorization = "Bearer ${{DOCS_TOKEN}}" }}
+[permissions]
+allow = ["fetch:example.com", "mcp:docs", "mcp:local/ping", "read:src/**", "shell:*", "shell:npm test"]
+deny = ["edit:private/**", "read:.env", "shell:rm -rf"]
+[[hooks]]
+event = "before-shell"
+command = "bin/check.sh"
+[[hooks]]
+event = "after-edit"
+command = "npm run format"
+"#
+        ),
+    )
+    .unwrap();
+    for (name, text) in [
+        ("10-scoped", "---\npaths: [\"src/**\"]\n---\nScoped.\n"),
+        (
+            "20-claude",
+            "---\nagents: [\"claude\"]\n---\nClaude only.\n",
+        ),
+    ] {
+        fs::write(d.path().join(format!(".cedr/rules/{name}.md")), text).unwrap();
+    }
+    d
+}
+#[test]
+fn grok_gets_each_rule_once_and_is_told_what_else_it_reads() {
+    let d = grok_repo(r#""agents", "claude", "cursor", "grok""#);
+    for (name, text) in [
+        (
+            "30-both",
+            "---\nagents: [\"claude\", \"grok\"]\n---\nBoth.\n",
+        ),
+        ("40-grok", "---\nagents: [\"grok\"]\n---\nGrok only.\n"),
+        (
+            "50-grok-scoped",
+            "---\nagents: [\"grok\"]\npaths: [\"a/**\", \"b/**\"]\n---\nScoped to grok.\n",
+        ),
+    ] {
+        fs::write(d.path().join(format!(".cedr/rules/{name}.md")), text).unwrap();
+    }
+    let p = cedr_sync::plan(d.path()).unwrap();
+    cedr_sync::apply(d.path(), &p, false).unwrap();
+    let exists = |path: &str| d.path().join(path).exists();
+    // Grok Build always reads CLAUDE.md, so a second copy under .grok/rules would load the rule twice.
+    assert!(
+        fs::read_to_string(d.path().join("CLAUDE.md"))
+            .unwrap()
+            .contains("Both.")
+    );
+    assert!(!exists(".grok/rules/30-both.md"));
+    assert!(exists(".grok/rules/40-grok.md"));
+    assert!(
+        fs::read_to_string(d.path().join(".grok/rules/50-grok-scoped.md"))
+            .unwrap()
+            .contains("## When working in a/**, b/**\n\nScoped to grok.")
+    );
+    // Grok Build reads `*.md` in `.cursor/rules/`, so Cursor's `.mdc` files must stay out of its way.
+    assert!(!exists(".cursor/rules/10-scoped.md") && exists(".cursor/rules/10-scoped.mdc"));
+    let noted = |text: &str| p.notes.iter().any(|n| n.contains(text));
+    assert!(noted(
+        "rule 10-scoped: Grok Build also loads .claude/rules/10-scoped.md"
+    ));
+    assert!(noted("rule 20-claude: Grok Build also reads CLAUDE.md"));
+    assert!(!noted("rule 30-both"));
+    assert!(noted("grok --trust"));
+    // Without a claude target there is nothing to warn about, and the rule has its own file.
+    let solo = grok_repo(r#""agents", "grok""#);
+    fs::remove_file(solo.path().join(".cedr/rules/20-claude.md")).unwrap();
+    let p = cedr_sync::plan(solo.path()).unwrap();
+    assert!(
+        !p.notes.iter().any(|n| n.starts_with("rule ")),
+        "{:?}",
+        p.notes
+    );
+}
+#[test]
+fn grok_files_survive_an_import_with_nothing_lost_and_a_path_hook_still_reaches_the_repo_root() {
+    let d = grok_repo(r#""agents", "grok""#);
+    fs::remove_file(d.path().join(".cedr/rules/20-claude.md")).unwrap();
+    let before = cedr_sync::load_config(d.path()).unwrap();
+    let p = cedr_sync::plan(d.path()).unwrap();
+    cedr_sync::apply(d.path(), &p, false).unwrap();
+    let hooks: Value =
+        serde_json::from_slice(&fs::read(d.path().join(".grok/hooks/cedr.json")).unwrap()).unwrap();
+    assert_eq!(
+        hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+        "../../bin/check.sh"
+    );
+    assert_eq!(
+        hooks["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
+        "npm run format"
+    );
+    let config: toml::Value =
+        toml::from_str(&fs::read_to_string(d.path().join(".grok/config.toml")).unwrap()).unwrap();
+    assert_eq!(
+        config["mcp_servers"]["docs"]["headers"]["Authorization"].as_str(),
+        Some("Bearer ${DOCS_TOKEN}")
+    );
+    fs::remove_dir_all(d.path().join(".cedr")).unwrap();
+    fs::remove_file(d.path().join("AGENTS.md")).unwrap();
+    cedr_sync::import::init(d.path(), None).unwrap();
+    let after = cedr_sync::load_config(d.path()).unwrap();
+    assert!(after.targets.iter().any(|t| t == "grok"));
+    assert_eq!(after.permissions.allow, before.permissions.allow);
+    assert_eq!(after.permissions.deny, before.permissions.deny);
+    assert_eq!(after.mcp["local"].env["API_KEY"], "${API_KEY}");
+    assert_eq!(
+        after.mcp["docs"].headers["Authorization"],
+        "Bearer ${DOCS_TOKEN}"
+    );
+    let commands: Vec<_> = after
+        .hooks
+        .iter()
+        .map(|h| (h.event.as_str(), h.command.as_str()))
+        .collect();
+    assert_eq!(
+        commands,
+        [
+            ("before-shell", "bin/check.sh"),
+            ("after-edit", "npm run format")
+        ]
+    );
+}
+#[test]
+fn grok_import_reports_rules_it_cannot_translate() {
+    let d = tempfile::tempdir().unwrap();
+    fs::create_dir_all(d.path().join(".grok/rules")).unwrap();
+    fs::write(d.path().join(".grok/rules/mine.md"), "Be brief.\n").unwrap();
+    fs::write(
+        d.path().join(".grok/config.toml"),
+        "[permission]\nallow = [\"Bash(git *)\"]\nask = [\"Edit(a)\"]\nrules = [{ action = \"ask\", tool = \"read\", pattern = \"x\" }, { action = \"allow\", tool = \"grep\" }]\n",
+    )
+    .unwrap();
+    let notes = cedr_sync::import::init(d.path(), None).unwrap();
+    assert_eq!(
+        notes,
+        [
+            ".grok/config.toml: permission.ask: no translation",
+            ".grok/config.toml: permission.rules: no translation",
+            ".grok/config.toml: permission.rules: no translation",
+        ]
+    );
+    let c = cedr_sync::load_config(d.path()).unwrap();
+    assert_eq!(c.permissions.allow, ["shell:git"]);
+    assert!(c.targets.iter().any(|t| t == "grok"));
+    let rule = fs::read_to_string(d.path().join(".cedr/rules/50-grok-mine.md")).unwrap();
+    assert!(rule.contains("Be brief.") && rule.contains("grok"));
+}
+#[test]
+fn a_server_grok_cannot_namespace_is_left_out_and_named() {
+    let d = tempfile::tempdir().unwrap();
+    fs::create_dir_all(d.path().join(".cedr")).unwrap();
+    fs::write(
+        d.path().join(".cedr/sync.toml"),
+        "version = 1\ntargets = [\"grok\"]\n[mcp.ok-name]\nurl = \"https://a.example\"\n[mcp.1digit]\nurl = \"https://b.example\"\n[mcp.has__two]\nurl = \"https://c.example\"\n",
+    )
+    .unwrap();
+    let p = cedr_sync::plan(d.path()).unwrap();
+    cedr_sync::apply(d.path(), &p, false).unwrap();
+    let config = fs::read_to_string(d.path().join(".grok/config.toml")).unwrap();
+    assert!(
+        config.contains("ok-name") && !config.contains("1digit") && !config.contains("has__two")
+    );
+    assert!(
+        p.notes
+            .iter()
+            .any(|n| n == "mcp.1digit: not supported by grok")
+    );
+}

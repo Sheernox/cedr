@@ -18,6 +18,7 @@ pub const HARNESSES: &[&str] = &[
     "opencode",
     "muse",
     "antigravity",
+    "grok",
     "cursor",
 ];
 

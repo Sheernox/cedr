@@ -26,9 +26,9 @@ fn every_agent_discovers_locks_and_verifies_with_existing_keys() {
         root.path(),
     );
     let ws = discovery::discover(root.path()).unwrap();
-    assert_eq!(ws.skills.len(), 6);
+    assert_eq!(ws.skills.len(), 7);
     assert_eq!(ws.instructions, [".github/copilot-instructions.md"]);
-    assert_eq!(ws.servers.len(), 9);
+    assert_eq!(ws.servers.len(), 11);
     for path in [
         ".mcp.json",
         ".codex/config.toml",
@@ -38,6 +38,7 @@ fn every_agent_discovers_locks_and_verifies_with_existing_keys() {
         ".github/mcp.json",
         "opencode.json",
         ".agents/mcp_config.json",
+        ".grok/config.toml",
     ] {
         assert!(ws.servers.iter().any(|s| s.config_path == path), "{path}");
     }
@@ -58,7 +59,27 @@ fn every_agent_discovers_locks_and_verifies_with_existing_keys() {
         },
     )
     .unwrap();
-    assert_eq!(outcome.lock.mcp.len(), 9);
+    assert_eq!(outcome.lock.mcp.len(), 11);
+    // Grok Build loads `.mcp.json` too, but a name in both files stays one entry per client's config.
+    fs::write(
+        root.path().join(".grok/config.toml"),
+        "[mcp_servers.claude]\ncommand = \"other-mcp\"\n",
+    )
+    .unwrap();
+    let both = discovery::discover(root.path()).unwrap();
+    let clients: Vec<_> = both
+        .servers
+        .iter()
+        .filter(|s| s.name == "claude")
+        .map(|s| s.client.as_str())
+        .collect();
+    assert_eq!(clients, ["claude", "grok"]);
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/repo-all-agents/.grok/config.toml"),
+        root.path().join(".grok/config.toml"),
+    )
+    .unwrap();
     assert!(
         outcome
             .lock
@@ -209,6 +230,7 @@ fn new_discovery_paths_keep_containment_and_skill_link_rules() {
         ".gemini/skills",
         ".github/skills",
         ".opencode/skills",
+        ".grok/skills",
     ] {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir_all(root.path().join(base)).unwrap();
@@ -223,6 +245,7 @@ fn new_discovery_paths_keep_containment_and_skill_link_rules() {
         ".github/mcp.json",
         "opencode.json",
         ".agents/mcp_config.json",
+        ".grok/config.toml",
     ] {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir_all(root.path().join(path).parent().unwrap()).unwrap();
