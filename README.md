@@ -238,7 +238,7 @@ The cedr action installs a released `cedr` (checked against the release's `SHA25
 
 ```yaml
 - uses: actions/checkout@v5
-- uses: Sheernox/cedr@v0.6.0
+- uses: Sheernox/cedr@v0.7.0
 ```
 
 Inputs: `version`, `path`, `strict`, `verify` (`auto`, `true` or `false`), `sync`, `sync-fix`, `outdated` (default `true`, annotations never fail the job) and `push-org`, which with a `CEDR_API_KEY` secret also sends each result and npm updates to the app. Repo-level settings, such as extra skill folders and checks to skip, go in `.cedr/guard.toml`. See the [Guard design](docs/design.md) for every field.
