@@ -286,7 +286,11 @@ fn a_state_directory_that_cannot_be_written_fails_instead_of_repeating_old_resul
     );
     let state = dir.path().join("s/cedr/guard-remote");
     std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // Root ignores directory modes, so there is nothing to test when the probe gets through.
+    let writable = std::fs::write(state.join("probe"), "").is_ok();
     let out = cedr(dir.path(), &repo, &["guard", "remote", "--force"]);
     std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert_eq!(out.status.code(), Some(2));
+    if !writable {
+        assert_eq!(out.status.code(), Some(2));
+    }
 }
