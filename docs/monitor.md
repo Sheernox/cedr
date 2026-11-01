@@ -78,7 +78,7 @@ Exit 0 success, 2 usage or I/O failure. Reports never fail on findings.
            "session": "s-1a2b3c4d5e6f", "sidechain": false, "responses": 42, "input": 1200, "cacheWrite5m": 30000, "cacheWrite1h": 0,
            "cacheRead": 900000, "output": 25000, "reasoning": 8000, "webSearches": 0, "webFetches": 1, "toolCalls": 61, "toolErrors": 2,
            "apiErrors": 0, "compactions": 0, "wallMs": 512000, "wallSamples": 40, "activeMs": 1830000, "contextPeak": 182000,
-           "reportedCostUsd": null}],
+           "reportedCostUsd": null, "responseSet": "9f2c4e1a7b3d5f60a1b2c3d4e5f60718"}],
  "limits": [{"harness": "claude", "window": "five_hour", "kind": "session", "percent": 42.0, "resetsAt": "2026-10-30T21:00:00Z",
              "windowMinutes": 300, "at": "2026-10-30T18:01:58Z"}],
  "sources": [{"harness": "claude", "state": "ok", "files": 312, "responses": 48211, "first": "2026-03-02T09:14:00Z",
@@ -86,6 +86,7 @@ Exit 0 success, 2 usage or I/O failure. Reports never fail on findings.
 ```
 
 - One row per `hour` (UTC), `harness`, `model`, `effort`, `project`, `session` and `sidechain`; the row carries the whole hour's counts, so a resent hour replaces the earlier one. `effort` and `project` may be null. `activeMs` is the sum of gaps between the session's consecutive responses in the hour, each capped at 5 minutes (an estimate). `wallMs` over `wallSamples` is the mean response time where the harness reports it.
+- `responseSet` identifies the responses behind a row, so the same usage reported by two machines can be told from distinct usage: the first 32 hex characters of the SHA-256 over each response's identity (the Sources table) in sorted order, each followed by a newline, or null for a row with no responses. It covers what the row counts, so a `--start` inside an hour narrows it. It depends only on the logs, so resends and `--full` repeat it, and identities themselves are never sent. Rows from two machines hold the same usage when `hour`, `harness`, `model`, `effort`, `session`, `sidechain` and `responseSet` all match; `project` is left out because machines may name a repo differently. Rows that only partly overlap have different digests, so a receiver counts both rather than risk dropping usage.
 - `limits` are the readings taken since the last push (at most 500, newest first). `kind` is `session` (5 hours or less), `weekly`, `model` (a window for some models only) or `other`.
 - `sources` is the `cedr monitor sources` view (state `ok`, `absent`, `unsupported` or `error`).
 - `machine` and `name` follow Route's machine snapshot. Strings are cut as for Route (model 128, project 128, window 64); counters are at most 10,000,000,000 per row (the CLI caps them); the app refuses a body over 4 MiB or a value over these limits, and keeps at most 2,000,000 rows, 200,000 readings and 20 machines per member, dropping the oldest.

@@ -6,7 +6,10 @@ use cedr_route::{
 };
 use rusqlite::params;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::Path,
+};
 pub const BATCH: usize = 5000;
 /// Shapes one hourly row for the wire: the contract carries counts, so a counter the harness did not report goes as 0
 /// (nullable fields keep null), and the per-row ceiling protects the app's integer bounds. Local counts stay exact.
@@ -26,13 +29,64 @@ fn wire_row(row: &mut Value) {
 }
 
 /// Row fields the contract allows to be null (and the model, a string); every other counter is sent as a number.
-const NULLABLE: [&str; 5] = [
+const NULLABLE: [&str; 6] = [
     "effort",
     "project",
     "contextPeak",
     "reportedCostUsd",
     "model",
+    "responseSet",
 ];
+
+/// A row's place within its hour; `hour` is sent alongside it.
+fn row_key(r: &Value) -> String {
+    [
+        "harness",
+        "model",
+        "effort",
+        "project",
+        "session",
+        "sidechain",
+    ]
+    .map(|k| r[k].to_string())
+    .join("|")
+}
+
+/// Sets each row's `responseSet`: a digest of the response ids behind it (docs/monitor.md, Push). Ids come from the
+/// logs, so a copied log gives the same digest on every machine, and ids never leave the machine. Runs only at push,
+/// so reports don't pay for it.
+fn add_response_sets(db: &Store, rows: &mut [Value], cutoff: i64) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let first = rows
+        .iter()
+        .filter_map(|r| r["hour"].as_str())
+        .filter_map(|h| chrono::DateTime::parse_from_rfc3339(h).ok())
+        .map(|t| t.timestamp())
+        .min();
+    let Some(first) = first else { return Ok(()) };
+    let mut q = db.db.prepare("SELECT at/3600*3600,harness,model,effort,project,session,sidechain,id FROM responses WHERE at>=? ORDER BY id")?;
+    let mut found = q.query([cutoff.max(first)])?;
+    let mut sets: HashMap<(String, String), Sha256> = HashMap::new();
+    while let Some(r) = found.next()? {
+        let key = row_key(
+            &json!({"harness":r.get::<_,String>(1)?,"model":r.get::<_,String>(2)?,"effort":r.get::<_,Option<String>>(3)?,"project":r.get::<_,Option<String>>(4)?,"session":r.get::<_,String>(5)?,"sidechain":r.get::<_,bool>(6)?}),
+        );
+        sets.entry((crate::report::stamp(r.get(0)?), key))
+            .or_default()
+            .update(format!("{}\n", r.get::<_, String>(7)?));
+    }
+    for row in rows {
+        let key = (
+            row["hour"].as_str().unwrap_or_default().to_string(),
+            row_key(row),
+        );
+        row["responseSet"] = sets.remove(&key).map_or(Value::Null, |set| {
+            let hex: String = set.finalize().iter().map(|b| format!("{b:02x}")).collect();
+            json!(hex[..32])
+        });
+    }
+    Ok(())
+}
 pub fn send(
     db: &Store,
     sync: &Sync,
@@ -142,18 +196,7 @@ pub fn send_with(
         .iter()
         .filter_map(|r| r["hour"].as_str().map(String::from))
         .min();
-    let key = |r: &Value| {
-        [
-            "harness",
-            "model",
-            "effort",
-            "project",
-            "session",
-            "sidechain",
-        ]
-        .map(|k| r[k].to_string())
-        .join("|")
-    };
+    let key = row_key;
     let last_repair = repairs.iter().map(|r| r.0).max();
     let mut hours = repairs.iter().map(|r| r.1).collect::<Vec<_>>();
     hours.dedup();
@@ -202,6 +245,7 @@ pub fn send_with(
             rows.push(zero);
         }
     }
+    add_response_sets(db, &mut rows, cutoff)?;
     for row in &mut rows {
         wire_row(row);
     }
@@ -383,6 +427,75 @@ pub fn auto_start() -> Result<()> {
 mod tests {
     use super::*;
     use crate::store::Row;
+    /// The `responseSet` of the only row a store pushes.
+    fn response_set(db: &Store, dir: &Path) -> Value {
+        let sync = Sync {
+            org: "fixture".into(),
+            url: None,
+            auto: false,
+            routes: RoutesFrom::Local,
+        };
+        let mut set = Value::Null;
+        send_with(
+            db,
+            &sync,
+            false,
+            None,
+            &tempfile::NamedTempFile::new_in(dir)
+                .unwrap()
+                .path()
+                .with_extension("json"),
+            "m-fixture",
+            "fixture",
+            |b| {
+                let rows = b["rows"].as_array().unwrap();
+                assert_eq!(rows.len(), 1);
+                set = rows[0]["responseSet"].clone();
+                Ok(json!({"accepted":1,"skipped":0}))
+            },
+        )
+        .unwrap();
+        set
+    }
+    #[test]
+    fn a_copied_log_gives_the_same_response_set_and_distinct_usage_does_not() {
+        let d = tempfile::tempdir().unwrap();
+        let store = |name: &str, project: &str, ids: &[&str]| {
+            let db = Store::open(&d.path().join(name)).unwrap();
+            for id in ids {
+                db.upsert(&Row {
+                    id: (*id).into(),
+                    harness: "claude".into(),
+                    session: "s-1".into(),
+                    model: "m".into(),
+                    project: Some(project.into()),
+                    at: 1793354400,
+                    ..Default::default()
+                })
+                .unwrap();
+            }
+            response_set(&db, d.path())
+        };
+        let original = store("a", "web", &["r1", "r2"]);
+        assert_eq!(original.as_str().unwrap().len(), 32);
+        // Read in another order on a machine that names the repo differently.
+        assert_eq!(store("b", "web-copy", &["r2", "r1"]), original);
+        assert_ne!(store("c", "web", &["r1", "r2", "r3"]), original);
+    }
+    #[test]
+    fn a_row_without_responses_has_no_response_set() {
+        let d = tempfile::tempdir().unwrap();
+        let db = Store::open(&d.path().join("db")).unwrap();
+        let row = Row {
+            harness: "claude".into(),
+            session: "s-1".into(),
+            model: "m".into(),
+            at: 1793354400,
+            ..Default::default()
+        };
+        db.event(&row, "e1", "toolCalls").unwrap();
+        assert_eq!(response_set(&db, d.path()), Value::Null);
+    }
     #[test]
     fn batches_and_atomic_watermark() {
         let d = tempfile::tempdir().unwrap();
