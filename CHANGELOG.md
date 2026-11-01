@@ -2,6 +2,43 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.7.0 (2026-11-01)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.7.0.png" alt="cedr v0.7.0: grok build" width="770">
+
+**v0.7.0** · 14 changes from 1 contributor
+
+### Highlights
+cedr now works with Grok Build. Sync writes its files, Guard pins its skills and MCP servers, and Monitor counts its usage without opening a conversation. Route and Council don't cover it yet. cedr is also now developed in public in this repo, with issues and pull requests here. **Upgrade step:** none; cedr updates itself. A lock file that holds a Grok Build entry needs this version or later to read it.
+
+### Features
+- **Sync** has an opt-in `grok` target that writes and imports `.grok/` files: MCP servers and permission rules in `.grok/config.toml`, plus rules, skills and hooks. Grok Build holds a repo's files back until the folder is trusted, and `cedr sync` says so. Contract: [docs/sync.md](https://github.com/Sheernox/cedr/blob/v0.7.0/docs/sync.md).
+- **Guard** discovers `.grok/config.toml` and `.grok/skills/`, so `cedr guard lint`, `lock` and `verify` cover them. Contract: [docs/design.md](https://github.com/Sheernox/cedr/blob/v0.7.0/docs/design.md).
+- **Monitor** has a `grok` source that reads only each session's `usage.json` and `events.jsonl`, never its conversation files. It counts a forked session's copied turns once, and a subagent's usage once inside its parent. Contract: [docs/monitor.md](https://github.com/Sheernox/cedr/blob/v0.7.0/docs/monitor.md).
+- **Development** moved here: read [CONTRIBUTING.md](https://github.com/Sheernox/cedr/blob/v0.7.0/CONTRIBUTING.md) to report a bug or propose a change.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* docs: show the v0.6.0 hero smaller in its release notes
+* docs(readme): show all five products in one table so sync and monitor are found
+* docs: show the v0.6.0 version in the beta chip's ring, larger
+* fix(readme): stack product tiles over names so names stay inside their cells
+* ci: pin every action to a commit so a moved tag cannot reach a release
+* docs: make this repo the home of cedr development ([#2](https://github.com/Sheernox/cedr/pull/2))
+* docs(readme): say that ideas start as issues and focused fixes can be pull requests ([#3](https://github.com/Sheernox/cedr/pull/3))
+* feat: add grok build to sync, guard and monitor ([#10](https://github.com/Sheernox/cedr/pull/10))
+* fix(monitor): correct grok usage and tool models collected before a session is complete ([#11](https://github.com/Sheernox/cedr/pull/11))
+* fix(monitor): replace the app's copy of grok tool rows when their model or subagent mark changes ([#11](https://github.com/Sheernox/cedr/pull/11))
+* docs(agents): prepare release pull requests without being asked ([#12](https://github.com/Sheernox/cedr/pull/12))
+* build(banner): render the v0.7.0 release hero
+* docs: changelog for 0.7.0
+* chore(release): cedr 0.7.0
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.6.0...v0.7.0
+</details>
+
 ## v0.6.0 (2026-11-01)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.6.0.png" alt="cedr v0.6.0: cedr guard" width="770">
