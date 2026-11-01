@@ -10,9 +10,10 @@ Guard covers the loop end to end on one machine:
 2. `cedr guard lock` pins every skill and MCP server and snapshots each server's tool surface.
 3. `cedr guard verify` fails CI when the setup drifts from the lock; the GitHub Action runs `lint` and `verify` on pull requests.
 4. `cedr guard push` sends the pinned inventory and the latest findings to the cedr.dev app, which shows every repo of an organization in one place.
-5. A watcher imports a lock, watches the pinned npm packages through the watcher commands, and raises an alert when a newer version changes the surface.
+5. `cedr guard remote` compares what remote MCP servers list now with what the lock recorded.
+6. A watcher imports a lock, watches the pinned npm packages through the watcher commands, and raises an alert when a newer version changes the surface.
 
-Out of scope: PyPI, OCI and git sources for surfaces (recorded in the lock, never fetched), remote MCP polling and sandboxed execution.
+Out of scope: PyPI, OCI and git sources for surfaces (recorded in the lock, never fetched) and sandboxed execution.
 
 ## Commands
 
@@ -140,7 +141,7 @@ A surface is what a server exposes to a model, as one JSON document. It is store
 }
 ```
 
-- `method`: `static` (parsed from the package), `introspect` (`tools/list` over stdio) or `none` (not extracted; `tools` empty).
+- `method`: `static` (parsed from the package), `introspect` (`tools/list` over stdio or HTTP) or `none` (not extracted; `tools` empty).
 - `tools` sorted by `name`. `schema` is the raw source text of the schema argument (static) or the canonical JSON of `inputSchema` (introspect), or `null`.
 - Static extraction recognises two registration styles:
   - High-level: calls whose callee ends in `.tool`, `.registerTool` or `.addTool`. The name is the first argument; the description is a string second argument or the `description` property of an object argument.
@@ -199,12 +200,24 @@ tools = ["create_issue", "search_code"]
 egress = ["api.github.com"]
 ```
 
-`cedr guard lock [PATH] [--offline] [--introspect]`:
+`cedr guard lock [PATH] [--offline] [--introspect] [--remote]`:
 - Resolves unpinned npm sources to the dist-tag the config names (`latest` when none) and records the resolved version with `pinned = false`. `cedr guard verify` accepts an unpinned entry while the config still names the same package unpinned.
 - Extracts npm surfaces statically. `--offline` skips the network and records `method = "none"`.
 - `--introspect` runs each stdio server with its configured command and a cleared environment holding only `PATH`, `HOME` and the configured env, calls `initialize` and `tools/list` with a 20-second timeout, and uses that surface (`method = "introspect"`). Egress and capabilities still come from static extraction when the package could be fetched. It prints a warning first: this executes the configured servers.
 
 `cedr guard verify [PATH] [--format text|json|github]` never touches the network. It fails (exit 1) when a skill's content hash differs, a skill or server was added or removed, or a server's source changed. Findings use the lint JSON shape with rules `CV001` (content changed), `CV002` (added), `CV003` (removed), `CV004` (source changed) and `CV005` (launch changed: command, arguments, env keys or URL). Env values are never hashed or stored, only their keys.
+
+## Remote servers
+
+A remote server has no version, so a pin cannot notice its tools changing. `cedr guard lock --remote` records what each remote server lists, without running anything, and `cedr guard remote [PATH] [--force] [--last] [--format text|json]` compares the server with that record. A later `cedr guard lock` without `--remote` records `method = "none"` again. `cedr guard verify` never uses the network, so it does not read these servers.
+
+- **The read.** Streamable HTTP: `initialize`, `notifications/initialized` and `tools/list` with its pages, 20 seconds per request. An invalid page cursor is `failed`. It uses `method = "introspect"`. `egress` is the URL's host and `capabilities` holds `mcp_prompts`, `mcp_resources` and `mcp_tools` for what `initialize` declares, so a new host or an expanded capability shows as a surface change. The legacy SSE transport reads as `failed`.
+- **What is never sent.** No credentials: no configured header, token or cookie, and a URL with user info or a query is `unsupported` and not contacted. A server that needs a login therefore reports `auth_required`.
+- **What is never reached.** Only `https` URLs, on addresses that are all public. A hostname is resolved once, every address is checked, and the connection is held to those addresses, so a second DNS answer cannot move it. Loopback, private, link-local, carrier-grade NAT, multicast and reserved ranges are refused, in IPv4, IPv6 and IPv4-mapped forms. Redirects and proxies are not followed. Limits: 4 MiB per reply, 20 pages, 2000 tools and 64 servers per run, one at a time; `lock --remote` refuses a config with more than 64 remote servers.
+- **Results.** One entry per remote server in the lock: `{"client", "name", "url", "status", "changes", "error"}`, where `url` is redacted, `changes` holds [Diff](#diff) changes and `error` names a host at most. JSON is `{"version": 1, "at": "<RFC 3339>", "baseline": "<hex>", "servers": [...]}`, where `baseline` is a digest of the lock and its remote surfaces. `status` is `unchanged`, `changed`, `failed`, `auth_required`, `unsupported` or `not_pinned` (locked without a surface; nothing is contacted). An outage is `failed`, never `unchanged`, and results report what differs, not whether a server is safe.
+- **Exit codes.** 1 when any surface changed; otherwise 2 when any read failed or needs credentials, or on a usage or I/O failure; otherwise 0.
+- **Schedule.** `[remote] interval_minutes` in `.cedr/guard.toml` (5-10080, default 60) is the least time between reads. Results are kept per checkout in `$XDG_STATE_HOME/cedr/guard-remote/`, and a run inside the interval prints the last results, with their time on stderr, instead of reading again, unless the lock or a surface changed since, so a timer or cron job can call it as often as it likes. `--force` reads now. `--last` prints the last results and contacts nothing (exit 2 when there are none).
+- **Surfaces it does not cover.** The GitHub Action has no remote input, because a pull request can edit the config and would choose which hosts CI contacts. Guard has no MCP tools, and this adds none.
 
 ## Updates
 

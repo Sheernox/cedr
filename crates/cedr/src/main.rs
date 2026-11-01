@@ -15,7 +15,7 @@ mod sync;
 mod telemetry;
 mod update;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -162,6 +162,9 @@ enum GuardCommand {
         /// Run each stdio server and read its tools over MCP (executes them)
         #[arg(long)]
         introspect: bool,
+        /// Read each remote server's tools over MCP without credentials (contacts its URL)
+        #[arg(long, conflicts_with = "offline")]
+        remote: bool,
     },
     /// Fail when the setup no longer matches the lock (never uses the network)
     Verify {
@@ -182,6 +185,19 @@ enum GuardCommand {
         /// Fail when an update reaches this surface-change severity
         #[arg(long, value_enum, default_value_t = FailOn::Never)]
         fail_on: FailOn,
+    },
+    /// Compare what locked remote MCP servers list now with the lock
+    Remote {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Read now even when the last read is within remote.interval_minutes
+        #[arg(long, conflicts_with = "last")]
+        force: bool,
+        /// Print the last results without contacting anything
+        #[arg(long)]
+        last: bool,
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
     },
     /// Send this repo's pinned inventory and findings to the cedr.dev app
     Push(push::PushArgs),
@@ -319,7 +335,13 @@ fn run(command: GuardCommand) -> cedr_core::Result<ExitCode> {
             path,
             offline,
             introspect,
+            remote,
         } => {
+            if remote {
+                eprintln!(
+                    "cedr: warning: --remote contacts every remote MCP server in the config, without credentials"
+                );
+            }
             if introspect {
                 eprintln!(
                     "cedr: warning: --introspect runs every configured stdio MCP server with its command and env"
@@ -330,6 +352,7 @@ fn run(command: GuardCommand) -> cedr_core::Result<ExitCode> {
                 LockOptions {
                     offline,
                     introspect,
+                    remote,
                 },
             )?;
             for warning in &outcome.warnings {
@@ -363,6 +386,12 @@ fn run(command: GuardCommand) -> cedr_core::Result<ExitCode> {
             let report = cedr_core::outdated::outdated(&path)?;
             Ok(print_updates(&report, format, fail_on))
         }
+        GuardCommand::Remote {
+            path,
+            force,
+            last,
+            format,
+        } => guard_remote(&path, force, last, format),
         GuardCommand::Surface { source } => {
             let parsed: Source = source.parse()?;
             println!("{}", surface::from_source(&parsed)?.to_json());
@@ -388,6 +417,82 @@ fn run(command: GuardCommand) -> cedr_core::Result<ExitCode> {
             Ok(exit(!result.hashes_match))
         }
     }
+}
+
+/// Runs the check, or repeats the last results while they are inside the configured interval, so
+/// however often a scheduler calls this, servers are read at a bounded rate.
+fn guard_remote(
+    path: &Path,
+    force: bool,
+    last: bool,
+    format: Format,
+) -> cedr_core::Result<ExitCode> {
+    use cedr_core::remote::Report;
+    let state = settings::state_file(&format!(
+        "guard-remote/{}.json",
+        cedr_core::remote::state_key(path)?
+    ));
+    let saved: Option<Report> = std::fs::read(&state)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    let age = |r: &Report| {
+        chrono::DateTime::parse_from_rfc3339(&r.at)
+            .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_minutes())
+            .ok()
+    };
+    let interval = i64::from(cedr_core::config::GuardConfig::load(path)?.remote_interval);
+    let baseline = if last {
+        String::new()
+    } else {
+        cedr_core::remote::baseline(path)?
+    };
+    let report = match saved {
+        Some(r) if last => r,
+        None if last => {
+            return Err(cedr_core::Error::Source(
+                "no remote results yet: run cedr guard remote".into(),
+            ));
+        }
+        Some(r)
+            if !force
+                && r.baseline == baseline
+                && age(&r).is_some_and(|a| (0..interval).contains(&a)) =>
+        {
+            eprintln!(
+                "cedr: last read {}, within remote.interval_minutes ({interval}); --force reads now",
+                r.at
+            );
+            r
+        }
+        _ => {
+            let report = cedr_core::remote::check(
+                path,
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            )?;
+            telemetry::count("guard_remote_servers", report.servers.len());
+            let write = state
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| {
+                    std::fs::write(
+                        &state,
+                        serde_json::to_vec(&report).expect("report serializes"),
+                    )
+                });
+            if let Err(e) = write {
+                eprintln!("cedr: warning: cannot save remote results ({e})");
+            }
+            report
+        }
+    };
+    match format {
+        Format::Json => println!(
+            "{}",
+            serde_json::to_string(&report).expect("report serializes")
+        ),
+        Format::Text => print!("{}", report.to_text()),
+    }
+    Ok(ExitCode::from(report.exit_code()))
 }
 
 /// Warnings remain advisory; only observed surface changes can trigger the chosen gate.

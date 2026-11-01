@@ -16,6 +16,7 @@ pub mod lock;
 mod npm;
 pub mod outdated;
 mod patterns;
+pub mod remote;
 pub mod risk;
 pub mod skill;
 pub mod source;

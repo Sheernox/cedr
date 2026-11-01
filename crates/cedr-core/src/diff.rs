@@ -2,12 +2,12 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::risk;
 use crate::surface::{Surface, Tool};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeKind {
     CapabilityAdded,
@@ -36,7 +36,7 @@ impl ChangeKind {
 }
 
 /// Declared highest first, so ascending order puts high changes first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChangeSeverity {
     High,
@@ -59,7 +59,7 @@ impl ChangeSeverity {
 /// `schema_changed`, and the tool's description for `tool_added` and
 /// `tool_removed` (empty when there is none). `before` is the old description
 /// or schema for `description_changed` and `schema_changed`, `None` otherwise.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Change {
     pub kind: ChangeKind,
     pub tool: Option<String>,

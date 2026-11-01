@@ -56,6 +56,7 @@ fn every_agent_discovers_locks_and_verifies_with_existing_keys() {
         lock::LockOptions {
             offline: true,
             introspect: false,
+            remote: false,
         },
     )
     .unwrap();

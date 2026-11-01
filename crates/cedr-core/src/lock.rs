@@ -59,6 +59,7 @@ pub struct McpEntry {
 pub struct LockOptions {
     pub offline: bool,
     pub introspect: bool,
+    pub remote: bool,
 }
 
 #[derive(Debug)]
@@ -198,6 +199,17 @@ pub fn lock(root: &Path, options: LockOptions) -> Result<LockOutcome> {
     };
     let mut warnings = Vec::new();
     let mut servers = Vec::new();
+    let remotes = ws
+        .servers
+        .iter()
+        .filter(|s| matches!(s.launch, Launch::Remote { .. }))
+        .count();
+    if options.remote && remotes > crate::remote::MAX_SERVERS {
+        return Err(crate::Error::Source(format!(
+            "--remote reads at most {} servers; this config has {remotes}",
+            crate::remote::MAX_SERVERS
+        )));
+    }
     let mut filenames = std::collections::HashSet::new();
     for server in &ws.servers {
         let name = surface_file_name(server.client, &server.name);
@@ -297,6 +309,17 @@ fn server_entry(
                 ));
             }
             Err(e) => warnings.push(format!("{label}: introspection failed: {e}")),
+        }
+    }
+    if options.remote
+        && let Launch::Remote { url } = &server.launch
+    {
+        match crate::remote::surface(url, &entry.source) {
+            Ok(s) => surface = Some(s),
+            Err(e) => warnings.push(format!(
+                "{label}: remote read failed: {}",
+                crate::remote::failure_text(&e)
+            )),
         }
     }
     let surface = surface.or(static_surface);

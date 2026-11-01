@@ -14,12 +14,28 @@ use crate::finding::{Finding, Rule};
 
 pub const CONFIG_FILE: &str = ".cedr/guard.toml";
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct GuardConfig {
     /// Extra skill roots relative to the repo root, normalised to `/` separators.
     pub skills: Vec<String>,
+    /// Least minutes between reads of the remote servers.
+    pub remote_interval: u32,
     ignore: Vec<Rule>,
     allow: Vec<(Rule, GlobSet)>,
+}
+
+const DEFAULT_REMOTE_INTERVAL: u32 = 60;
+const REMOTE_INTERVALS: std::ops::RangeInclusive<u32> = 5..=10080;
+
+impl Default for GuardConfig {
+    fn default() -> Self {
+        GuardConfig {
+            skills: Vec::new(),
+            remote_interval: DEFAULT_REMOTE_INTERVAL,
+            ignore: Vec::new(),
+            allow: Vec::new(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -31,6 +47,14 @@ struct Raw {
     skills: Vec<String>,
     #[serde(default)]
     lint: RawLint,
+    #[serde(default)]
+    remote: RawRemote,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRemote {
+    interval_minutes: Option<u32>,
 }
 
 fn default_version() -> u32 {
@@ -65,6 +89,16 @@ impl GuardConfig {
             return Err(parse_err(
                 &path,
                 format!("unsupported version {}", raw.version),
+            ));
+        }
+        let remote_interval = raw
+            .remote
+            .interval_minutes
+            .unwrap_or(DEFAULT_REMOTE_INTERVAL);
+        if !REMOTE_INTERVALS.contains(&remote_interval) {
+            return Err(parse_err(
+                &path,
+                format!("remote.interval_minutes: {remote_interval} is outside 5-10080"),
             ));
         }
         let rule = |key: &str, id: &str| {
@@ -112,6 +146,7 @@ impl GuardConfig {
             allow.push((rule("lint.allow.rule", &entry.rule)?, set));
         }
         Ok(GuardConfig {
+            remote_interval,
             skills,
             ignore,
             allow,

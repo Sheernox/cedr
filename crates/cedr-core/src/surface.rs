@@ -44,6 +44,9 @@ pub enum Capability {
     ChildProcess,
     Env,
     FsWrite,
+    McpPrompts,
+    McpResources,
+    McpTools,
     Network,
 }
 
@@ -53,6 +56,9 @@ impl Capability {
             Capability::ChildProcess => "child_process",
             Capability::Env => "env",
             Capability::FsWrite => "fs_write",
+            Capability::McpPrompts => "mcp_prompts",
+            Capability::McpResources => "mcp_resources",
+            Capability::McpTools => "mcp_tools",
             Capability::Network => "network",
         }
     }
