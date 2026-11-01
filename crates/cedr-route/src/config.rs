@@ -164,6 +164,8 @@ pub enum ReaderKind {
     Codex,
     #[serde(rename = "muse")]
     Muse,
+    #[serde(rename = "grok")]
+    Grok,
     #[serde(rename = "claude-statusline")]
     ClaudeStatusline,
 }
@@ -173,6 +175,7 @@ impl ReaderKind {
         match self {
             ReaderKind::Codex => "codex",
             ReaderKind::Muse => "muse",
+            ReaderKind::Grok => "grok",
             ReaderKind::ClaudeStatusline => "claude-statusline",
         }
     }
@@ -184,6 +187,7 @@ impl ReadingsSource {
         match self {
             ReadingsSource::Codex { harness, .. } => Some((ReaderKind::Codex, harness)),
             ReadingsSource::Muse { harness, .. } => Some((ReaderKind::Muse, harness)),
+            ReadingsSource::Grok { harness, .. } => Some((ReaderKind::Grok, harness)),
             ReadingsSource::ClaudeStatusline { harness } => {
                 Some((ReaderKind::ClaudeStatusline, harness))
             }
@@ -243,6 +247,17 @@ pub enum ReadingsSource {
         #[serde(default = "default_cache_seconds")]
         cache_seconds: i64,
     },
+    /// Plan usage from `grok agent stdio`.
+    Grok {
+        #[serde(default = "default_grok")]
+        harness: String,
+        #[serde(default = "default_cache_seconds")]
+        cache_seconds: i64,
+    },
+}
+
+fn default_grok() -> String {
+    "grok".to_string()
 }
 
 fn default_muse() -> String {
@@ -444,6 +459,7 @@ impl Config {
         for source in self.readings.iter().filter(|_| check_readers) {
             if let ReadingsSource::Codex { harness, .. }
             | ReadingsSource::Muse { harness, .. }
+            | ReadingsSource::Grok { harness, .. }
             | ReadingsSource::ClaudeStatusline { harness } = source
                 && !self.harnesses.contains_key(harness)
             {

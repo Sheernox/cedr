@@ -1,4 +1,4 @@
-//! Built-in readings for Claude Code and Codex (docs/route.md, Built-in readers). Both go through
+//! Built-in readings (docs/route.md, Built-in readers). Each goes through
 //! the vendor's own CLI or what it hands its user's scripts: Cedr never reads credentials or calls
 //! a vendor API itself.
 
@@ -76,11 +76,8 @@ fn codex_with(program: &str, harness: &str, timeout: Duration) -> Result<Value, 
     }))
 }
 
-/// The JSON-RPC exchange: initialize, then the two reads; returns their results.
-fn converse(child: &mut std::process::Child, timeout: Duration) -> Result<(Value, Value), String> {
-    let deadline = Instant::now() + timeout;
-    let mut stdin = child.stdin.take().ok_or("no stdin")?;
-    let stdout = child.stdout.take().ok_or("no stdout")?;
+/// Lines of a child's stdout on a channel, so a reader can wait on them with a deadline.
+fn stdout_lines(stdout: std::process::ChildStdout) -> mpsc::Receiver<String> {
     let (tx, rx) = mpsc::channel::<String>();
     std::thread::spawn(move || {
         let mut total = 0;
@@ -93,6 +90,15 @@ fn converse(child: &mut std::process::Child, timeout: Duration) -> Result<(Value
             }
         }
     });
+    rx
+}
+
+/// The JSON-RPC exchange: initialize, then the two reads; returns their results.
+fn converse(child: &mut std::process::Child, timeout: Duration) -> Result<(Value, Value), String> {
+    let deadline = Instant::now() + timeout;
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let rx = stdout_lines(stdout);
     let mut send = |v: Value| {
         writeln!(stdin, "{v}")
             .and_then(|()| stdin.flush())
@@ -167,6 +173,109 @@ fn muse_with(program: &str, harness: &str, timeout: Duration) -> Result<Value, S
     }
     Ok(
         json!({"harnesses": [{"harness": harness, "fetchedAt": stamp(Utc::now()), "error": null, "windows": windows}]}),
+    )
+}
+
+/// Asks `grok agent stdio` (Grok Build's own CLI and login) for the plan's allowance. `_x.ai/billing`
+/// is undocumented (read from Grok Build 1.0.70) and needs no session or model turn. The pool is
+/// shared with the vendor's other products. No period yet or another format is an error, so the plan
+/// reads as unknown, never as unused.
+pub fn grok(harness: &str, timeout: Duration) -> Result<Value, String> {
+    grok_with("grok", harness, timeout)
+}
+
+fn grok_with(program: &str, harness: &str, timeout: Duration) -> Result<Value, String> {
+    // A repo's `.grok/` must not configure the probe, so it never starts in the working directory.
+    let cwd = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map_or_else(std::env::temp_dir, PathBuf::from);
+    let mut child = Command::new(program)
+        .args(["agent", "stdio"])
+        // Never let a probe replace the installed Grok Build.
+        .env("GROK_DISABLE_AUTOUPDATER", "1")
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("cannot start {program} agent stdio ({e})"))?;
+    let reply = grok_billing(&mut child, timeout);
+    let _ = child.kill();
+    let _ = child.wait();
+    grok_doc(&reply?, harness)
+}
+
+fn grok_billing(child: &mut std::process::Child, timeout: Duration) -> Result<Value, String> {
+    let deadline = Instant::now() + timeout;
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    let rx = stdout_lines(child.stdout.take().ok_or("no stdout")?);
+    for request in [
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+               "params": {"protocolVersion": 1, "clientCapabilities": {}}}),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "_x.ai/billing", "params": {}}),
+    ] {
+        writeln!(stdin, "{request}")
+            .and_then(|()| stdin.flush())
+            .map_err(|e| format!("agent closed its input ({e})"))?;
+    }
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let line = rx.recv_timeout(left).map_err(|e| match e {
+            mpsc::RecvTimeoutError::Timeout => {
+                format!("no answer within {} ms", timeout.as_millis())
+            }
+            mpsc::RecvTimeoutError::Disconnected => {
+                "agent exited before answering; check that grok is signed in".to_string()
+            }
+        })?;
+        let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if msg.get("id").and_then(Value::as_i64) != Some(2) {
+            continue;
+        }
+        return msg
+            .get("result")
+            .filter(|r| r.is_object())
+            .cloned()
+            .ok_or_else(|| "agent refused the billing request".to_string());
+    }
+}
+
+fn grok_doc(result: &Value, harness: &str) -> Result<Value, String> {
+    let config = &result["config"];
+    let period = config
+        .get("currentPeriod")
+        .filter(|p| p.is_object())
+        .ok_or("Grok has no billing period yet; it appears after the plan's first use")?;
+    if period["type"] != "USAGE_PERIOD_TYPE_WEEKLY" {
+        return Err("grok changed its usage report format".into());
+    }
+    let when = |v: &Value| {
+        v.as_str()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.with_timezone(&Utc))
+    };
+    let percent = config["creditUsagePercent"]
+        .as_f64()
+        .filter(|p| p.is_finite() && *p >= 0.0);
+    let (Some(percent), Some(start), Some(end)) =
+        (percent, when(&period["start"]), when(&period["end"]))
+    else {
+        return Err("grok returned an invalid allowance".into());
+    };
+    if end <= start {
+        return Err("grok returned an invalid allowance".into());
+    }
+    let window = json!({
+        "id": "weekly",
+        "kind": "weekly",
+        "percent": percent,
+        "resetsAt": stamp(end),
+        "windowMinutes": (end - start).num_minutes(),
+    });
+    Ok(
+        json!({"harnesses": [{"harness": harness, "fetchedAt": stamp(Utc::now()), "error": null, "windows": [window]}]}),
     )
 }
 
@@ -314,6 +423,59 @@ echo '{"schemaVersion":1,"allowance":{"window":{"usedPercent":47,"resetsAtMs":17
             (w[1]["id"].as_str(), w[1]["percent"].as_f64()),
             (Some("weekly"), Some(53.5))
         );
+    }
+
+    fn fake_grok(dir: &Path, billing: &str) -> String {
+        fake_codex(
+            dir,
+            &format!(
+                r#"[ "$GROK_DISABLE_AUTOUPDATER" = 1 ] || exit 9
+while read -r line; do
+  case "$line" in
+    *initialize*) echo 'not json'; echo '{{"jsonrpc":"2.0","id":1,"result":{{}}}}' ;;
+    *billing*) echo '{billing}' ;;
+  esac
+done"#
+            ),
+        )
+    }
+
+    #[test]
+    fn grok_reads_the_weekly_allowance() {
+        let _serial = crate::spawn_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let program = fake_grok(
+            dir.path(),
+            r#"{"id":2,"result":{"config":{"creditUsagePercent":1.5,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-10-28T00:00:00Z","end":"2026-11-04T00:00:00Z"}}}}"#,
+        );
+        let doc = grok_with(&program, "grok", Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            doc["harnesses"][0]["windows"][0],
+            json!({"id": "weekly", "kind": "weekly", "percent": 1.5,
+                   "resetsAt": "2026-11-04T00:00:00Z", "windowMinutes": 10080})
+        );
+    }
+
+    #[test]
+    fn grok_without_a_usable_allowance_is_an_error_not_zero() {
+        let _serial = crate::spawn_lock();
+        let dir = tempfile::tempdir().unwrap();
+        for (billing, expected) in [
+            (r#"{"id":2,"result":{"config":{}}}"#, "no billing period"),
+            (
+                r#"{"id":2,"result":{"config":{"creditUsagePercent":1,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_MONTHLY"}}}}"#,
+                "changed its usage report",
+            ),
+            (
+                r#"{"id":2,"result":{"config":{"creditUsagePercent":-1,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-10-28T00:00:00Z","end":"2026-11-04T00:00:00Z"}}}}"#,
+                "invalid allowance",
+            ),
+            (r#"{"id":2,"error":{"code":-32601}}"#, "refused"),
+        ] {
+            let program = fake_grok(dir.path(), billing);
+            let err = grok_with(&program, "grok", Duration::from_secs(5)).unwrap_err();
+            assert!(err.contains(expected), "{err}");
+        }
     }
 
     #[test]

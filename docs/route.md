@@ -4,7 +4,7 @@ The frozen contract for `cedr route` and the MCP server. A change to any shape b
 
 ## Scope
 
-Route config, readings sources (including built-in readers for Claude Code and Codex), machine checks, pool states, preview versions, the pick, cascades, route tags, `--format t3`, local history, verdicts, stats, sync with the cedr.dev app (history, shared routes and the machine snapshot), and the MCP tools. Council has its own contract: [council.md](council.md).
+Route config, readings sources (including built-in readers), machine checks, pool states, preview versions, the pick, cascades, route tags, `--format t3`, local history, verdicts, stats, sync with the cedr.dev app (history, shared routes and the machine snapshot), and the MCP tools. Council has its own contract: [council.md](council.md).
 
 Out of scope: `run` mode (starting vendor CLIs), hook templates, and the GitHub App.
 
@@ -55,12 +55,12 @@ harness = "claude"
 model = "fable"           # applies to models whose id contains this; expected for them
 
 [[readings]]              # zero or more sources, merged in order
-kind = "http"             # http | file | command | codex | muse | claude-statusline
+kind = "http"             # http | file | command | codex | muse | grok | claude-statusline
 url = "https://example.invalid/api/limits"   # http
 # path = "readings.json"  # file (relative to the config file)
 # command = ["my-limits", "--json"]          # command (argv, no shell)
-# harness = "codex"       # codex, muse and claude-statusline: the harness the reading is for
-cache_seconds = 60        # http, command, codex and muse; default 60
+# harness = "codex"       # codex, muse, grok and claude-statusline: the harness the reading is for
+cache_seconds = 60        # http, command, codex, muse and grok; default 60
 
 [sync]                    # optional: sync with the cedr.dev app (see Sync)
 org = "acme"              # organization slug
@@ -95,7 +95,7 @@ candidates = [{ target = "codex/luna", effort = "medium", tier = 1 }, { target =
 - `judge` and `escalate` name other routes in the file. Validation fails when either names an unknown route or the route itself, when `escalate` is set without `judge`, when a council has either or either names a council, when a judge route has a `judge` of its own, or when following `escalate` from a route comes back to it.
 - `preview` is `trial`, `hold` or `use`; anything else fails validation.
 - The rules hash is the first 7 hex characters of SHA-256 over the file bytes.
-- `command` is a program name (no `/` or `\`, no arguments) or, in a machine's own file only, an absolute path; `reader` is `codex`, `muse` or `claude-statusline`. Both are allowed in shared routes because neither runs anything: Cedr only looks the program up and compares the hint with the local readings sources. Shared routes refuse a path, which would tell whoever edits them which files exist on members' machines. `[machine] skip` names defined harnesses or none (an unknown name is a warning, not an error, so an org dropping a harness never breaks a machine).
+- `command` is a program name (no `/` or `\`, no arguments) or, in a machine's own file only, an absolute path; `reader` is `codex`, `muse`, `grok` or `claude-statusline`. Both are allowed in shared routes because neither runs anything: Cedr only looks the program up and compares the hint with the local readings sources. Shared routes refuse a path, which would tell whoever edits them which files exist on members' machines. `[machine] skip` names defined harnesses or none (an unknown name is a warning, not an error, so an org dropping a harness never breaks a machine).
 
 ## Readings
 
@@ -119,10 +119,11 @@ A JSON document from each source:
 
 ### Built-in readers
 
-Both read through the vendor's own CLI or the data it hands to its user's scripts; neither reads credentials or calls a vendor API itself.
+Each reads through the vendor's own CLI or the data it hands to its user's scripts; none reads credentials or calls a vendor API itself.
 
 - `codex`: runs `codex app-server` (from `PATH`), sends `initialize`, then `account/rateLimits/read` and `model/list`, and closes it within the 10-second command deadline. Each window of `rateLimits` (`primary`, `secondary`) becomes a window with that id: `percent` from `usedPercent`, `resetsAt` from the epoch seconds, `kind` session when `windowDurationMins` is 300 or less, else weekly. Visible model ids from `model/list` become the harness's model list. Cached like `command`.
 - `muse`: runs `muse usage --json` with `MUSE_NO_AUTO_UPDATE=1` (so a probe never replaces the installed CLI). Its undocumented `schemaVersion` 1 reply gives `allowance.window` (session) and `allowance.weekly` with `usedPercent` and `resetsAtMs`; no allowance yet (before a window's first turn) or another format is an error, so the plan reads as unknown, never as unused. Cached like `command`.
+- `grok`: runs `grok agent stdio` with `GROK_DISABLE_AUTOUPDATER=1` (so a probe never replaces the installed CLI), sends ACP `initialize` and the undocumented `_x.ai/billing` method (no session and no model turn), and closes it within the 10-second command deadline. A `config.currentPeriod` of type `USAGE_PERIOD_TYPE_WEEKLY` with valid `start` and `end` and a finite, non-negative `config.creditUsagePercent` becomes the window `weekly` (kind weekly, `resetsAt` from `end`). No period yet, another period type, a refusal or an invalid value is an error, so the plan reads as unknown, never as unused. The pool is shared with the vendor's other products, so the percent can rise with no Grok Build turn. Models come from `models` in the harness config or `--models`. Cached like `command`.
 - Antigravity has no built-in reader: its plan quota is only available through its OAuth credentials, which Cedr never reads. Without a readings source its plan is unknown, which still takes small and medium work.
 - `claude-statusline`: reads the file `cedr route statusline` last wrote (`$XDG_STATE_HOME/cedr/readings/<harness>.json`). Claude Code passes `rate_limits.five_hour` and `rate_limits.seven_day` (`used_percentage`, `resets_at` in epoch seconds) to its status line command; `cedr route statusline` turns them into windows `five_hour` (session) and `seven_day` (weekly) with `fetchedAt` set to the time of capture, so the reading goes stale ten minutes after the last active Claude Code session. A missing file is no reading. Claude Code sends `rate_limits` only to Pro and Max subscribers after a session's first response.
 
@@ -251,7 +252,7 @@ Append-only JSON lines in `$XDG_STATE_HOME/cedr/route-history.jsonl` (default `~
 
 `cedr route import <path>` reads a T3 Code delegation `routing.toml` (providers named by T3 provider id, `[families]` for model windows) and prints the equivalent `routes.toml` (version 1) on stdout, exit 0, or exits 2 naming the first thing it cannot convert. The output validates as any config does. Mapping:
 
-- `[providers.X]` becomes `[harnesses.<id>]` with the same `expect`, where `<id>` is `claude` for `claudeAgent` (with `t3 = "claudeAgent"` and `aliases = ["claudeAgent"]`) and `X` otherwise; `effort_option` is `effort` for claude, `reasoningEffort` for `codex` and `muse`, none for `antigravity`, whose `brief_prefix` is `Load the workstation-rules skill first`.
+- `[providers.X]` becomes `[harnesses.<id>]` with the same `expect`, where `<id>` is `claude` for `claudeAgent` (with `t3 = "claudeAgent"` and `aliases = ["claudeAgent"]`) and `X` otherwise; `effort_option` is `effort` for claude, `reasoningEffort` for `codex`, `muse` and `grok`, none for `antigravity`, whose `brief_prefix` is `Load the workstation-rules skill first`.
 - `[families]` entries become `[model_windows]` with the provider mapped the same way; `[thresholds]` and `[evaluation]` copy as they are; `[orchestrator]` is `harness = "claude"`, `model = "opus"`.
 - Every route copies `work`, `enabled`, `role`, `council`, `quorum`, `block`, `rounds`, `judge`, `escalate` and its candidates (`target` with `claudeAgent/` rewritten to `claude/`, `effort`, `tier`). Any other key in the source is an error, so a source field the import does not know about is never dropped silently.
 

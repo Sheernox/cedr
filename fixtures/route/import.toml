@@ -6,6 +6,9 @@ out = 90
 expect = ["seven_day"]
 [providers.codex]
 expect = ["primary"]
+[providers.grok]
+expect = ["weekly"]
+
 [providers.muse]
 expect = ["weekly"]
 [providers.antigravity]

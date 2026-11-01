@@ -278,6 +278,13 @@ fn fetch(
             crate::readers::muse(harness, COMMAND_TIMEOUT)
                 .map_err(|e| format!("muse readings unavailable ({e})"))
         }),
+        ReadingsSource::Grok {
+            harness,
+            cache_seconds,
+        } => cached(&format!("grok {harness}"), *cache_seconds, now, || {
+            crate::readers::grok(harness, COMMAND_TIMEOUT)
+                .map_err(|e| format!("grok readings unavailable ({e})"))
+        }),
         ReadingsSource::ClaudeStatusline { harness } => {
             let path = crate::readers::statusline_path(harness);
             match read_file(&path, MAX_BYTES) {

@@ -61,6 +61,7 @@ pub fn refresh(db: &Store) -> Vec<String> {
                 as fn(&str, std::time::Duration) -> std::result::Result<Value, String>,
         ),
         ("muse", "muse", cedr_route::readers::muse),
+        ("grok", "grok", cedr_route::readers::grok),
     ] {
         let installed = std::env::var_os("PATH")
             .is_some_and(|p| std::env::split_paths(&p).any(|p| p.join(command).is_file()));

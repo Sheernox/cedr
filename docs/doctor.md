@@ -14,7 +14,7 @@ Each check is `{"id", "area", "state": "ok" | "warn" | "fail" | "skip", "message
 | `route.readers` | route | Route's machine checks: harnesses whose program is missing, and stale usage readers |
 | `route.statusline` | route | Claude Code's `~/.claude/settings.json` status line runs `cedr route statusline` (warn when Claude Code is installed and it does not) |
 | `route.sync` | route | The last background sync error, if any |
-| `mcp.claude`, `mcp.codex` | mcp | `cedr` is registered as an MCP server for that agent (`claude mcp list`, `codex mcp list`; skip when the agent is absent) |
+| `mcp.claude`, `mcp.codex`, `mcp.grok` | mcp | `cedr` is registered as an MCP server for that agent (`claude mcp list`, `codex mcp list`, `grok mcp list`; skip when the agent is absent) |
 | `monitor.config` | monitor | The monitor config parses |
 | `monitor.sources` | monitor | One check per harness from `cedr monitor sources` |
 | `monitor.push` | monitor | The last push time (warn after 24 hours with an org set), and the last background push error |

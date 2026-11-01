@@ -56,7 +56,7 @@ pub fn convert(text: &str, path: &Path) -> Result<String> {
                     h.insert("aliases".into(), Value::Array(vec!["claudeAgent".into()]));
                     h.insert("effort_option".into(), "effort".into());
                 }
-                "codex" | "muse" => {
+                "codex" | "muse" | "grok" => {
                     h.insert("effort_option".into(), "reasoningEffort".into());
                 }
                 "antigravity" => {
@@ -161,6 +161,10 @@ mod tests {
         );
         assert_eq!(
             c.harnesses["muse"].effort_option.as_deref(),
+            Some("reasoningEffort")
+        );
+        assert_eq!(
+            c.harnesses["grok"].effort_option.as_deref(),
             Some("reasoningEffort")
         );
         assert_eq!(

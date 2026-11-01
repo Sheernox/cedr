@@ -320,12 +320,14 @@ pub fn checks(root: &Path) -> Vec<Check> {
         },
         "Run cedr route sync",
     );
-    for agent in ["claude", "codex"] {
+    for agent in ["claude", "codex", "grok"] {
         let (state, message) = if !installed(agent) {
             ("skip", "harness absent")
         } else {
             match Command::new(agent)
                 .args(["mcp", "list"])
+                // Never let a check replace the installed Grok Build.
+                .env("GROK_DISABLE_AUTOUPDATER", "1")
                 .stdin(Stdio::null())
                 .stderr(Stdio::null())
                 .output()
