@@ -28,27 +28,27 @@
 <th>Start with</th>
 </tr>
 <tr valign="top">
-<td nowrap><img src="assets/products/route.svg" width="40" height="40" align="middle" alt="">&nbsp; <a href="https://cedr.dev/docs/route"><b>Route</b></a></td>
+<td align="center"><a href="https://cedr.dev/docs/route"><img src="assets/products/route.svg" width="40" height="40" alt=""></a><br><a href="https://cedr.dev/docs/route"><b>Route</b></a></td>
 <td>Picks the agent, model and effort for each kind of work from your <code>routes.toml</code>. Equally suited work goes to the plan with the most room left, and plans near their limits are skipped.</td>
 <td><code>cedr route pick review.code</code></td>
 </tr>
 <tr valign="top">
-<td nowrap><img src="assets/products/council.svg" width="40" height="40" align="middle" alt="">&nbsp; <a href="https://cedr.dev/docs/council"><b>Council</b></a></td>
+<td align="center"><a href="https://cedr.dev/docs/council"><img src="assets/products/council.svg" width="40" height="40" alt=""></a><br><a href="https://cedr.dev/docs/council"><b>Council</b></a></td>
 <td>Starts one reviewer per vendor, merges their reports, groups findings that point at the same place and decides the gate. Any P0 or P1 blocks; too few reports is never a silent pass.</td>
 <td><code>cedr council plan review.council</code></td>
 </tr>
 <tr valign="top">
-<td nowrap><img src="assets/products/guard.svg" width="40" height="40" align="middle" alt="">&nbsp; <a href="https://cedr.dev/docs/guard"><b>Guard</b></a></td>
+<td align="center"><a href="https://cedr.dev/docs/guard"><img src="assets/products/guard.svg" width="40" height="40" alt=""></a><br><a href="https://cedr.dev/docs/guard"><b>Guard</b></a></td>
 <td>Lints your agent setup, pins every skill and MCP server in <code>.cedr/guard.lock</code>, and fails CI when a server's tools, descriptions or network hosts change after you pinned it.</td>
 <td><code>cedr guard lint</code></td>
 </tr>
 <tr valign="top">
-<td nowrap><img src="assets/products/sync.svg" width="40" height="40" align="middle" alt="">&nbsp; <a href="https://cedr.dev/docs/sync"><b>Sync</b></a></td>
+<td align="center"><a href="https://cedr.dev/docs/sync"><img src="assets/products/sync.svg" width="40" height="40" alt=""></a><br><a href="https://cedr.dev/docs/sync"><b>Sync</b></a></td>
 <td>Write rules, skills, MCP servers, permissions and hooks once in <code>.cedr/</code>, and cedr writes each agent's own files. CI fails on drift, and hand edits are never overwritten unless you pass <code>--force</code>.</td>
 <td><code>cedr sync init</code></td>
 </tr>
 <tr valign="top">
-<td nowrap><img src="assets/products/monitor.svg" width="40" height="40" align="middle" alt="">&nbsp; <a href="https://cedr.dev/docs/monitor"><b>Monitor</b></a></td>
+<td align="center"><a href="https://cedr.dev/docs/monitor"><img src="assets/products/monitor.svg" width="40" height="40" alt=""></a><br><a href="https://cedr.dev/docs/monitor"><b>Monitor</b></a></td>
 <td>Reads each agent's local logs and reports tokens, cache use, API-equivalent cost, sessions and how close each plan is to its limit. Counts leave your machine only when you push them.</td>
 <td><code>cedr monitor limits</code></td>
 </tr>
