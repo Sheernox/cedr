@@ -465,7 +465,13 @@ fn guard_remote(
             r
         }
         saved => {
-            let Some(_claim) = RemoteClaim::take(&state) else {
+            let claim = RemoteClaim::take(&state).map_err(|e| {
+                cedr_core::Error::Source(format!(
+                    "cannot record the read in {} ({e})",
+                    state.display()
+                ))
+            })?;
+            let Some(_claim) = claim else {
                 return match saved {
                     Some(r) => {
                         eprintln!(
@@ -515,16 +521,19 @@ fn print_remote(report: &cedr_core::remote::Report, format: Format) {
 }
 
 /// One read per checkout at a time, so overlapping scheduled runs can't multiply requests. The file
-/// goes when the run ends; a crashed run's is taken over once older than the longest run can be.
+/// goes when the run ends; a crashed run's is taken over once older than the longest run can be
+/// (64 servers, 22 requests each, 20 seconds a request).
 struct RemoteClaim(PathBuf);
 
 impl RemoteClaim {
-    const STALE: Duration = Duration::from_secs(60 * 60);
+    const STALE: Duration = Duration::from_secs(8 * 60 * 60);
 
-    fn take(state: &Path) -> Option<RemoteClaim> {
+    /// `None` when another run holds the claim; a failure to make it is an error, never a false
+    /// "another read is running" that repeats old results.
+    fn take(state: &Path) -> std::io::Result<Option<RemoteClaim>> {
         let path = state.with_extension("lock");
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).ok()?;
+            std::fs::create_dir_all(dir)?;
         }
         let stale = std::fs::metadata(&path)
             .and_then(|m| m.modified())
@@ -532,14 +541,17 @@ impl RemoteClaim {
             .and_then(|t| t.elapsed().ok())
             .is_some_and(|age| age > Self::STALE);
         if stale {
-            std::fs::remove_file(&path).ok()?;
+            std::fs::remove_file(&path)?;
         }
-        std::fs::OpenOptions::new()
+        match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&path)
-            .ok()
-            .map(|_| RemoteClaim(path))
+        {
+            Ok(_) => Ok(Some(RemoteClaim(path))),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 }
 
