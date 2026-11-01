@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 enum Mode {
     Lists(&'static str),
     Refuses(u16),
+    /// Answers `initialize` without declaring tools, and refuses `tools/list`.
+    NoTools,
 }
 
 struct Server {
@@ -49,6 +51,14 @@ fn serve() -> Server {
             let mode = m.lock().unwrap().clone();
             let reply = match (&mode, msg["method"].as_str()) {
                 (Mode::Refuses(code), _) => (*code, String::new()),
+                (Mode::NoTools, Some("initialize")) => (
+                    200,
+                    json!({"jsonrpc": "2.0", "id": msg["id"], "result": {"capabilities": {"prompts": {}}}}).to_string(),
+                ),
+                (Mode::NoTools, Some("tools/list")) => (
+                    200,
+                    json!({"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32601}}).to_string(),
+                ),
                 (_, Some("initialize")) => (
                     200,
                     json!({"jsonrpc": "2.0", "id": msg["id"], "result": {"capabilities": {"tools": {}}}}).to_string(),
@@ -150,6 +160,15 @@ fn a_changed_surface_exits_one_and_an_outage_is_never_unchanged() {
     assert_eq!(auth.status.code(), Some(2));
     assert_eq!(only_server(&auth)["status"], "auth_required");
 
+    *server.mode.lock().unwrap() = Mode::NoTools;
+    let gone = cedr(dir.path(), &repo, &check);
+    assert_eq!(gone.status.code(), Some(1));
+    let kinds = only_server(&gone)["changes"].to_string();
+    assert!(
+        kinds.contains("tool_removed") && kinds.contains("capability_removed"),
+        "{kinds}"
+    );
+
     // No credential header ever goes out, even from a config that could name one.
     let sent = server.requests.lock().unwrap().join("\n").to_lowercase();
     assert!(!sent.contains("authorization") && !sent.contains("cookie"));
@@ -187,6 +206,26 @@ fn reads_stay_inside_the_interval_and_last_never_contacts_the_server() {
         Some(0)
     );
     assert!(count() > after_first);
+
+    // A read already running: nothing more goes out, and the last results are shown.
+    let state = dir.path().join("s/cedr/guard-remote");
+    let saved = std::fs::read_dir(&state)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let claim = saved.with_extension("lock");
+    std::fs::write(&claim, "").unwrap();
+    let before_claim = count();
+    assert_eq!(
+        cedr(dir.path(), &repo, &["guard", "remote", "--force"])
+            .status
+            .code(),
+        Some(0)
+    );
+    assert_eq!(count(), before_claim);
+    std::fs::remove_file(&claim).unwrap();
 
     // A new baseline inside the interval means the saved result no longer describes this lock.
     *server.mode.lock().unwrap() = Mode::Lists("Relocked text");

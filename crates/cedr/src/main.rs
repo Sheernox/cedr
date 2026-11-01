@@ -17,7 +17,7 @@ mod update;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cedr_core::finding::Report;
 use cedr_core::lock::{self, LockOptions};
@@ -464,7 +464,22 @@ fn guard_remote(
             );
             r
         }
-        _ => {
+        saved => {
+            let Some(_claim) = RemoteClaim::take(&state) else {
+                return match saved {
+                    Some(r) => {
+                        eprintln!(
+                            "cedr: another read is running; showing the one from {}",
+                            r.at
+                        );
+                        print_remote(&r, format);
+                        Ok(ExitCode::from(r.exit_code()))
+                    }
+                    None => Err(cedr_core::Error::Source(
+                        "another read is running, with no earlier results yet".into(),
+                    )),
+                };
+            };
             let report = cedr_core::remote::check(
                 path,
                 chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -485,14 +500,53 @@ fn guard_remote(
             report
         }
     };
+    print_remote(&report, format);
+    Ok(ExitCode::from(report.exit_code()))
+}
+
+fn print_remote(report: &cedr_core::remote::Report, format: Format) {
     match format {
         Format::Json => println!(
             "{}",
-            serde_json::to_string(&report).expect("report serializes")
+            serde_json::to_string(report).expect("report serializes")
         ),
         Format::Text => print!("{}", report.to_text()),
     }
-    Ok(ExitCode::from(report.exit_code()))
+}
+
+/// One read per checkout at a time, so overlapping scheduled runs can't multiply requests. The file
+/// goes when the run ends; a crashed run's is taken over once older than the longest run can be.
+struct RemoteClaim(PathBuf);
+
+impl RemoteClaim {
+    const STALE: Duration = Duration::from_secs(60 * 60);
+
+    fn take(state: &Path) -> Option<RemoteClaim> {
+        let path = state.with_extension("lock");
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).ok()?;
+        }
+        let stale = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > Self::STALE);
+        if stale {
+            std::fs::remove_file(&path).ok()?;
+        }
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .ok()
+            .map(|_| RemoteClaim(path))
+    }
+}
+
+impl Drop for RemoteClaim {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// Warnings remain advisory; only observed surface changes can trigger the chosen gate.

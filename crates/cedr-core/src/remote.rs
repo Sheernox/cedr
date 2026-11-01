@@ -339,6 +339,10 @@ fn list(url: &Url, host: &str) -> std::result::Result<(Vec<Tool>, Vec<Capability
     )?;
     session.notify_initialized();
     let capabilities = capabilities(&init["capabilities"]);
+    // A server that stopped declaring tools must show as a change, not fail on `tools/list`.
+    if !capabilities.contains(&Capability::McpTools) {
+        return Ok((Vec::new(), capabilities));
+    }
     let mut tools = Vec::new();
     let mut cursor: Option<String> = None;
     for page in 0..MAX_PAGES {
