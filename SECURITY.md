@@ -12,8 +12,8 @@ cedr runs on developer machines and in CI next to AI coding agents, so we especi
 
 - a way for a shared `routes.toml`, a readings feed or a merged review report to run a command, read a file or reach a host it should not,
 - an API key or other secret appearing in output, logs, history or error messages,
-- `cedr verify` passing when a pinned skill or MCP server has changed,
-- `cedr lock` executing a package or server without `--introspect`.
+- `cedr guard verify` passing when a pinned skill or MCP server has changed,
+- `cedr guard lock` executing a package or server without `--introspect`.
 
 ## Supported versions
 

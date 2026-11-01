@@ -22,6 +22,6 @@ Each check is `{"id", "area", "state": "ok" | "warn" | "fail" | "skip", "message
 | `sync.config` | sync | In a repo: `.cedr/sync.toml` exists and parses (skip outside a repo) |
 | `sync.check` | sync | `cedr sync check` findings, summarised |
 | `sync.rules` | sync | `.cedr/org-rules.json` is current (warn when the app has a newer version) |
-| `guard.lock` | guard | `.cedr/guard.lock` exists and `cedr verify` is clean |
+| `guard.lock` | guard | `.cedr/guard.lock` exists and `cedr guard verify` is clean |
 
 Exit 0 when nothing fails (warnings allowed), 1 when any check fails, 2 on usage failure. `cedr mcp` offers it as the `doctor` tool.

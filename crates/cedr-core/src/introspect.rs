@@ -1,4 +1,4 @@
-//! `cedr lock --introspect`: runs a configured stdio server and asks it for
+//! `cedr guard lock --introspect`: runs a configured stdio server and asks it for
 //! its tools over MCP. This executes the server; the CLI warns before calling it.
 
 use std::collections::BTreeMap;

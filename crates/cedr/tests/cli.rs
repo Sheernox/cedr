@@ -323,7 +323,7 @@ fn verify_without_a_lock_is_exit_2() {
     let repo = scratch("repo-good");
     let out = cedr(&["verify", path_str(repo.path())]);
     assert_eq!(code(&out), 2);
-    assert!(String::from_utf8_lossy(&out.stderr).contains("run cedr lock first"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("run cedr guard lock first"));
 }
 
 #[test]
@@ -929,4 +929,30 @@ fn first_run_without_routes_points_at_a_starter_file() {
         stderr.contains("no routes.toml found") && stderr.contains("https://cedr.dev/docs/route"),
         "{stderr}"
     );
+}
+
+#[test]
+fn guard_commands_run_under_guard_and_their_old_names() {
+    let repo = scratch("repo-bad");
+    let path = path_str(repo.path());
+    let new = cedr(&["guard", "lint", path, "--format", "json"]);
+    let old = cedr(&["lint", path, "--format", "json"]);
+    assert_eq!(code(&new), 1);
+    assert_eq!(code(&old), code(&new));
+    assert_eq!(old.stdout, new.stdout);
+}
+
+#[test]
+fn help_lists_guard_but_not_its_old_top_level_names() {
+    let help = String::from_utf8(cedr(&["--help"]).stdout).unwrap();
+    let commands = help.split("Options:").next().unwrap();
+    assert!(commands.contains("\n  guard "));
+    for old in [
+        "lint", "lock", "verify", "outdated", "push", "surface", "latest", "diff",
+    ] {
+        assert!(
+            !commands.contains(&format!("\n  {old} ")),
+            "{old} is listed"
+        );
+    }
 }

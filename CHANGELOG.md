@@ -2,6 +2,32 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.6.0 (2026-11-01)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.6.0.png" alt="cedr v0.6.0: cedr guard" width="560">
+
+**v0.6.0** · 5 changes from 1 contributor
+
+### Highlights
+Guard now has its own command, like every other cedr product: `cedr guard lint`, `lock`, `verify`, `outdated` and `push`. **Upgrade step:** none. cedr updates itself, and the old names such as `cedr lint` still run with the same flags, output and exit codes, so existing CI and scripts keep working.
+
+### Features
+- **`cedr guard`** holds all of Guard's commands: `lint`, `lock`, `verify`, `outdated`, `push`, `surface`, `latest` and `diff`. Help and shell completions now list only the new form. Usage events record the name you typed, and `cedr guard outdated` annotations carry the new title. Contract: [docs/design.md](https://github.com/Sheernox/cedr/blob/main/docs/design.md).
+- **The GitHub Action** calls the old names on purpose, so a `version` pinned to an earlier release keeps working.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* feat(guard)!: move guard's commands under cedr guard like every other product
+* build(banner): render release heroes smaller
+* build(banner): render the v0.6.0 release hero
+* docs: changelog for 0.6.0
+* chore(release): cedr 0.6.0
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.5.2...v0.6.0
+</details>
+
 ## v0.5.2 (2026-10-31)
 
 ![cedr v0.5.2: nothing skipped](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.5.2.png)

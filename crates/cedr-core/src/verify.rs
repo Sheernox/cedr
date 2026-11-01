@@ -1,4 +1,4 @@
-//! `cedr verify`: compares the repo with its lock without touching the network.
+//! `cedr guard verify`: compares the repo with its lock without touching the network.
 
 use std::collections::BTreeMap;
 use std::path::Path;

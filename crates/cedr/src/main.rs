@@ -35,9 +35,10 @@ Examples:
   cedr route verdict <pick id> accepted  record how it went
   cedr council plan review.council       name the reviewers, one per vendor
   cedr council merge a=a.md b=b.md --route review.council
-  cedr lint && cedr lock && cedr verify  pin the skills and MCP servers a repo loads
-  cedr outdated --fail-on high          inspect newer npm server surfaces
-  cedr push --updates                   report pins, findings and available updates
+  cedr guard lint && cedr guard lock    pin the skills and MCP servers a repo loads
+  cedr guard verify                     fail when the setup no longer matches the lock
+  cedr guard outdated --fail-on high    inspect newer npm server surfaces
+  cedr guard push --updates             report pins, findings and available updates
   claude mcp add cedr -- cedr mcp        give an agent the route and council tools
   cedr update                           install the latest release
   cedr telemetry off                    stop sending anonymous usage data
@@ -112,12 +113,34 @@ enum Command {
         #[command(subcommand)]
         command: council::CouncilCommand,
     },
+    /// Lint, pin and verify the skills and MCP servers your agents load
+    Guard {
+        #[command(subcommand)]
+        command: GuardCommand,
+    },
     /// Serve the route and council tools over MCP on stdio
     Mcp {
         /// routes.toml to use instead of the usual search
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    /// Update cedr to the latest release, or turn the daily automatic update on or off
+    Update(update::Args),
+    /// Show or change whether cedr sends anonymous usage data
+    Telemetry {
+        #[command(subcommand)]
+        command: telemetry::TelemetryCommand,
+    },
+    /// Print a shell completion script, e.g. `cedr completions zsh > ~/.zfunc/_cedr`
+    Completions { shell: clap_complete::Shell },
+    /// Guard's commands under their old names, hidden by `cli_command()`.
+    #[command(flatten)]
+    LegacyGuard(GuardCommand),
+}
+
+/// Guard's commands, under `cedr guard` like every other product's.
+#[derive(Subcommand)]
+enum GuardCommand {
     /// Find problems in a repo's agent setup
     Lint {
         #[arg(default_value = ".")]
@@ -162,15 +185,6 @@ enum Command {
     },
     /// Send this repo's pinned inventory and findings to the cedr.dev app
     Push(push::PushArgs),
-    /// Update cedr to the latest release, or turn the daily automatic update on or off
-    Update(update::Args),
-    /// Show or change whether cedr sends anonymous usage data
-    Telemetry {
-        #[command(subcommand)]
-        command: telemetry::TelemetryCommand,
-    },
-    /// Print a shell completion script, e.g. `cedr completions zsh > ~/.zfunc/_cedr`
-    Completions { shell: clap_complete::Shell },
     /// Print the surface of npm:<pkg>@<ver> or file:<path-to.tgz> as JSON
     Surface { source: String },
     /// Print the registry's latest version of an npm source as JSON
@@ -184,6 +198,18 @@ enum Command {
     },
 }
 
+/// Guard's commands sat at the top level until 0.6.0. They still run, so existing CI and scripts keep
+/// working and the GitHub Action can use older pinned releases, but help and completions list only `cedr guard`.
+const LEGACY_GUARD: [&str; 8] = [
+    "lint", "lock", "verify", "outdated", "push", "surface", "latest", "diff",
+];
+
+fn cli_command() -> clap::Command {
+    LEGACY_GUARD.into_iter().fold(Cli::command(), |cmd, name| {
+        cmd.mut_subcommand(name, |sub| sub.hide(true))
+    })
+}
+
 fn main() -> ExitCode {
     // Like other Unix tools, end quietly when the reader goes away (`cedr route history | head`)
     // instead of panicking on a closed stdout.
@@ -192,7 +218,7 @@ fn main() -> ExitCode {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     let started = Instant::now();
-    let matches = Cli::command().get_matches();
+    let matches = cli_command().get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     let path = command_path(&matches);
     let background = match &cli.command {
@@ -255,15 +281,17 @@ fn dispatch(command: Command) -> ExitCode {
             .map_err(|e| format!("mcp: {e}")),
         Command::Sync(args) => sync::run(args),
         Command::Doctor(args) => doctor::run(args),
-        Command::Push(args) => push::run(&args),
         Command::Monitor(args) => monitor::run(args),
         Command::Update(args) => update::run(args),
         Command::Telemetry { command } => telemetry::run(command),
         Command::Completions { shell } => {
-            clap_complete::generate(shell, &mut Cli::command(), "cedr", &mut std::io::stdout());
+            clap_complete::generate(shell, &mut cli_command(), "cedr", &mut std::io::stdout());
             Ok(ExitCode::SUCCESS)
         }
-        command => run(command).map_err(|e| e.to_string()),
+        Command::Guard { command } | Command::LegacyGuard(command) => match command {
+            GuardCommand::Push(args) => push::run(&args),
+            command => run(command).map_err(|e| e.to_string()),
+        },
     };
     match outcome {
         Ok(code) => code,
@@ -274,21 +302,10 @@ fn dispatch(command: Command) -> ExitCode {
     }
 }
 
-fn run(command: Command) -> cedr_core::Result<ExitCode> {
+fn run(command: GuardCommand) -> cedr_core::Result<ExitCode> {
     match command {
-        Command::Sync(_)
-        | Command::Doctor(_)
-        | Command::Route { .. }
-        | Command::Council { .. }
-        | Command::Mcp { .. }
-        | Command::Monitor(_)
-        | Command::Push(_)
-        | Command::Update(_)
-        | Command::Telemetry { .. }
-        | Command::Completions { .. } => {
-            unreachable!("handled in main")
-        }
-        Command::Lint {
+        GuardCommand::Push(_) => unreachable!("handled in dispatch"),
+        GuardCommand::Lint {
             path,
             format,
             strict,
@@ -298,7 +315,7 @@ fn run(command: Command) -> cedr_core::Result<ExitCode> {
             let failed = report.has_errors() || (strict && !report.is_empty());
             Ok(exit(failed))
         }
-        Command::Lock {
+        GuardCommand::Lock {
             path,
             offline,
             introspect,
@@ -332,13 +349,13 @@ fn run(command: Command) -> cedr_core::Result<ExitCode> {
             );
             Ok(ExitCode::SUCCESS)
         }
-        Command::Verify { path, format } => {
+        GuardCommand::Verify { path, format } => {
             let verification = verify::verify(&path)?;
             print_skipped(&verification.skipped);
             print_report(&verification.report, format);
             Ok(exit(!verification.report.is_empty()))
         }
-        Command::Outdated {
+        GuardCommand::Outdated {
             path,
             format,
             fail_on,
@@ -346,12 +363,12 @@ fn run(command: Command) -> cedr_core::Result<ExitCode> {
             let report = cedr_core::outdated::outdated(&path)?;
             Ok(print_updates(&report, format, fail_on))
         }
-        Command::Surface { source } => {
+        GuardCommand::Surface { source } => {
             let parsed: Source = source.parse()?;
             println!("{}", surface::from_source(&parsed)?.to_json());
             Ok(ExitCode::SUCCESS)
         }
-        Command::Latest { source } => {
+        GuardCommand::Latest { source } => {
             let parsed: Source = source.parse()?;
             let latest = surface::latest(&parsed)?;
             let quote = |s: &str| serde_json::to_string(s).expect("string serializes");
@@ -362,7 +379,7 @@ fn run(command: Command) -> cedr_core::Result<ExitCode> {
             );
             Ok(ExitCode::SUCCESS)
         }
-        Command::Diff { old, new, format } => {
+        GuardCommand::Diff { old, new, format } => {
             let result = diff::diff(&Surface::read(&old)?, &Surface::read(&new)?);
             match format {
                 Format::Json => println!("{}", result.to_json()),
@@ -454,6 +471,7 @@ mod guard_tests {
             for (flag, expected) in ["high", "medium", "low", "never"].into_iter().zip(expected) {
                 let cli = Cli::try_parse_from([
                     "cedr",
+                    "guard",
                     "outdated",
                     "--fail-on",
                     flag,
@@ -461,8 +479,11 @@ mod guard_tests {
                     "json",
                 ])
                 .unwrap();
-                let Command::Outdated {
-                    format, fail_on, ..
+                let Command::Guard {
+                    command:
+                        GuardCommand::Outdated {
+                            format, fail_on, ..
+                        },
                 } = cli.command
                 else {
                     panic!("expected outdated")

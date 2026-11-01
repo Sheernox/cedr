@@ -1,4 +1,4 @@
-//! The finding shape shared by `cedr lint` and `cedr verify`.
+//! The finding shape shared by `cedr guard lint` and `cedr guard verify`.
 
 use serde::{Serialize, Serializer};
 

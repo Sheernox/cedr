@@ -1,5 +1,5 @@
 //! Read-only update checks over locked npm sources, reusing registry resolution,
-//! static surface extraction and the same change classification as `cedr diff`.
+//! static surface extraction and the same change classification as `cedr guard diff`.
 use std::path::Path;
 
 use serde::Serialize;
@@ -126,7 +126,7 @@ impl Report {
                 .replace('\n', "%0A");
             // Pointed at the lock, where the pin lives, so the annotation lands on a file instead of the workflow.
             out.push_str(&format!(
-                "::{level} file={},title=cedr outdated::{escaped}\n",
+                "::{level} file={},title=cedr guard outdated::{escaped}\n",
                 lock::LOCK_FILE
             ));
         }
@@ -422,7 +422,7 @@ mod tests {
         };
         let github = report.to_github();
         assert_eq!(github.lines().count(), 1);
-        assert!(github.starts_with("::error file=.cedr/guard.lock,title=cedr outdated::"));
+        assert!(github.starts_with("::error file=.cedr/guard.lock,title=cedr guard outdated::"));
         assert!(github.contains("x%25%0A::error%0D"));
         report.updates[0].severity = UpdateSeverity::None;
         assert!(report.to_github().starts_with("::warning "));

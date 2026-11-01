@@ -6,13 +6,17 @@ The frozen contract for Guard: its commands, JSON shapes, lint rules and lock fi
 
 Guard covers the loop end to end on one machine:
 
-1. `cedr lint` finds problems in a repo's agent setup.
-2. `cedr lock` pins every skill and MCP server and snapshots each server's tool surface.
-3. `cedr verify` fails CI when the setup drifts from the lock; the GitHub Action runs `lint` and `verify` on pull requests.
-4. `cedr push` sends the pinned inventory and the latest findings to the cedr.dev app, which shows every repo of an organization in one place.
+1. `cedr guard lint` finds problems in a repo's agent setup.
+2. `cedr guard lock` pins every skill and MCP server and snapshots each server's tool surface.
+3. `cedr guard verify` fails CI when the setup drifts from the lock; the GitHub Action runs `lint` and `verify` on pull requests.
+4. `cedr guard push` sends the pinned inventory and the latest findings to the cedr.dev app, which shows every repo of an organization in one place.
 5. A watcher imports a lock, watches the pinned npm packages through the watcher commands, and raises an alert when a newer version changes the surface.
 
 Out of scope: PyPI, OCI and git sources for surfaces (recorded in the lock, never fetched), remote MCP polling and sandboxed execution.
+
+## Commands
+
+Every Guard command lives under `cedr guard`, like every other product's. The old top-level names (`cedr lint`, `lock`, `verify`, `outdated`, `push`, `surface`, `latest` and `diff`) still run with the same flags, output and exit codes, but help and completions no longer list them. Telemetry records the name that was typed.
 
 ## Layout
 
@@ -40,7 +44,7 @@ Everything Guard keeps in a repo lives in `.cedr/`, next to Route's optional `.c
 | `.cedr/guard.lock` | The lock (see Lock file) |
 | `.cedr/surfaces/` | One surface per locked server |
 
-A lock at the legacy path `cedr.lock` (repo root, 0.2.0 and earlier) is read when `.cedr/guard.lock` is absent. `cedr lock` writes `.cedr/guard.lock`, removes a legacy `cedr.lock` and prints `moved cedr.lock to .cedr/guard.lock`.
+A lock at the legacy path `cedr.lock` (repo root, 0.2.0 and earlier) is read when `.cedr/guard.lock` is absent. `cedr guard lock` writes `.cedr/guard.lock`, removes a legacy `cedr.lock` and prints `moved cedr.lock to .cedr/guard.lock`.
 
 ### Config: `.cedr/guard.toml`
 
@@ -58,7 +62,7 @@ paths = [".agents/skills/security-audit/**"]   # globs over the finding's path, 
 
 - Every key is optional; a missing file is the empty config. An unknown `version`, an unknown key, a rule id that is not `CG001`-`CG010`, a skill root that is absolute, is the root itself, contains `..` or does not exist, and an invalid glob all fail with exit 2 and a message naming the file and key.
 - Extra skill roots are discovered, linted, locked and verified like the standard ones, under the same containment rule. A skill name found in two roots is two entries; the lock keys skills by `path`, so they never collide.
-- `ignore` and `allow` apply to `cedr lint` only. `cedr verify` findings are never suppressed: drift from the lock is what the lock is for.
+- `ignore` and `allow` apply to `cedr guard lint` only. `cedr guard verify` findings are never suppressed: drift from the lock is what the lock is for.
 
 ## Discovery
 
@@ -77,7 +81,7 @@ paths = [".agents/skills/security-audit/**"]   # globs over the finding's path, 
 
 A server entry is stdio (`command`, `args`, `env`) or remote (`url`, `httpUrl`, `serverUrl`, or `type`/`transport` of `http`/`sse`). Clients are `claude`, `codex`, `cursor`, `gemini`, `copilot`, `opencode` and `antigravity`. The same server name in two clients is two lock entries keyed by `client` and `name`.
 
-Skill directories and the files in them are read only when their canonical path stays inside the canonical root (a `.claude/skills` link into `.agents/skills` is fine). A file symlink inside a skill is never followed: the hash and the lint rules both see its target text. A skill directory whose canonical path escapes the root is skipped, never read: `cedr lint` reports it as CG010, and `cedr lock` and `cedr verify` print `skipped <path>: links outside the repo` on stderr and carry on with the rest.
+Skill directories and the files in them are read only when their canonical path stays inside the canonical root (a `.claude/skills` link into `.agents/skills` is fine). A file symlink inside a skill is never followed: the hash and the lint rules both see its target text. A skill directory whose canonical path escapes the root is skipped, never read: `cedr guard lint` reports it as CG010, and `cedr guard lock` and `cedr guard verify` print `skipped <path>: links outside the repo` on stderr and carry on with the rest.
 
 **Source resolution** for stdio servers:
 - `npx [-y] <pkg>[@<ver>]`, `pnpm dlx`, `bunx` give `npm:<pkg>@<ver>`; no version or a dist-tag (`latest`, `next`) is unpinned.
@@ -104,7 +108,7 @@ Findings never show a URL's user info, query or fragment, and show a `command:` 
 | CG009 | per pattern | A ported SkillSpector pattern matched in a skill directory; SkillSpector high maps to error, medium and low to warning, and the message keeps the original severity |
 | CG010 | error | A skill directory that links outside the repo root (it is skipped, not read) |
 
-`cedr lint [PATH] [--format text|json|github] [--strict]`. Exit 0 when clean, 1 when any error is found (or any warning with `--strict`), 2 on usage or I/O failure.
+`cedr guard lint [PATH] [--format text|json|github] [--strict]`. Exit 0 when clean, 1 when any error is found (or any warning with `--strict`), 2 on usage or I/O failure.
 
 `--format github` (lint and verify) prints one GitHub Actions workflow command per finding, `::error file=<path>,line=<line>,title=<rule>::<message>` (`::warning` for warnings; `line=` omitted when `line` is null), so findings show as annotations on the pull request. Values are escaped as the runner expects: `%` `\r` `\n` as `%25` `%0D` `%0A` in the message, and additionally `:` and `,` as `%3A` and `%2C` in properties. Diagnostics on stderr escape control characters in repo paths, so no repo content starts a workflow command. A last line `cedr: <n> errors, <m> warnings` follows on stdout.
 
@@ -148,7 +152,7 @@ A surface is what a server exposes to a model, as one JSON document. It is store
 
 ## Diff
 
-`cedr diff OLD.json NEW.json [--format text|json]` compares two surfaces. Exit 0 when the hashes match, 1 when changes are found.
+`cedr guard diff OLD.json NEW.json [--format text|json]` compares two surfaces. Exit 0 when the hashes match, 1 when changes are found.
 
 ```json
 { "version": 1, "from": "npm:x@1.0.0", "to": "npm:x@1.1.0", "changes": [
@@ -194,28 +198,28 @@ tools = ["create_issue", "search_code"]
 egress = ["api.github.com"]
 ```
 
-`cedr lock [PATH] [--offline] [--introspect]`:
-- Resolves unpinned npm sources to the dist-tag the config names (`latest` when none) and records the resolved version with `pinned = false`. `cedr verify` accepts an unpinned entry while the config still names the same package unpinned.
+`cedr guard lock [PATH] [--offline] [--introspect]`:
+- Resolves unpinned npm sources to the dist-tag the config names (`latest` when none) and records the resolved version with `pinned = false`. `cedr guard verify` accepts an unpinned entry while the config still names the same package unpinned.
 - Extracts npm surfaces statically. `--offline` skips the network and records `method = "none"`.
 - `--introspect` runs each stdio server with its configured command and a cleared environment holding only `PATH`, `HOME` and the configured env, calls `initialize` and `tools/list` with a 20-second timeout, and uses that surface (`method = "introspect"`). Egress and capabilities still come from static extraction when the package could be fetched. It prints a warning first: this executes the configured servers.
 
-`cedr verify [PATH] [--format text|json|github]` never touches the network. It fails (exit 1) when a skill's content hash differs, a skill or server was added or removed, or a server's source changed. Findings use the lint JSON shape with rules `CV001` (content changed), `CV002` (added), `CV003` (removed), `CV004` (source changed) and `CV005` (launch changed: command, arguments, env keys or URL). Env values are never hashed or stored, only their keys.
+`cedr guard verify [PATH] [--format text|json|github]` never touches the network. It fails (exit 1) when a skill's content hash differs, a skill or server was added or removed, or a server's source changed. Findings use the lint JSON shape with rules `CV001` (content changed), `CV002` (added), `CV003` (removed), `CV004` (source changed) and `CV005` (launch changed: command, arguments, env keys or URL). Env values are never hashed or stored, only their keys.
 
 ## Updates
 
-`cedr outdated [PATH] [--format text|json|github] [--fail-on high|medium|low|never]` checks each locked npm server for a newer version and shows what it would change, without installing or running anything:
+`cedr guard outdated [PATH] [--format text|json|github] [--fail-on high|medium|low|never]` checks each locked npm server for a newer version and shows what it would change, without installing or running anything:
 
-1. For each `[[mcp]]` entry with an `npm:` source, read the registry's `latest` dist-tag (as `cedr latest`).
-2. When it is newer than the locked version (semver; an unpinned entry compares the version it resolved to), extract the newer version's surface statically (as `cedr surface`) and diff it against the locked surface (as `cedr diff`; an entry locked with `method = "none"` reports the version alone).
+1. For each `[[mcp]]` entry with an `npm:` source, read the registry's `latest` dist-tag (as `cedr guard latest`).
+2. When it is newer than the locked version (semver; an unpinned entry compares the version it resolved to), extract the newer version's surface statically (as `cedr guard surface`) and diff it against the locked surface (as `cedr guard diff`; an entry locked with `method = "none"` reports the version alone).
 3. Report one update per server: `{"client", "name", "source", "latest", "severity", "changes": [<diff changes>]}`, where `severity` is the highest change's (`none` when the surfaces match).
 
 Other sources (`pypi:`, `oci:`, `command:`, `url:`) are listed as `not checked` in text output and left out of JSON. A registry or network failure for one server is a warning naming the server, never a failure of the run. JSON output is `{"version": 1, "updates": [...]}`; `--format github` prints one `::warning` per update (`::error` for high). Exit 0, or 1 when an update reaches `--fail-on` (default `never`), 2 on usage or I/O failure.
 
 ## Push
 
-`cedr push [PATH] [--repo NAME] [--org SLUG] [--config FILE]` sends the repo's pinned inventory and its current findings to the cedr.dev app, so an organization sees every repo's agent setup in one place. It uses Route's credentials ([route.md](route.md), Sync), the key from `$CEDR_API_KEY` or `$XDG_CONFIG_HOME/cedr/api-key`. With `--org` and no `--config` it sends to the default API URL and reads no routes config at all: a CI checkout is untrusted, and a `.cedr/routes.toml` in it must never redirect the key. Otherwise `[sync] url` and `org` come from the routes config found as Route finds it (`--config` first), with `--org` overriding `[sync] org`.
+`cedr guard push [PATH] [--repo NAME] [--org SLUG] [--config FILE]` sends the repo's pinned inventory and its current findings to the cedr.dev app, so an organization sees every repo's agent setup in one place. It uses Route's credentials ([route.md](route.md), Sync), the key from `$CEDR_API_KEY` or `$XDG_CONFIG_HOME/cedr/api-key`. With `--org` and no `--config` it sends to the default API URL and reads no routes config at all: a CI checkout is untrusted, and a `.cedr/routes.toml` in it must never redirect the key. Otherwise `[sync] url` and `org` come from the routes config found as Route finds it (`--config` first), with `--org` overriding `[sync] org`.
 
-It reads the lock (exit 2 with `no lock: run cedr lock first` when there is none), runs lint and verify in process, and sends `PUT /guard/repo`:
+It reads the lock (exit 2 with `no lock: run cedr guard lock first` when there is none), runs lint and verify in process, and sends `PUT /guard/repo`:
 
 ```json
 {"org": "acme", "repo": "web", "at": "2026-10-29T18:02:11Z", "cli": "0.3.0", "commit": "3f2269d0c1...",
@@ -229,7 +233,7 @@ It reads the lock (exit 2 with `no lock: run cedr lock first` when there is none
 - `skills` and `mcp` are the lock's entries in lock order; `surface` is `null` with method `none`. Findings use the lint JSON shape (`lint` after `guard.toml` suppression).
 - Limits: strings cut to 1024 characters (names, paths and sources to 256), lists to 512 entries (`tools` and `egress` 256 per server, each finding list 1000), so the app never refuses a push for one long value; each list cut short prints `sent N of M <what>` as a warning. The app refuses a body over 2 MiB (413) and any value over these limits (400); a push that would exceed 2 MiB fails before sending, naming the size. It never sends file contents, env values, launch commands or absolute paths, and a `url:` source goes without its user info, query or fragment.
 - The app shows when it received each push (not the client's `at`), keeps at most 200 repos and 32 MiB of stored pushes per organization (the oldest pushes are dropped first), and keeps a repo's push when its sender leaves the organization. Owners and admins can remove a repo's record.
-- `--updates` adds `"updates": [{"client", "name", "source", "latest", "severity", "changes"}]` from `cedr outdated`, where `changes` is the number of surface changes (at most 512 updates); without it the field is absent. The GitHub Action passes it.
+- `--updates` adds `"updates": [{"client", "name", "source", "latest", "severity", "changes"}]` from `cedr guard outdated`, where `changes` is the number of surface changes (at most 512 updates); without it the field is absent. The GitHub Action passes it.
 - The reply is `{"ok": true}`; the app keeps only the latest push per organization and repo. Exit 0 sent, 2 on any failure (the message names the HTTP status and the API's error text, never the URL's query or the key). It does not change exit status on findings: `verify` gates, `push` reports.
 
 ## GitHub Action
@@ -241,18 +245,18 @@ The public repo's root `action.yml` is a composite action: `uses: Sheernox/cedr@
 | `version` | the action's own tag, else the latest release | cedr release to install |
 | `path` | `.` | Repo root to check |
 | `strict` | `false` | Pass `--strict` to lint |
-| `verify` | `auto` | `auto` runs `cedr verify` when a lock exists; `true` requires one; `false` skips it |
-| `push-org` | empty | When set with the `CEDR_API_KEY` env, run `cedr push --org <it> --updates` after the checks, also when they fail |
-| `outdated` | `true` | Run `cedr outdated --format github` after verify, so newer versions of pinned servers show as annotations; it never fails the job |
+| `verify` | `auto` | `auto` runs `cedr guard verify` when a lock exists; `true` requires one; `false` skips it |
+| `push-org` | empty | When set with the `CEDR_API_KEY` env, run `cedr guard push --org <it> --updates` after the checks, also when they fail |
+| `outdated` | `true` | Run `cedr guard outdated --format github` after verify, so newer versions of pinned servers show as annotations; it never fails the job |
 
-`version` must be a release tag (`vX.Y.Z`, optionally with a `-suffix`). It downloads `cedr-<os>-<arch>.tar.gz` for the runner (`linux`, `macos` or `windows`; `x86_64` or `arm64`; `.zip` on Windows) and `SHA256SUMS` from the GitHub release over https, refuses an archive whose checksum does not match, then runs `cedr lint --format github` and `cedr verify --format github`. The job fails when either fails. It runs no package or server and never uses `--introspect`.
+`version` must be a release tag (`vX.Y.Z`, optionally with a `-suffix`). It downloads `cedr-<os>-<arch>.tar.gz` for the runner (`linux`, `macos` or `windows`; `x86_64` or `arm64`; `.zip` on Windows) and `SHA256SUMS` from the GitHub release over https, refuses an archive whose checksum does not match, then runs lint and verify with `--format github`. The action calls the old top-level names so that a `version` pinned to a release before 0.6.0 keeps working. The job fails when either fails. It runs no package or server and never uses `--introspect`.
 
 ## Watcher commands
 
 A watcher shells out to these. All print JSON on stdout; errors go to stderr with exit 2.
 
-- `cedr latest <SOURCE>`: `{"source": "npm:x@1.0.0", "latest": "npm:x@1.1.0"}` from the registry's `latest` dist-tag.
-- `cedr surface <SOURCE>`: a surface document. `SOURCE` is `npm:<pkg>@<ver>` or `file:<path-to.tgz>` (tests and fixtures).
+- `cedr guard latest <SOURCE>`: `{"source": "npm:x@1.0.0", "latest": "npm:x@1.1.0"}` from the registry's `latest` dist-tag.
+- `cedr guard surface <SOURCE>`: a surface document. `SOURCE` is `npm:<pkg>@<ver>` or `file:<path-to.tgz>` (tests and fixtures).
 
 ## Wording
 

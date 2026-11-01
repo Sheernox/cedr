@@ -1,4 +1,4 @@
-//! `cedr diff`: what changed between two surfaces of a server.
+//! `cedr guard diff`: what changed between two surfaces of a server.
 
 use std::collections::BTreeMap;
 

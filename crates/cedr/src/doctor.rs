@@ -544,14 +544,14 @@ pub fn checks(root: &Path) -> Vec<Check> {
                 "guard.lock",
                 if v.report.is_empty() { "ok" } else { "fail" },
                 format!("{} Guard findings", v.report.findings.len()),
-                "Run cedr verify and review changes before cedr lock",
+                "Run cedr guard verify and review changes before cedr guard lock",
             ),
             Err(_) => add(
                 &mut out,
                 "guard.lock",
                 "fail",
                 "Guard verification failed",
-                "Run cedr verify",
+                "Run cedr guard verify",
             ),
         }
     } else {
@@ -560,7 +560,7 @@ pub fn checks(root: &Path) -> Vec<Check> {
             "guard.lock",
             "warn",
             ".cedr/guard.lock missing",
-            "Run cedr lock",
+            "Run cedr guard lock",
         );
     }
     let order = [

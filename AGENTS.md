@@ -26,7 +26,7 @@ cargo fmt --check
 
 ## Guardrails
 - Tests never need the network; online tests are `#[ignore]`.
-- Never execute a package or MCP server except under `cedr lock --introspect`, which warns first.
+- Never execute a package or MCP server except under `cedr guard lock --introspect`, which warns first.
 - Never call a skill or server safe, trusted or approved in output; report what changed since it was pinned.
 - Never print or log an API key, token or URL query string; error messages name a URL by scheme and host only.
 - Code ported from another project keeps its licence notice in `NOTICE` and a header naming the source file and commit.

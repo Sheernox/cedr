@@ -308,7 +308,7 @@ pub fn redact_url(url: &str) -> String {
     format!("{scheme}{host}{path}")
 }
 
-/// A source as findings and `cedr push` show it: a `url:` source through [`redact_url`], and a
+/// A source as findings and `cedr guard push` show it: a `url:` source through [`redact_url`], and a
 /// `command:` source as its program name only, so neither a token nor a local path leaves the
 /// machine. Other sources are unchanged.
 pub fn public_source(source: &str) -> String {

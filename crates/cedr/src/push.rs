@@ -1,4 +1,4 @@
-//! `cedr push`: send a repo's pinned inventory and current findings to the cedr.dev app
+//! `cedr guard push`: send a repo's pinned inventory and current findings to the cedr.dev app
 //! (docs/design.md, Push). It reports and never gates: exit 0 when sent, 2 on any failure.
 
 use std::fs;

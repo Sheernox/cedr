@@ -147,11 +147,11 @@ $ cedr route verdict p-979e77351990 accepted
 | `cedr council plan <route>` | Name the reviewers to start, one per vendor, and the quorum |
 | `cedr council merge <reports>...` | Merge their reports and decide the gate |
 | `cedr mcp` | Serve the Route and Council tools over MCP on stdio |
-| `cedr lint` | Find problems in a repo's agent setup |
-| `cedr lock` | Pin every skill and MCP server in `.cedr/guard.lock` |
-| `cedr verify` | Fail when the setup no longer matches the lock (offline) |
-| `cedr outdated` | Inspect newer npm versions and their surface changes without running them |
-| `cedr push` | Send pins and findings to your organization's Guard page; `--updates` includes npm updates |
+| `cedr guard lint` | Find problems in a repo's agent setup |
+| `cedr guard lock` | Pin every skill and MCP server in `.cedr/guard.lock` |
+| `cedr guard verify` | Fail when the setup no longer matches the lock (offline) |
+| `cedr guard outdated` | Inspect newer npm versions and their surface changes without running them |
+| `cedr guard push` | Send pins and findings to your organization's Guard page; `--updates` includes npm updates |
 | `cedr update` | Install the latest release now; `--check` only reports, `--auto off` stops the daily update |
 | `cedr telemetry status\|off\|on` | Show or change whether cedr sends anonymous usage data |
 
@@ -161,7 +161,7 @@ Run `cedr <command> --help` for every option, and `cedr completions bash|zsh|fis
 
 Guard discovers Claude, Codex, Cursor, Gemini, Copilot, opencode and Antigravity MCP configs, plus their standard skill folders.
 
-The Guard action installs a released `cedr` (checked against the release's `SHA256SUMS`), runs `cedr lint` and `cedr verify`, and shows each finding as an annotation on the pull request:
+The Guard action installs a released `cedr` (checked against the release's `SHA256SUMS`), runs `cedr guard lint` and `cedr guard verify`, and shows each finding as an annotation on the pull request:
 
 ```yaml
 - uses: actions/checkout@v5
@@ -183,8 +183,8 @@ codex mcp add cedr -- cedr mcp
 
 - cedr never reads your agents' credentials and never calls a vendor API for you. Plan usage comes from your agents' own status line and CLI, or from a feed you point it at.
 - Picks, verdicts and stats stay on your machine. `cedr route sync` sends them to cedr.dev only when you add a `[sync]` section and a cedr.dev API key.
-- `cedr lock` runs an MCP server only when you pass `--introspect`, and warns before it does.
-- `cedr push` sends names, versions, hashes and findings, never file contents, environment values or how a server is started.
+- `cedr guard lock` runs an MCP server only when you pass `--introspect`, and warns before it does.
+- `cedr guard push` sends names, versions, hashes and findings, never file contents, environment values or how a server is started.
 - cedr sends anonymous usage data (command names, exit codes, timing, version, OS and which agents are installed) with a random install ID, after telling you on its first run. Never arguments, paths, repo names or code. `cedr telemetry off`, `CEDR_TELEMETRY=0` or `DO_NOT_TRACK=1` turn it off. Every field: [docs/telemetry.md](docs/telemetry.md).
 
 ## Sync

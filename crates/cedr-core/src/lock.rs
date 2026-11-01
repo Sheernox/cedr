@@ -1,6 +1,6 @@
 //! `.cedr/guard.lock`: every skill and MCP server with its pin, plus the surface
 //! snapshots in `.cedr/surfaces/` next to it. A lock at the legacy root path
-//! `cedr.lock` is still read, and moved by the next `cedr lock`.
+//! `cedr.lock` is still read, and moved by the next `cedr guard lock`.
 
 use std::fs;
 use std::path::Path;
@@ -421,7 +421,7 @@ pub fn read_lock(root: &Path) -> Result<(Lock, &'static str)> {
     }
     Err(parse_err(
         &root.join(LOCK_FILE),
-        "no lock: run cedr lock first",
+        "no lock: run cedr guard lock first",
     ))
 }
 

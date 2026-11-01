@@ -211,3 +211,22 @@ fn telemetry_on_shows_the_notice() {
     let out = cedr(home.path(), &["telemetry", "on"], &[]);
     assert!(String::from_utf8_lossy(&out.stderr).contains("cedr telemetry off"));
 }
+
+#[test]
+fn guard_commands_record_their_full_path() {
+    let home = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1/telemetry", listener.local_addr().unwrap());
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    cedr(home.path(), &["telemetry", "status"], &[]);
+    cedr(
+        home.path(),
+        &["guard", "lint", "."],
+        &[("CEDR_TELEMETRY_URL", &url)],
+    );
+    let state = home.path().join(".local/state/cedr");
+    let queued = std::fs::read_to_string(state.join("telemetry.jsonl"))
+        .or_else(|_| std::fs::read_to_string(state.join("telemetry.sending")))
+        .unwrap_or_default();
+    assert!(queued.contains("\"command\":\"guard lint\""), "{queued}");
+}

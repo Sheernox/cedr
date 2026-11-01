@@ -1,4 +1,4 @@
-//! `cedr lint`: rules CG001-CG010 from the design contract, less what `.cedr/guard.toml` suppresses.
+//! `cedr guard lint`: rules CG001-CG010 from the design contract, less what `.cedr/guard.toml` suppresses.
 
 use std::collections::BTreeMap;
 use std::fs;

@@ -6,8 +6,9 @@ branding:
   color: green
 
 # docs/design.md, GitHub Action. Installs a released cedr binary after checking it against the
-# release's SHA256SUMS, then runs `cedr lint` and `cedr verify` with GitHub annotations. It never
+# release's SHA256SUMS, then runs `cedr guard lint` and `cedr guard verify` with GitHub annotations. It never
 # runs a configured package or MCP server.
+# The steps call Guard's old top-level names so that a `version` pinned before 0.6.0 keeps working.
 inputs:
   version:
     description: cedr release to install (for example v0.3.0); default the action's own tag, else the latest release
@@ -19,7 +20,7 @@ inputs:
     description: Fail lint on warnings too
     default: "false"
   verify:
-    description: "auto runs cedr verify when a lock exists; true requires one; false skips it"
+    description: "auto runs cedr guard verify when a lock exists; true requires one; false skips it"
     default: auto
   outdated:
     description: Report newer npm server versions as annotations without failing the job
@@ -83,7 +84,7 @@ runs:
         if [ "$ext" = zip ]; then unzip -q "$archive"; else tar -xzf "$archive"; fi
         echo "$dir/cedr-$asset" >> "$GITHUB_PATH"
 
-    - name: cedr lint
+    - name: cedr guard lint
       id: lint
       shell: bash
       continue-on-error: true
@@ -95,7 +96,7 @@ runs:
         if [ "$INPUT_STRICT" = true ]; then args+=(--strict); fi
         cedr "${args[@]}"
 
-    - name: cedr verify
+    - name: cedr guard verify
       id: verify
       shell: bash
       continue-on-error: true
@@ -107,7 +108,7 @@ runs:
           false) echo "verify skipped"; exit 0 ;;
           auto)
             if [ ! -f "$INPUT_PATH/.cedr/guard.lock" ] && [ ! -f "$INPUT_PATH/cedr.lock" ]; then
-              echo "no lock: verify skipped (run cedr lock and commit .cedr/ to pin this setup)"
+              echo "no lock: verify skipped (run cedr guard lock and commit .cedr/ to pin this setup)"
               exit 0
             fi ;;
           true) ;;
@@ -115,7 +116,7 @@ runs:
         esac
         cedr verify "$INPUT_PATH" --format github
 
-    - name: cedr outdated
+    - name: cedr guard outdated
       if: ${{ always() && inputs.outdated == 'true' }}
       shell: bash
       continue-on-error: true
@@ -187,7 +188,7 @@ runs:
         esac
         cedr sync check "$INPUT_PATH" --format github
 
-    - name: cedr push
+    - name: cedr guard push
       if: ${{ always() && inputs.push-org != '' }}
       shell: bash
       env:
@@ -202,7 +203,7 @@ runs:
           cedr sync push "$INPUT_PATH" --org "$INPUT_ORG" --repo "$GITHUB_REPOSITORY" || exit $?
         fi
         if [ ! -f "$INPUT_PATH/.cedr/guard.lock" ] && [ ! -f "$INPUT_PATH/cedr.lock" ]; then
-          echo "::warning title=cedr::no lock to push; run cedr lock and commit .cedr/"
+          echo "::warning title=cedr::no lock to push; run cedr guard lock and commit .cedr/"
           exit 0
         fi
         # --org without --config reads no routes.toml from the checkout, so it cannot redirect the key.
@@ -217,5 +218,5 @@ runs:
         SYNC: ${{ steps.sync.outcome }}
         SYNC_FIX: ${{ steps.sync-fix.outcome }}
       run: |
-        echo "cedr lint: $LINT, cedr verify: $VERIFY"
+        echo "cedr guard lint: $LINT, cedr guard verify: $VERIFY"
         [ "$LINT" != failure ] && [ "$VERIFY" != failure ] && [ "$SYNC" != failure ] && [ "$SYNC_FIX" != failure ]
