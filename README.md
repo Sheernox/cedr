@@ -17,7 +17,7 @@
 `cedr` is the command line tool behind [cedr.dev](https://cedr.dev): every coding agent, one control panel. It picks the agent, model and effort for each kind of work, merges reviews from several vendors into one gate, pins the skills and MCP servers your agents load, compiles one setup into each agent's own files, and reports usage, spend and plan limits across them. Any agent that speaks MCP can call it directly.
 
 > [!NOTE]
-> cedr is in public beta. Commands and file formats may still change before 1.0.
+> cedr is in public beta. Commands and file formats may still change before 1.0. See [how versions work](docs/versioning.md).
 
 ## ✨ Products
 
@@ -29,7 +29,7 @@
 </tr>
 <tr valign="top">
 <td align="center"><a href="https://cedr.dev/docs/route"><img src="assets/products/route.svg" width="40" height="40" alt=""></a><br><a href="https://cedr.dev/docs/route"><b>Route</b></a></td>
-<td>Picks the agent, model and effort for each kind of work from your <code>routes.toml</code>. Equally suited work goes to the plan with the most room left, and plans near their limits are skipped.</td>
+<td>Picks the agent, model and effort for each kind of work from your <code>routes.toml</code>. Equally suited work goes to the plan with the most room left, and plans near their limits are skipped. You set the limits per plan or route, and the models per route and work size.</td>
 <td><code>cedr route pick review.code</code></td>
 </tr>
 <tr valign="top">
@@ -52,11 +52,16 @@
 <td>Reads each agent's local logs and reports tokens, cache use, API-equivalent cost, sessions and how close each plan is to its limit. Counts leave your machine only when you push them.</td>
 <td><code>cedr monitor limits</code></td>
 </tr>
+<tr valign="top">
+<td align="center"><a href="https://cedr.dev/docs/bench"><img src="assets/products/bench.svg" width="40" height="40" alt=""></a><br><a href="https://cedr.dev/docs/bench"><b>Bench</b></a></td>
+<td>Runs a suite of real tasks against a baseline and a candidate, with tests deciding each trial, inside a budget you set. Reports the pass rates, cost and how much the difference can be trusted, and records every version involved.</td>
+<td><code>cedr bench init</code></td>
+</tr>
 </table>
 
 **Not sure where you stand?** `cedr doctor` checks your account, Route, MCP, Monitor, Sync and Guard setup and prints the fix for whatever is missing. It never changes anything.
 
-**Coming next:** **Bench** (know a change helps before it merges) and **Index** (one code graph every agent shares). See the [product line](https://cedr.dev/#products).
+**Coming next:** **Index** (one code graph every agent shares). See the [product line](https://cedr.dev/#products).
 
 ## 📦 Install
 
@@ -217,18 +222,34 @@ Configure collection and optional automatic pushes in `~/.config/cedr/monitor.to
 </details>
 
 <details>
+<summary><b>Bench</b></summary>
+
+| Command | What it does |
+| --- | --- |
+| `cedr bench init` | Write a starter suite to `.cedr/bench/` |
+| `cedr bench plan` | Validate a suite and show what a run would do, starting nothing |
+| `cedr bench run` | Run the agents and tests within the budget; `--fail-on lower` fails CI when the candidate does worse |
+| `cedr bench history` | Saved runs, newest first |
+| `cedr bench show <id>` | One saved run's report, with its exit code |
+| `cedr bench budget [USD]` | Show or set the cap (default $2.00); `--pull` stores the one set in the app |
+
+A suite is code: its `setup` and `test` commands run with your permissions, so run ones you trust. Bench runs the vendors' unmodified CLIs with your own sign-in or keys, in a fresh clone for each trial.
+
+</details>
+
+<details>
 <summary><b>Everything else</b></summary>
 
 | Command | What it does |
 | --- | --- |
-| `cedr doctor` | Diagnose account setup, Route, MCP, Monitor, Sync and Guard; `--format json` for agents. Failures exit 1; warnings alone exit 0 |
-| `cedr mcp` | Serve the Route, Council, Sync, Monitor and Doctor tools over MCP on stdio |
+| `cedr doctor` | Diagnose account setup, Route, MCP, Monitor, Sync, Guard and Bench; `--format json` for agents. Failures exit 1; warnings alone exit 0 |
+| `cedr mcp` | Serve the Route, Council, Sync, Monitor, Bench and Doctor tools over MCP on stdio |
 | `cedr update` | Install the latest release now; `--check` only reports, `--auto off` stops the daily update |
 | `cedr telemetry status\|off\|on` | Show or change whether cedr sends anonymous usage data |
 
 </details>
 
-Run `cedr <command> --help` for every option, and `cedr completions bash|zsh|fish|powershell|elvish` for a shell completion script. Every config field, output shape and exit code is specified in the design docs for [Route](docs/route.md), [Council](docs/council.md), [Guard](docs/design.md), [Sync](docs/sync.md), [Monitor](docs/monitor.md) and [Doctor](docs/doctor.md).
+Run `cedr <command> --help` for every option, and `cedr completions bash|zsh|fish|powershell|elvish` for a shell completion script. Every config field, output shape and exit code is specified in the design docs for [Route](docs/route.md), [Council](docs/council.md), [Guard](docs/design.md), [Sync](docs/sync.md), [Monitor](docs/monitor.md), [Bench](docs/bench.md) and [Doctor](docs/doctor.md).
 
 ## 🛡️ Check every pull request
 

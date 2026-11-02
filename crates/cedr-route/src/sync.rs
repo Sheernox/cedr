@@ -578,6 +578,36 @@ pub enum SyncRules {
     PlanRequired,
 }
 /// Reads organization rules using the same key, client and URL rules as Route.
+/// The organization's Bench cap from the app (docs/bench.md, Budget); None when it has set none.
+pub fn get_bench_budget(sync: &Sync, key: &str) -> Result<Option<f64>> {
+    let mut url = reqwest::Url::parse(&format!("{}/bench/settings", sync.url()))
+        .map_err(|_| sync_err("pull", "invalid API URL"))?;
+    url.query_pairs_mut().append_pair("org", &sync.org);
+    let response = client(sync.url())?
+        .get(url)
+        .bearer_auth(key)
+        .send()
+        .map_err(|e| sync_err("pull", request_error(e)))?;
+    if !response.status().is_success() {
+        return Err(reply_error("pull", response, key));
+    }
+    let reply: Value = read_limited(response, 64 * 1024)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .ok_or_else(|| sync_err("pull", "invalid JSON response"))?;
+    if reply["org"] != sync.org.as_str() {
+        return Err(sync_err("pull", "organization mismatch"));
+    }
+    match &reply["budgetUsd"] {
+        Value::Null => Ok(None),
+        value => value
+            .as_f64()
+            .filter(|cap| cap.is_finite() && *cap > 0.0)
+            .map(Some)
+            .ok_or_else(|| sync_err("pull", "budgetUsd must be a number above 0")),
+    }
+}
+
 pub fn get_sync_rules(sync: &Sync, key: &str) -> Result<SyncRules> {
     let mut url = reqwest::Url::parse(&format!("{}/sync/rules", sync.url()))
         .map_err(|_| sync_err("pull", "invalid API URL"))?;

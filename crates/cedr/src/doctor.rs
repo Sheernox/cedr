@@ -565,6 +565,9 @@ pub fn checks(root: &Path) -> Vec<Check> {
             "Run cedr guard lock",
         );
     }
+    crate::bench::doctor_checks(root, |id, state, message, fix| {
+        add(&mut out, id, state, message, fix)
+    });
     let order = [
         "cli.version",
         "key.present",
@@ -584,6 +587,8 @@ pub fn checks(root: &Path) -> Vec<Check> {
         "sync.check",
         "sync.rules",
         "guard.lock",
+        "bench.budget",
+        "bench.suite",
     ];
     out.sort_by_key(|c| {
         order

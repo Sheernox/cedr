@@ -5,6 +5,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use cedr_route::edit::{self, Scope};
 use cedr_route::history::{self, Verdict};
 use cedr_route::pick::{self, Pick, Size};
 use cedr_route::readers;
@@ -115,6 +116,70 @@ pub enum RouteCommand {
     },
     /// Routes and their tier chains
     List,
+    /// What a route would pick at each size now, and each candidate's state and thresholds
+    Show {
+        route: String,
+        #[arg(long, value_enum, default_value_t = ListFormat::Text)]
+        format: ListFormat,
+        /// Readings JSON replacing the configured sources (`-` for stdin)
+        #[arg(long)]
+        readings: Option<PathBuf>,
+        /// {"<harness>": [model ids]} replacing the model lists (`-` for stdin)
+        #[arg(long)]
+        models: Option<PathBuf>,
+    },
+    /// The model ids each harness offers
+    Models {
+        #[arg(long, value_enum, default_value_t = ListFormat::Text)]
+        format: ListFormat,
+        /// Readings JSON replacing the configured sources (`-` for stdin)
+        #[arg(long)]
+        readings: Option<PathBuf>,
+        /// {"<harness>": [model ids]} replacing the model lists (`-` for stdin)
+        #[arg(long)]
+        models: Option<PathBuf>,
+    },
+    /// Show or change plan thresholds, for every plan or for one plan or route
+    Thresholds {
+        /// Only this plan
+        #[arg(long, conflicts_with = "route")]
+        harness: Option<String>,
+        /// Only this route
+        #[arg(long)]
+        route: Option<String>,
+        /// Set a threshold, e.g. weekly_conserve=70 or unknown_sizes=small; repeatable
+        #[arg(long, value_name = "KEY=VALUE")]
+        set: Vec<String>,
+        /// Fall back to the next layer for this threshold; repeatable
+        #[arg(long, value_name = "KEY")]
+        unset: Vec<String>,
+        /// Output when only showing
+        #[arg(long, value_enum, default_value_t = ListFormat::Text)]
+        format: ListFormat,
+    },
+    /// Add a candidate to a route, or update the one with that target
+    Add {
+        route: String,
+        /// self, or <harness>/<model> with a family name or an exact id
+        target: String,
+        #[arg(long)]
+        effort: Option<String>,
+        /// Candidates in a row with the same tier compete on plan use
+        #[arg(long)]
+        tier: Option<i64>,
+        /// Only this work, e.g. small,medium
+        #[arg(long, value_enum, value_delimiter = ',')]
+        sizes: Vec<SizeArg>,
+        /// Position in the route, from 1; default before a final self, or last
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        at: Option<u32>,
+    },
+    /// Remove a candidate from a route
+    Remove { route: String, target: String },
+    /// Turn a route on
+    Enable { route: String },
+    /// Turn a route off, so its work is always kept
+    Disable { route: String },
     /// Record a verdict on a pick
     Verdict {
         id: String,
@@ -172,6 +237,83 @@ pub enum RouteCommand {
         #[arg(long)]
         quiet: bool,
     },
+}
+
+/// Edits the routes.toml in use and reports the change (docs/route.md, Editing).
+fn apply_edit(
+    config: Option<&Path>,
+    change: &str,
+    f: impl FnOnce(&str) -> Result<String>,
+) -> Result<ExitCode> {
+    let path = cedr_route::config::locate(config, &cwd()?)?;
+    let applied = edit::apply(&path, f)?;
+    println!(
+        "{}: {change} (rules {} -> {})",
+        applied.path.display(),
+        applied.old_rules,
+        applied.new_rules
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_view(v: &pick::RouteView) {
+    println!(
+        "{} {} rules {}{}",
+        v.id,
+        if v.enabled { "on" } else { "off" },
+        v.rules,
+        if v.work.is_empty() {
+            String::new()
+        } else {
+            format!(" | {}", v.work)
+        }
+    );
+    for p in &v.picks {
+        let to = if p.targets.is_empty() {
+            "keep".to_string()
+        } else {
+            p.targets.join(", ")
+        };
+        println!("  {:6} -> {to} ({})", p.size.as_str(), p.reason);
+    }
+    for c in &v.candidates {
+        let mut line = format!("  {}", c.target);
+        if let Some(m) = &c.model {
+            line.push_str(&format!(" = {m}"));
+        }
+        if !c.effort.is_empty() {
+            line.push_str(&format!(" {}", c.effort));
+        }
+        if let Some(t) = c.tier {
+            line.push_str(&format!(" tier {t}"));
+        }
+        if let Some(sizes) = &c.sizes {
+            let names: Vec<&str> = sizes.iter().map(|s| s.as_str()).collect();
+            line.push_str(&format!(" only {}", names.join(",")));
+        }
+        println!("{line}");
+        if let (Some(state), Some(summary)) = (c.state, &c.summary) {
+            let takes: Vec<&str> = c.takes.iter().map(|s| s.as_str()).collect();
+            println!(
+                "    {} | {summary} | takes {}",
+                state.as_str(),
+                if takes.is_empty() {
+                    "nothing".to_string()
+                } else {
+                    takes.join(",")
+                }
+            );
+        }
+        let changed: Vec<String> = c
+            .thresholds
+            .iter()
+            .filter(|r| r.from != "default")
+            .map(|r| format!("{}={} ({})", r.key, r.value, r.from))
+            .collect();
+        if !changed.is_empty() {
+            println!("    {}", changed.join(" "));
+        }
+    }
 }
 
 /// A JSON object from a file or stdin (`-`), refused past the readings size cap.
@@ -425,6 +567,108 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        RouteCommand::Show {
+            route,
+            format,
+            readings,
+            models,
+        } => {
+            let session = open(config, readings.as_deref(), models.as_deref())?;
+            let view = session.context().show(&route)?;
+            match format {
+                ListFormat::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&view).expect("view serializes")
+                ),
+                ListFormat::Text => print_view(&view),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        RouteCommand::Models {
+            format,
+            readings,
+            models,
+        } => {
+            let session = open(config, readings.as_deref(), models.as_deref())?;
+            let rows = session.context().models();
+            match format {
+                ListFormat::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&rows).expect("rows serialize")
+                ),
+                ListFormat::Text => {
+                    for r in rows {
+                        println!("{:16} {}", r.harness, r.models.join(" "));
+                    }
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        RouteCommand::Thresholds {
+            harness,
+            route,
+            set,
+            unset,
+            format,
+        } => {
+            let scope = match (&harness, &route) {
+                (Some(h), _) => Scope::Harness(h),
+                (_, Some(r)) => Scope::Route(r),
+                _ => Scope::All,
+            };
+            if set.is_empty() && unset.is_empty() {
+                let loaded = Session::config_only(config, &cwd()?)?;
+                let rows = edit::scope_limits(&loaded.config, &scope)?.rows();
+                match format {
+                    ListFormat::Json => println!(
+                        "{}",
+                        serde_json::to_string_pretty(&rows).expect("rows serialize")
+                    ),
+                    ListFormat::Text => {
+                        for r in rows {
+                            println!("{:18} {} ({})", r.key, r.value, r.from);
+                        }
+                    }
+                }
+                return Ok(ExitCode::SUCCESS);
+            }
+            let change = "thresholds changed";
+            apply_edit(config, change, |text| {
+                edit::set_thresholds(text, &scope, &set, &unset)
+            })
+        }
+        RouteCommand::Add {
+            route,
+            target,
+            effort,
+            tier,
+            sizes,
+            at,
+        } => {
+            let new = edit::CandidateEdit {
+                target: &target,
+                effort: effort.as_deref(),
+                tier,
+                sizes: (!sizes.is_empty()).then(|| sizes.into_iter().map(Size::from).collect()),
+                at: at.map(|n| n as usize - 1),
+            };
+            let change = format!("{route} has candidate {target}");
+            apply_edit(config, &change, |text| {
+                edit::add_candidate(text, &route, &new)
+            })
+        }
+        RouteCommand::Remove { route, target } => {
+            let change = format!("{route} no longer has candidate {target}");
+            apply_edit(config, &change, |text| {
+                edit::remove_candidate(text, &route, &target)
+            })
+        }
+        RouteCommand::Enable { route } => apply_edit(config, &format!("{route} on"), |text| {
+            edit::set_enabled(text, &route, true)
+        }),
+        RouteCommand::Disable { route } => apply_edit(config, &format!("{route} off"), |text| {
+            edit::set_enabled(text, &route, false)
+        }),
         RouteCommand::Verdict {
             id,
             verdict,

@@ -89,6 +89,12 @@ pub struct VerdictArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+pub struct ShowArgs {
+    route: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 pub struct StatsArgs {
     route: Option<String>,
     since: Option<String>,
@@ -161,8 +167,59 @@ fn json(v: impl serde::Serialize) -> Value {
     serde_json::to_value(v).expect("value serializes")
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct BenchPlanArgs {
+    /// Suite file; default the only *.toml in .cedr/bench/
+    suite: Option<PathBuf>,
+    /// Only these task ids
+    task: Option<Vec<String>>,
+    /// Trials per task and variant, instead of the suite's
+    trials: Option<u32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct BenchHistoryArgs {
+    /// How many runs, newest first; default 20
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct BenchShowArgs {
+    /// A run id from bench_history, or a result file
+    id: String,
+}
+
 #[tool_router]
 impl RouteServer {
+    #[tool(description = "Validate a Bench suite and show what a run would do, starting nothing.")]
+    async fn bench_plan(&self, Parameters(a): Parameters<BenchPlanArgs>) -> CallToolResult {
+        blocking(move || {
+            crate::bench::plan_value(a.suite.as_deref(), a.task.unwrap_or_default(), a.trials)
+                .map_err(cedr_route::Error::Usage)
+        })
+        .await
+    }
+    #[tool(description = "Saved Bench runs with their pass counts and spend, newest first.")]
+    async fn bench_history(&self, Parameters(a): Parameters<BenchHistoryArgs>) -> CallToolResult {
+        blocking(move || {
+            crate::bench::history_rows(a.limit.unwrap_or(20))
+                .map(Value::Array)
+                .map_err(cedr_route::Error::Usage)
+        })
+        .await
+    }
+    #[tool(description = "One saved Bench run: its variants, trials, counts and spend.")]
+    async fn bench_show(&self, Parameters(a): Parameters<BenchShowArgs>) -> CallToolResult {
+        blocking(move || {
+            crate::bench::read_result(&a.id)
+                .map(json)
+                .map_err(cedr_route::Error::Usage)
+        })
+        .await
+    }
     #[tool(description = "Check generated agent files and organization rules offline")]
     async fn sync_check(&self, Parameters(a): Parameters<RepoArgs>) -> CallToolResult {
         blocking(move || {
@@ -401,6 +458,20 @@ impl RouteServer {
             )?))
         })
         .await
+    }
+
+    #[tool(
+        description = "What a route would pick at each size now, and each candidate's model, state and thresholds. Records nothing."
+    )]
+    async fn route_show(&self, Parameters(a): Parameters<ShowArgs>) -> CallToolResult {
+        let me = self.clone();
+        blocking(move || Ok(json(me.session(None)?.context().show(&a.route)?))).await
+    }
+
+    #[tool(description = "The model ids each harness offers, for use in targets.")]
+    async fn route_models(&self) -> CallToolResult {
+        let me = self.clone();
+        blocking(move || Ok(json(me.session(None)?.context().models()))).await
     }
 
     #[tool(

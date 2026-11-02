@@ -174,8 +174,9 @@ dependencies = [
 
 [[package]]
 name = "cedr"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
+ "cedr-bench",
  "cedr-core",
  "cedr-monitor",
  "cedr-route",
@@ -200,8 +201,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cedr-bench"
+version = "0.8.0"
+dependencies = [
+ "cedr-monitor",
+ "chrono",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "cedr-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "base64",
  "flate2",
@@ -227,7 +243,7 @@ dependencies = [
 
 [[package]]
 name = "cedr-monitor"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "cedr-route",
  "chrono",
@@ -242,7 +258,7 @@ dependencies = [
 
 [[package]]
 name = "cedr-route"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "getrandom 0.4.3",
@@ -253,11 +269,12 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
+ "toml_edit",
 ]
 
 [[package]]
 name = "cedr-sync"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "cedr-core",
  "regex",

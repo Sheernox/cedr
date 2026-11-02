@@ -1,6 +1,6 @@
 # cedr
 
-The open-source `cedr` CLI from [cedr.dev](https://cedr.dev): every coding agent, one control panel. Route picks the agent, model and effort for each kind of work. Council merges reviews from several vendors into one gate. Guard lints, pins and verifies the skills and MCP servers agents load. Sync compiles one setup into every agent's files. Monitor reports usage, spend and plan limits.
+The open-source `cedr` CLI from [cedr.dev](https://cedr.dev): every coding agent, one control panel. Route picks the agent, model and effort for each kind of work. Council merges reviews from several vendors into one gate. Guard lints, pins and verifies the skills and MCP servers agents load. Sync compiles one setup into every agent's files. Monitor reports usage, spend and plan limits. Bench measures whether a change to an agent's setup or model helps.
 
 This project is coded and maintained by AI agents, directed by its maintainers. Write for the next agent: it knows only this file, the code and the contracts. Human contributors: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -69,7 +69,8 @@ The usual defect here is a change that works where you tested it and is missing 
 
 ## Releases
 
-- Each version bump ships a full `CHANGELOG.md` entry, and the release workflow publishes it as the notes (it fails when the tag has none). Format: a hero image 770 wide by absolute URL (rendered from `banner/releases/` by `scripts/render-banner.py`), a `**vX.Y.Z** · N changes from M contributors` line, then Highlights, Fixes, Features, and a folded Full changelog with the compare link.
+- Versions follow SemVer, and [docs/versioning.md](docs/versioning.md) defines the public API and the 0.x rules: a minor for anything new or breaking, a patch for fixes only. When in doubt, it's a minor.
+- Each version bump ships a full `CHANGELOG.md` entry, and the release workflow publishes it as the notes (it fails when the tag has none). Format: a hero image 770 wide by absolute URL (rendered from `banner/releases/` by `scripts/render-banner.py`), a `**vX.Y.Z** · N changes from M contributors` line, Highlights, then whatever sections suit the release, in the order that serves its readers (for example Features or Fixes), and a folded Full changelog with the compare link.
 - Agents may release a patch when checks pass and every commit since the last tag was authored in-house.
 - Any outside-authored commit, and every minor or major version, needs a release pull request held open until a maintainer approves it. Post an approval only when a maintainer has approved that exact head in the current conversation, and never otherwise.
 - When work starts on a version that needs approval, prepare its release pull request without being asked, then tell a maintainer it is ready for review and approval.
@@ -99,6 +100,7 @@ Never put customers, pricing, business strategy, hosted-service plans, private i
 - `crates/cedr-core`: Guard (discovery, lint, lock, surfaces, diff, outdated).
 - `crates/cedr-sync`: Sync (sources, per-agent emitters, merge, check, import).
 - `crates/cedr-monitor`: Monitor (sources, store, pricing, reports, limits, push, schedule).
+- `crates/cedr-bench`: Bench (suite, harness adapters, trial runner, report).
 - `docs/`: contracts, plus Guard's status and known gaps in `docs/guard.md`. `fixtures/`: test repos, tarballs and configs. `action.yml`: the GitHub Action.
 
 ## Taste

@@ -9,8 +9,8 @@ use toml_edit::{DocumentMut, value};
 
 pub(crate) struct Settings {
     doc: DocumentMut,
-    /// False when the file exists but does not parse: then nothing is sent or updated, and the
-    /// file is never overwritten.
+    /// False when the file exists but cannot be read or does not parse: then nothing is sent or
+    /// updated, and the file is never overwritten.
     pub(crate) valid: bool,
 }
 
@@ -37,9 +37,9 @@ impl Settings {
                     valid: false,
                 },
             },
-            Err(_) => Self {
+            Err(e) => Self {
                 doc: DocumentMut::new(),
-                valid: true,
+                valid: e.kind() == std::io::ErrorKind::NotFound,
             },
         }
     }
@@ -67,6 +67,39 @@ impl Settings {
             .filter(|s| is_uuid(s))
     }
 
+    /// The Bench cap the user set, if any (docs/bench.md, Budget). A broken value is an error rather
+    /// than the default, because the default may be more than this person meant to spend.
+    pub(crate) fn bench_budget_usd(&self) -> Result<Option<f64>, String> {
+        if !self.valid {
+            return Err(format!(
+                "{} cannot be read or does not parse; fix or remove it",
+                path().display()
+            ));
+        }
+        let Some(item) = self.doc.get("bench_budget_usd") else {
+            return Ok(None);
+        };
+        item.as_float()
+            .or_else(|| item.as_integer().map(|n| n as f64))
+            .filter(|cap| cap.is_finite() && *cap > 0.0)
+            .map(Some)
+            .ok_or_else(|| {
+                format!(
+                    "{}: bench_budget_usd: must be a number above 0",
+                    path().display()
+                )
+            })
+    }
+
+    pub(crate) fn set_bench_budget_usd(&mut self, cap: Option<f64>) {
+        match cap {
+            Some(cap) => self.doc["bench_budget_usd"] = value(cap),
+            None => {
+                self.doc.remove("bench_budget_usd");
+            }
+        }
+    }
+
     pub(crate) fn set_bool(&mut self, key: &str, on: bool) {
         self.doc[key] = value(on);
     }
@@ -87,7 +120,7 @@ impl Settings {
     pub(crate) fn save(&self) -> Result<(), String> {
         if !self.valid {
             return Err(format!(
-                "{} does not parse; fix or remove it",
+                "{} cannot be read or does not parse; fix or remove it",
                 path().display()
             ));
         }
@@ -243,6 +276,26 @@ mod tests {
             stamp_due(&stamp, now - Duration::from_secs(60), every),
             "clock moved back"
         );
+    }
+
+    #[test]
+    fn a_broken_bench_budget_is_an_error_rather_than_the_default() {
+        let budget = |text: &str| {
+            Settings {
+                doc: text.parse().unwrap(),
+                valid: true,
+            }
+            .bench_budget_usd()
+        };
+        assert_eq!(budget("").unwrap(), None);
+        assert_eq!(budget("bench_budget_usd = 2.5\n").unwrap(), Some(2.5));
+        assert_eq!(budget("bench_budget_usd = 3\n").unwrap(), Some(3.0));
+        for bad in ["\"lots\"", "0.0", "-1.0", "inf"] {
+            assert!(
+                budget(&format!("bench_budget_usd = {bad}\n")).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

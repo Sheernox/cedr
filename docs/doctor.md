@@ -23,5 +23,7 @@ Each check is `{"id", "area", "state": "ok" | "warn" | "fail" | "skip", "message
 | `sync.check` | sync | `cedr sync check` findings, summarised |
 | `sync.rules` | sync | `.cedr/org-rules.json` is current (warn when the app has a newer version) |
 | `guard.lock` | guard | `.cedr/guard.lock` exists and `cedr guard verify` is clean |
+| `bench.budget` | bench | The Bench cap in force and where it comes from; fail when `bench_budget_usd` is broken |
+| `bench.suite` | bench | One check per suite in `.cedr/bench/`: it plans, with `bench plan`'s warnings (skip when there is none) |
 
 Exit 0 when nothing fails (warnings allowed), 1 when any check fails, 2 on usage failure. `cedr mcp` offers it as the `doctor` tool.
