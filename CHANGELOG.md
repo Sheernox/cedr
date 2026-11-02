@@ -4,14 +4,17 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 ## v0.8.0 (2026-11-01)
 
-<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.0.png" alt="cedr v0.8.0: remote watch" width="770">
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.0.png" alt="cedr v0.8.0: bench" width="770">
 
 **v0.8.0** · 15 changes from 1 contributor
 
 ### Highlights
+**Bench is here.** It tells you whether a change to your rules, a skill or a model helps before you merge it: real tasks against a baseline and a candidate, your tests deciding each trial, and a budget on every run that defaults to $2.00. Start with `cedr bench init`.
+
 Guard can now watch remote MCP servers. A remote server has no version, so a pin could never notice its tools changing; `cedr guard remote` compares what a server lists now with what you locked. Route and Council can also read Grok Build's plan usage and balance work onto it. **Upgrade step:** none; cedr updates itself. A lock made with `--remote` needs this version or later to diff its surfaces.
 
 ### Features
+- **Bench** adds `cedr bench init`, `plan`, `run`, `history`, `show` and `budget`. It runs the unmodified `claude` and `codex` CLIs, and any other agent through a `command` harness, each trial in a fresh clone. Results record the models, CLI versions, commits and a digest of the agent files, and report pass rates with 95% intervals rather than a verdict. Set the cap with `--budget-usd`, `cedr bench budget` or the app's Settings page. Doctor checks it, MCP gains `bench_plan`, `bench_history` and `bench_show`, and the GitHub Action gains `bench`, `bench-budget-usd` and `bench-fail-on`. A suite is code, so run ones you trust. Contract: [docs/bench.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/bench.md).
 - **Guard** adds `cedr guard lock --remote` and `cedr guard remote`, which report added and removed tools, schema and description changes, new hosts and expanded capabilities. They send no credentials and contact only public HTTPS addresses. A server that is down or needs a login reports as that, never as unchanged. `[remote] interval_minutes` limits how often a scheduled run really reads a server. Contract: [docs/design.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/design.md).
 - **Route** has a built-in `grok` reader for Grok Build's weekly allowance, which Council's picks use too. `cedr monitor limits` shows the reading, `cedr doctor` checks Grok Build's MCP registration, and `cedr route import` sets its effort option. The plan's pool is shared with the vendor's other products, so the percent can rise with no Grok Build turn. Contract: [docs/route.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/route.md).
 - **Monitor** adds `responseSet` to each row it pushes, a digest of the responses behind the row. It lets the same usage from a copied log be told apart from distinct usage, and the responses' identities never leave the machine. Contract: [docs/monitor.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/monitor.md).
