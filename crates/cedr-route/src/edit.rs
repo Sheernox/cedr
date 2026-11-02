@@ -5,7 +5,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use toml_edit::{Array, DocumentMut, InlineTable, Item, TableLike, Value, table, value};
+use toml_edit::{Array, DocumentMut, InlineTable, Item, RawString, TableLike, Value, table, value};
 
 use crate::config::{Config, Limits, RoutesFrom, load_local, rules_hash};
 use crate::error::{Error, Result, io_err, parse_err};
@@ -49,6 +49,12 @@ pub fn apply(path: &Path, edit: impl FnOnce(&str) -> Result<String>) -> Result<A
     }
     let old = std::fs::read_to_string(&path).map_err(io_err(&path))?;
     let new = edit(&old)?;
+    // The TOML editor writes every line ending as LF, and a file from Windows should stay as it was.
+    let new = if old.contains("\r\n") {
+        new.replace("\r\n", "\n").replace('\n', "\r\n")
+    } else {
+        new
+    };
     Config::parse(&new, &path)?;
     write_keeping_mode(&path, new.as_bytes())?;
     Ok(Applied {
@@ -229,15 +235,16 @@ pub fn set_thresholds(
     Ok(doc.to_string())
 }
 
-/// Sets a key, keeping the comment on the value it replaces.
+/// Sets a key, keeping the comments and spacing around the one it replaces.
 fn replace(holder: &mut dyn TableLike, key: &str, mut item: Item) {
-    if let (Some(old), Some(new)) = (
-        holder.get(key).and_then(Item::as_value),
-        item.as_value_mut(),
-    ) {
-        *new.decor_mut() = old.decor().clone();
+    let Some(old) = holder.get_mut(key) else {
+        holder.insert(key, item);
+        return;
+    };
+    if let (Some(was), Some(new)) = (old.as_value(), item.as_value_mut()) {
+        *new.decor_mut() = was.decor().clone();
     }
-    holder.insert(key, item);
+    *old = item;
 }
 
 pub fn set_enabled(text: &str, route: &str, on: bool) -> Result<String> {
@@ -286,6 +293,38 @@ fn multiline(a: &Array) -> bool {
     })
 }
 
+/// Whether anything in the array's layout is a comment, which `fmt` would delete.
+fn commented(a: &Array) -> bool {
+    let has = |text: Option<&RawString>| {
+        text.and_then(|t| t.as_str())
+            .is_some_and(|t| t.contains('#'))
+    };
+    has(Some(a.trailing()))
+        || a.iter()
+            .any(|v| has(v.decor().prefix()) || has(v.decor().suffix()))
+}
+
+/// Puts a multi-line array in the shape [`lift`] and [`land`] expect, with a comma after the last
+/// item, so what follows that item is the array's trailing text rather than part of the item.
+fn close_last_item(a: &mut Array) {
+    if a.trailing_comma() {
+        return;
+    }
+    let Some(last) = a.iter_mut().last() else {
+        return;
+    };
+    let suffix = last
+        .decor()
+        .suffix()
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    last.decor_mut().set_suffix("");
+    let trailing = format!("{suffix}{}", a.trailing().as_str().unwrap_or(""));
+    a.set_trailing(trailing);
+    a.set_trailing_comma(true);
+}
+
 /// In a multi-line array, the text before an item is the end of the previous item's line, where its
 /// trailing comment sits, and then the item's own comment lines and indent. Splits it there.
 fn split_lines(text: &str) -> (&str, &str) {
@@ -320,8 +359,16 @@ struct Lifted {
 /// Removes the item, leaving every other item's comments on that item.
 fn lift(a: &mut Array, at: usize) -> Lifted {
     let before = gap_at(a, at);
-    let (prev_end, above) = split_lines(&before);
     let next = gap_at(a, at + 1);
+    // An item sharing its line with the one before it does not own that line's end or comment.
+    if !before.contains('\n') {
+        return Lifted {
+            above: before,
+            after: String::new(),
+            item: a.remove(at),
+        };
+    }
+    let (prev_end, above) = split_lines(&before);
     let (after, next_above) = split_lines(&next);
     set_gap_at(a, at + 1, format!("{prev_end}{next_above}"));
     Lifted {
@@ -345,18 +392,15 @@ fn land(a: &mut Array, at: usize, lifted: Lifted) {
 
 /// The indent of the array's items, without any comment lines.
 fn item_indent(a: &Array) -> String {
-    let first = a.get(0).and_then(|v| v.decor().prefix());
-    let text = first.and_then(|p| p.as_str()).unwrap_or("\n  ");
-    text.rsplit('\n').next().unwrap_or("  ").to_string()
+    a.iter()
+        .filter_map(|v| v.decor().prefix().and_then(|p| p.as_str()))
+        .find_map(|p| p.rsplit_once('\n').map(|(_, indent)| indent.to_string()))
+        .unwrap_or_else(|| "  ".to_string())
 }
 
-/// Puts a new or moved item at `at`, in the array's own style. A `lifted` item keeps its comments.
-fn insert_styled(a: &mut Array, at: usize, item: Value, lifted: Option<(String, String)>) {
-    if multiline(a) {
-        let (above, after) = lifted.unwrap_or_else(|| (item_indent(a), "\n".to_string()));
-        land(a, at, Lifted { item, above, after });
-    } else {
-        a.insert(at, item);
+/// Spaces a one-line array evenly, unless that would delete a comment.
+fn fmt_unless_commented(a: &mut Array) {
+    if !commented(a) {
         a.fmt();
     }
 }
@@ -388,6 +432,10 @@ fn apply_fields(item: &mut Value, route: &str, edit: &CandidateEdit) -> Result<(
 pub fn add_candidate(text: &str, route: &str, edit: &CandidateEdit) -> Result<String> {
     let mut doc = document(text)?;
     let list = candidates(&mut doc, route)?;
+    let lines = multiline(list);
+    if lines {
+        close_last_item(list);
+    }
     let found = list.iter().position(|v| target_of(v) == Some(edit.target));
     if let Some(i) = found
         && edit.at.is_none_or(|at| at == i)
@@ -398,8 +446,9 @@ pub fn add_candidate(text: &str, route: &str, edit: &CandidateEdit) -> Result<St
         apply_fields(item, route, edit)?;
         return Ok(doc.to_string());
     }
+    let indent = item_indent(list);
     let (mut item, comments) = match found {
-        Some(i) if multiline(list) => {
+        Some(i) if lines => {
             let lifted = lift(list, i);
             (lifted.item, Some((lifted.above, lifted.after)))
         }
@@ -415,7 +464,14 @@ pub fn add_candidate(text: &str, route: &str, edit: &CandidateEdit) -> Result<St
         Some("self") if edit.target != "self" => list.len() - 1,
         _ => list.len(),
     };
-    insert_styled(list, edit.at.unwrap_or(end).min(end), item, comments);
+    let at = edit.at.unwrap_or(end).min(end);
+    if lines {
+        let (above, after) = comments.unwrap_or((indent, "\n".to_string()));
+        land(list, at, Lifted { item, above, after });
+    } else {
+        list.insert(at, item);
+        fmt_unless_commented(list);
+    }
     Ok(doc.to_string())
 }
 
@@ -427,10 +483,11 @@ pub fn remove_candidate(text: &str, route: &str, target: &str) -> Result<String>
         .position(|v| target_of(v) == Some(target))
         .ok_or_else(|| Error::Usage(format!("route {route} has no candidate {target:?}")))?;
     if multiline(list) {
+        close_last_item(list);
         lift(list, i);
     } else {
         list.remove(i);
-        list.fmt();
+        fmt_unless_commented(list);
     }
     Ok(doc.to_string())
 }
@@ -568,6 +625,83 @@ out = 90 # reserve for interactive work
                 "  # last resort\n",
             )),
             "{moved}"
+        );
+    }
+
+    fn route_with(candidates: &str) -> String {
+        format!("version = 1\n[harnesses.codex]\n[routes.r]\ncandidates = [{candidates}]\n")
+    }
+
+    #[test]
+    fn keys_keep_the_comment_above_them_and_their_spacing() {
+        let file = "version = 1\n[thresholds]\n# above\nout   = 90 # beside\n";
+        let text = set_thresholds(file, &Scope::All, &["out=80".to_string()], &[]).unwrap();
+        assert_eq!(
+            text,
+            "version = 1\n[thresholds]\n# above\nout   = 80 # beside\n"
+        );
+    }
+
+    #[test]
+    fn awkward_candidate_lists_keep_their_comments() {
+        // The last item has no comma after it.
+        let file =
+            route_with("\n  { target = \"codex/a\" }, # a\n  { target = \"codex/b\" } # b\n");
+        let moved = CandidateEdit {
+            at: Some(0),
+            ..add("codex/b")
+        };
+        let text = add_candidate(&file, "r", &moved).unwrap();
+        assert!(
+            text.contains("  { target = \"codex/b\" }, # b\n  { target = \"codex/a\" }, # a\n"),
+            "{text}"
+        );
+        let text = add_candidate(&file, "r", &add("codex/c")).unwrap();
+        assert!(text.contains("# a\n") && text.contains("# b\n"), "{text}");
+        check(&text);
+
+        // The only item, moved past the end.
+        let file = route_with("\n  # only one\n  { target = \"codex/a\" }, # c\n");
+        let moved = CandidateEdit {
+            at: Some(5),
+            ..add("codex/a")
+        };
+        let text = add_candidate(&file, "r", &moved).unwrap();
+        assert!(
+            text.contains("# only one") && text.contains("# c"),
+            "{text}"
+        );
+
+        // Items on one line, with a comment before the closing bracket.
+        let file = route_with("{ target = \"codex/a\" }, { target = \"self\" } # last\n");
+        let text = add_candidate(&file, "r", &add("codex/b")).unwrap();
+        assert!(text.contains("# last"), "{text}");
+        check(&text);
+
+        // Two items sharing a line, with a comment at its end.
+        let file = route_with(
+            "\n  { target = \"codex/a\" }, { target = \"codex/b\" }, # both\n  { target = \"self\" },\n",
+        );
+        let text = remove_candidate(&file, "r", "codex/b").unwrap();
+        assert!(
+            text.contains("{ target = \"codex/a\" }, # both\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_file_with_windows_line_endings_keeps_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("routes.toml");
+        let file = route_with("{ target = \"self\" }").replace('\n', "\r\n");
+        std::fs::write(&path, &file).unwrap();
+        apply(&path, |t| set_enabled(t, "r", false)).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("enabled = false"), "{text}");
+        assert_eq!(
+            text.matches('\n').count(),
+            text.matches("\r\n").count(),
+            "{text:?}"
         );
     }
 
