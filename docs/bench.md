@@ -81,7 +81,7 @@ Every run has a cap in USD at API prices, including on a plan where nothing is b
 2. `bench_budget_usd` in the CLI's settings (`$XDG_CONFIG_HOME/cedr/cli.toml`, set with `cedr bench budget`). The cedr.dev app's cap reaches this file through `cedr bench budget --pull`.
 3. The default, `2.00`.
 
-A suite can never set its own budget. The cap must be a finite number above 0.
+A suite can never set its own budget. The cap must be a finite number above 0. A settings file that cannot be read or does not parse, or a broken value in it, is an error rather than the default.
 
 Before each trial, a run stops when what it has spent plus the most expensive trial so far would pass the cap. `claude` also receives what is left as its own limit. Other harnesses are only checked between trials, so a trial can overrun the cap, by at most what it spends before its timeout. A run stopped this way is incomplete, with `stop` set to `"budget"`.
 

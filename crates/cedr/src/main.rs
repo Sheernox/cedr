@@ -255,7 +255,7 @@ fn main() -> ExitCode {
     if !quiet {
         if !settings::Settings::load().valid {
             eprintln!(
-                "cedr: warning: {} does not parse, so telemetry and automatic updates are off until it is fixed",
+                "cedr: warning: {} cannot be read or does not parse, so telemetry and automatic updates are off until it is fixed",
                 settings::path().display()
             );
         }

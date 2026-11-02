@@ -9,8 +9,8 @@ use toml_edit::{DocumentMut, value};
 
 pub(crate) struct Settings {
     doc: DocumentMut,
-    /// False when the file exists but does not parse: then nothing is sent or updated, and the
-    /// file is never overwritten.
+    /// False when the file exists but cannot be read or does not parse: then nothing is sent or
+    /// updated, and the file is never overwritten.
     pub(crate) valid: bool,
 }
 
@@ -37,9 +37,9 @@ impl Settings {
                     valid: false,
                 },
             },
-            Err(_) => Self {
+            Err(e) => Self {
                 doc: DocumentMut::new(),
-                valid: true,
+                valid: e.kind() == std::io::ErrorKind::NotFound,
             },
         }
     }
@@ -72,7 +72,7 @@ impl Settings {
     pub(crate) fn bench_budget_usd(&self) -> Result<Option<f64>, String> {
         if !self.valid {
             return Err(format!(
-                "{} does not parse; fix or remove it",
+                "{} cannot be read or does not parse; fix or remove it",
                 path().display()
             ));
         }
@@ -120,7 +120,7 @@ impl Settings {
     pub(crate) fn save(&self) -> Result<(), String> {
         if !self.valid {
             return Err(format!(
-                "{} does not parse; fix or remove it",
+                "{} cannot be read or does not parse; fix or remove it",
                 path().display()
             ));
         }

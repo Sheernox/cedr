@@ -20,7 +20,7 @@ cedr sends anonymous usage events to cedr.dev so the team can see how many peopl
 
 ## Settings
 
-`$XDG_CONFIG_HOME/cedr/cli.toml` (default `~/.config/cedr/cli.toml`) holds the CLI's own settings; a missing file means the defaults. Unknown keys are kept on rewrite. A file that does not parse turns telemetry and auto-update off for that run and warns once on stderr, rather than overwriting it.
+`$XDG_CONFIG_HOME/cedr/cli.toml` (default `~/.config/cedr/cli.toml`) holds the CLI's own settings; a missing file means the defaults. Unknown keys are kept on rewrite. A file that cannot be read or does not parse turns telemetry and auto-update off for that run and warns once on stderr, rather than overwriting it.
 
 | Key | Default | Meaning |
 |---|---|---|

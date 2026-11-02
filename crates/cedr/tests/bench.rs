@@ -740,3 +740,13 @@ test = "true"
     assert_eq!(out.status.code(), Some(0), "killed by a signal when None");
     assert_eq!(stdout_json(&out)["summary"]["candidate"]["passed"], 1);
 }
+
+#[test]
+fn a_settings_file_that_cannot_be_read_is_an_error_rather_than_the_default_cap() {
+    let repo = Repo::new();
+    // A directory at the file's path fails to read for every user, root included.
+    fs::create_dir_all(repo.dir.path().join("config/cedr/cli.toml")).unwrap();
+    let out = repo.run(&["bench", "budget"]);
+    assert_eq!(code(&out), 2);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cli.toml"));
+}
