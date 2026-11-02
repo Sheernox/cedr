@@ -89,6 +89,12 @@ pub struct VerdictArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+pub struct ShowArgs {
+    route: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 pub struct StatsArgs {
     route: Option<String>,
     since: Option<String>,
@@ -452,6 +458,20 @@ impl RouteServer {
             )?))
         })
         .await
+    }
+
+    #[tool(
+        description = "What a route would pick at each size now, and each candidate's model, state and thresholds. Records nothing."
+    )]
+    async fn route_show(&self, Parameters(a): Parameters<ShowArgs>) -> CallToolResult {
+        let me = self.clone();
+        blocking(move || Ok(json(me.session(None)?.context().show(&a.route)?))).await
+    }
+
+    #[tool(description = "The model ids each harness offers, for use in targets.")]
+    async fn route_models(&self) -> CallToolResult {
+        let me = self.clone();
+        blocking(move || Ok(json(me.session(None)?.context().models()))).await
     }
 
     #[tool(

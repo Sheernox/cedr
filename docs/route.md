@@ -29,11 +29,13 @@ stale_days = 35           # default 35; older evaluations print a warning
 models = ["codex/gpt-6.1-sol"]
 preview = "trial"         # trial (default) | hold | use: what a pick does with a version models does not list (see Preview versions)
 
-[thresholds]              # optional; defaults shown
+[thresholds]              # optional; defaults shown (see Thresholds)
 fresh_seconds = 600       # oldest reading treated as live
 session_conserve = 85
 weekly_conserve = 85
-out = 90
+out = 90                  # sets session_out and weekly_out, which can also be set apart
+conserve_sizes = ["small"]            # work sizes a plan in conserve still takes
+unknown_sizes = ["small", "medium"]   # work sizes a plan with an unknown state still takes
 
 [orchestrator]            # optional: the agent that delegates; its pool is shown in every tag
 harness = "claude"
@@ -49,6 +51,9 @@ models = []               # model ids to resolve against when no readings source
 billing = "plan"          # plan (limit windows) | api (a key billed per token: no windows, always ready)
 command = "claude"        # optional: the program this harness runs; absent on a machine without it (see Machine checks)
 reader = "claude-statusline"  # optional: the built-in reader its plan usage should come from (see Machine checks)
+
+[harnesses.claude.thresholds]         # optional: any [thresholds] key, for this plan
+weekly_conserve = 70
 
 [model_windows.seven_day_fable]       # a window that applies only to some models
 harness = "claude"
@@ -87,15 +92,29 @@ candidates = [
 work = "Bounded implementation"
 judge = "review.judge"    # optional: a cascade (see Cascade); the route that judges this route's work
 escalate = "code.hard"    # optional, needs judge: where work the judge escalates goes; default the orchestrator
-candidates = [{ target = "codex/luna", effort = "medium", tier = 1 }, { target = "self" }]
+candidates = [
+  { target = "codex/luna", effort = "medium", tier = 1, sizes = ["small", "medium"] },   # sizes: only this work
+  { target = "codex/sol", effort = "high" },
+  { target = "self" },
+]
+
+[routes."code.impl".thresholds]       # optional: any [thresholds] key, for this route
+weekly_conserve = 50
 ```
 
 - A target is `self` (the orchestrator keeps the work) or `<harness>/<model>`, where the harness is defined and the model is a family name (`sol`) or an exact id. `self` ends the walk, so it takes no `tier`. Validation fails on anything else, on an empty candidate list, and on an unknown `version`.
 - Consecutive candidates with the same `tier` form one tier; a candidate without `tier` stands alone.
 - `judge` and `escalate` name other routes in the file. Validation fails when either names an unknown route or the route itself, when `escalate` is set without `judge`, when a council has either or either names a council, when a judge route has a `judge` of its own, or when following `escalate` from a route comes back to it.
 - `preview` is `trial`, `hold` or `use`; anything else fails validation.
+- `sizes` limits a candidate to the listed work sizes. It must not be empty, and `self` and council members take none, since a council's membership is its quorum.
 - The rules hash is the first 7 hex characters of SHA-256 over the file bytes.
 - `command` is a program name (no `/` or `\`, no arguments) or, in a machine's own file only, an absolute path; `reader` is `codex`, `muse`, `grok` or `claude-statusline`. Both are allowed in shared routes because neither runs anything: Cedr only looks the program up and compares the hint with the local readings sources. Shared routes refuse a path, which would tell whoever edits them which files exist on members' machines. `[machine] skip` names defined harnesses or none (an unknown name is a warning, not an error, so an org dropping a harness never breaks a machine).
+
+## Thresholds
+
+Each setting comes from the most specific layer that sets it: the route's `thresholds`, then the harness's, then `[thresholds]`, then the default. Within a layer `session_out` and `weekly_out` beat `out`; an `out` in a more specific layer beats either from a less specific one. Percents must be 0 to 100 and `fresh_seconds` must not be negative; anything else fails validation, except that `fresh_seconds`, `session_conserve`, `weekly_conserve` and `out` in `[thresholds]` load unchecked so older files keep working, and `cedr route thresholds` still refuses to write such a value. A conserve threshold at or above the matching out threshold means the plan goes straight from ready to out.
+
+Route thresholds change only that route's picks. `pools`, the orchestrator's summary and the snapshot's `pools` use the harness layer, since they answer for a plan rather than a route.
 
 ## Readings
 
@@ -142,8 +161,8 @@ For a harness and model, over every window that applies to the model (shared win
 |---|---|
 | absent | the machine check above; nothing else is read |
 | unknown | no reading, a reading with an error, `fetchedAt` older than `fresh_seconds`, an expected window missing, or a window without a percent or past its reset |
-| out | any window at `out` or more |
-| conserve | any window at its conserve threshold or more (session windows use `session_conserve`) |
+| out | any window at its out threshold or more (`session_out` for session windows, else `weekly_out`) |
+| conserve | any window at its conserve threshold or more (`session_conserve` for session windows, else `weekly_conserve`) |
 | ready | otherwise |
 
 A harness with `billing = "api"` has no windows: it is always ready, with the summary `<harness> api key` and no use.
@@ -168,13 +187,24 @@ A family's newest offered version is in preview when `[evaluation] models` is no
 `pick(route, size, avoid)` walks the tiers in order:
 
 1. A disabled route keeps the work (`disabled`). A `self` tier ends the walk.
-2. Each candidate: skipped as `<harness>=avoided` when avoided, `=unresolved` when its model does not resolve, `=<state>` when not eligible. Eligible: ready always; conserve only for `small`; unknown for anything but `large`; out and absent never.
+2. A candidate whose `sizes` leaves out this size is not part of this pick, and counts for nothing below. Each other candidate: skipped as `<harness>=avoided` when avoided, `=unresolved` when its model does not resolve, `=<state>` when not eligible. Eligible: ready always; conserve for `conserve_sizes`; unknown for `unknown_sizes`; out and absent never.
 3. Council routes take every eligible candidate of every tier, with reason `council`.
 4. Otherwise the tier's candidates are ranked: ready plans, then API keys (so plan headroom is used before per-token spend), then plans whose state is unknown, then conserving ones; within each, the lowest use wins (unknown use last). Reason: `fallback:<skipped,...>` when anything was skipped so far; `balanced:<winner use>` plus `<<other>=<use>,...` when the tier has more than one candidate; else `primary`. Use shows as `N%`, `?` when unknown, or `key` for an API key.
-5. No delegate: reason `no eligible delegate: <skipped>` or `orchestrator-only route`.
+5. No delegate: reason `no eligible delegate: <skipped>`, `no candidate for <size> work` when nothing was skipped and `sizes` emptied a tier, or `orchestrator-only route`.
 6. A delegate whose model resolved to a preview version has ` (preview)` appended to its reason and `"preview": true`; every other delegate has `"preview": false`.
 
 `manual(<harness>/<model>, effort)` tags a model the user named: a known id is kept, a family resolves to its newest version, an unknown name with no model list is kept as named, and an unknown name with a model list is an error. Reason `user-named`.
+
+## Editing
+
+`thresholds`, `add`, `remove`, `enable` and `disable` edit the `routes.toml` in use, keeping its comments, layout and file mode, and print `<path>: <change> (rules <old> -> <new>)`. The result must validate before anything is written, so a refused edit leaves the file as it was; a refused edit exits 2, and so does any unknown route, harness, key or candidate.
+
+- `--set` takes a number, or for `conserve_sizes` and `unknown_sizes` a comma-separated list of sizes (empty for none). `--unset` falls back to the next layer. Without `--harness` or `--route` the layer is `[thresholds]`.
+- `add` puts a new candidate before a final `self`, or last; `--at N` is a 1-based position, and moves an existing one. On an existing candidate only the options given change. A `[[routes.<id>.candidates]]` list is rewritten as an inline array, dropping its comments.
+- A file with `[sync] routes = "org"` refuses these edits, since its routes come from the org: change them where the org keeps them.
+- Creating and deleting routes is done in the file.
+
+The MCP server exposes `route_show` and `route_models` but no editing: which plans and models an agent may use is the user's decision, not the agent's.
 
 ## Cascade
 
@@ -207,6 +237,12 @@ All take `--config PATH`; picks also take `--readings`, `--models`, `--no-record
 | `cedr route manual <harness>/<model> [--effort E] [--format ...]` | Tag a named model and record |
 | `cedr route pools [--format text\|json]` | Each harness's state, plus one row per `model_windows` model a route uses |
 | `cedr route list` | Routes with their tier chains, and `judge <route> -> <escalate route or self>` after a cascade's chain |
+| `cedr route show <route> [--readings F] [--models F] [--format text\|json]` | What the route would pick at each size right now, and each candidate's model, state, sizes taken and thresholds; records nothing |
+| `cedr route models [--readings F] [--models F] [--format text\|json]` | The model ids each harness offers, for use in targets |
+| `cedr route thresholds [--harness H \| --route R] [--set KEY=VALUE]... [--unset KEY]... [--format text\|json]` | Without `--set` or `--unset`, print the thresholds for that scope and which layer each comes from; with them, edit that layer (see Editing) |
+| `cedr route add <route> <target> [--effort E] [--tier N] [--sizes S,S] [--at N]` | Add a candidate, or update the one with that target (see Editing) |
+| `cedr route remove <route> <target>` | Remove a candidate |
+| `cedr route enable <route>`, `cedr route disable <route>` | Turn a route on or off |
 | `cedr route verdict <pick-id> accepted\|reworked\|redone\|rejected [--task ID] [--note TEXT]` | Record a verdict |
 | `cedr route stats [--route R] [--since YYYY-MM-DD] [--format text\|json]` | Picks, verdicts, time to verdict and cascade outcomes per route, model and preview status |
 | `cedr route history [--route R] [--limit N] [--format text\|json]` | The latest records, newest first (default 20, at most 500): picks with their latest verdict, and council results |
@@ -216,6 +252,8 @@ All take `--config PATH`; picks also take `--readings`, `--models`, `--no-record
 | `cedr mcp` | MCP server on stdio |
 
 Text output of a pick: the tag, then `  <harness>/<model> role=<role>`, then `  brief starts: <prefix>` when set. A cascade route adds, after its delegates, `  cascade: judge <judge route>, escalate <escalate route or self>`. `t3` output is for orchestrators that start work through T3 Code's `delegate_task`: the tag, `  delegate_task role=<role> target=<json>` with `{"providerInstanceId", "model", "options"}` where options is `{<effort_option>: <effort>}` or `{}`, then the prefix line, then the cascade line. When the work is kept: `keep: <route> (<reason>); <orchestrator summary>` and exit 1. A council with skipped members adds `absent (report, never substitute): <skipped>`. Warnings (stale evaluation, readings failures) go to stderr, and `cedr mcp` writes them to its stderr as well.
+
+`route show` JSON is `{"id", "work", "enabled", "council", "role", "rules", "picks", "candidates"}`. `picks` has one `{"size", "targets", "reason"}` per size: the targets a pick would choose and its reason (a delegate's, or why the work is kept). Each candidate is `{"target", "effort", "tier", "sizes", "model", "state", "summary", "takes", "thresholds"}`: `model`, `state` and `summary` are what a `medium` pick sees, null for `self` or an unresolved model; `takes` lists the sizes it would accept now; `thresholds` is the rows described next, empty for `self`. `route thresholds` JSON is those rows: `[{"key", "value", "from"}]`, where `from` is `route`, `harness`, `thresholds` or `default`. `route models` JSON is `[{"harness", "models"}]`.
 
 JSON output of a pick:
 
@@ -288,6 +326,8 @@ Append-only JSON lines in `$XDG_STATE_HOME/cedr/route-history.jsonl` (default `~
 | `route_verdict` | `id`, `verdict`, `task?`, `note?` | `{"recorded": true}` |
 | `route_pools` | none | Pool rows |
 | `route_list` | none | Routes with tiers, and `judge` and `escalate` (null when unset) |
+| `route_show` | `route` | The JSON of `cedr route show` |
+| `route_models` | none | The JSON of `cedr route models` |
 | `route_stats` | `route?`, `since?` | Stats rows |
 | `route_history` | `route?`, `limit?` | History entries |
 

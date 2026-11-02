@@ -3,10 +3,12 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result, io_err, parse_err, toml_err};
+use crate::pick::Size;
+use crate::pool::State;
 
 pub const CONFIG_VERSION: i64 = 1;
 
@@ -107,23 +109,173 @@ fn default_stale_days() -> i64 {
     35
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields, default)]
+/// One layer of plan thresholds; what it leaves unset comes from the layer below (docs/route.md,
+/// Thresholds).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Thresholds {
+    pub fresh_seconds: Option<i64>,
+    pub session_conserve: Option<f64>,
+    pub weekly_conserve: Option<f64>,
+    pub out: Option<f64>,
+    pub session_out: Option<f64>,
+    pub weekly_out: Option<f64>,
+    pub conserve_sizes: Option<Vec<Size>>,
+    pub unknown_sizes: Option<Vec<Size>>,
+}
+
+impl Thresholds {
+    fn validate(&self, label: &str) -> std::result::Result<(), String> {
+        for (key, v) in [
+            ("session_conserve", self.session_conserve),
+            ("weekly_conserve", self.weekly_conserve),
+            ("out", self.out),
+            ("session_out", self.session_out),
+            ("weekly_out", self.weekly_out),
+        ] {
+            if let Some(v) = v
+                && !(0.0..=100.0).contains(&v)
+            {
+                return Err(format!("{label}.{key} {v} must be between 0 and 100"));
+            }
+        }
+        match self.fresh_seconds {
+            Some(s) if s < 0 => Err(format!("{label}.fresh_seconds {s} must not be negative")),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// The thresholds in force for a plan or route once the layers are applied.
+#[derive(Debug, Clone)]
+pub struct Limits {
     pub fresh_seconds: i64,
     pub session_conserve: f64,
     pub weekly_conserve: f64,
-    pub out: f64,
+    pub session_out: f64,
+    pub weekly_out: f64,
+    pub conserve_sizes: Vec<Size>,
+    pub unknown_sizes: Vec<Size>,
+    /// The layer each key came from; a key not here is the default.
+    from: BTreeMap<&'static str, &'static str>,
 }
 
-impl Default for Thresholds {
+impl Default for Limits {
     fn default() -> Self {
         Self {
             fresh_seconds: 600,
             session_conserve: 85.0,
             weekly_conserve: 85.0,
-            out: 90.0,
+            session_out: 90.0,
+            weekly_out: 90.0,
+            conserve_sizes: vec![Size::Small],
+            unknown_sizes: vec![Size::Small, Size::Medium],
+            from: BTreeMap::new(),
         }
+    }
+}
+
+/// One threshold in force and the layer that set it, for `cedr route thresholds` and `show`.
+#[derive(Debug, Clone, Serialize)]
+pub struct LimitRow {
+    pub key: &'static str,
+    pub value: serde_json::Value,
+    pub from: &'static str,
+}
+
+impl Limits {
+    fn apply(&mut self, layer: &Thresholds, name: &'static str) {
+        fn set<T: Clone>(
+            from: &mut BTreeMap<&'static str, &'static str>,
+            name: &'static str,
+            key: &'static str,
+            field: &mut T,
+            value: &Option<T>,
+        ) {
+            if let Some(v) = value {
+                *field = v.clone();
+                from.insert(key, name);
+            }
+        }
+        let f = &mut self.from;
+        set(
+            f,
+            name,
+            "fresh_seconds",
+            &mut self.fresh_seconds,
+            &layer.fresh_seconds,
+        );
+        set(
+            f,
+            name,
+            "session_conserve",
+            &mut self.session_conserve,
+            &layer.session_conserve,
+        );
+        set(
+            f,
+            name,
+            "weekly_conserve",
+            &mut self.weekly_conserve,
+            &layer.weekly_conserve,
+        );
+        set(f, name, "session_out", &mut self.session_out, &layer.out);
+        set(f, name, "weekly_out", &mut self.weekly_out, &layer.out);
+        set(
+            f,
+            name,
+            "session_out",
+            &mut self.session_out,
+            &layer.session_out,
+        );
+        set(
+            f,
+            name,
+            "weekly_out",
+            &mut self.weekly_out,
+            &layer.weekly_out,
+        );
+        set(
+            f,
+            name,
+            "conserve_sizes",
+            &mut self.conserve_sizes,
+            &layer.conserve_sizes,
+        );
+        set(
+            f,
+            name,
+            "unknown_sizes",
+            &mut self.unknown_sizes,
+            &layer.unknown_sizes,
+        );
+    }
+
+    /// Whether a plan in `state` takes work of `size`.
+    pub fn takes(&self, state: State, size: Size) -> bool {
+        match state {
+            State::Ready => true,
+            State::Conserve => self.conserve_sizes.contains(&size),
+            State::Unknown => self.unknown_sizes.contains(&size),
+            State::Out | State::Absent => false,
+        }
+    }
+
+    pub fn rows(&self) -> Vec<LimitRow> {
+        let row = |key: &'static str, value: serde_json::Value| LimitRow {
+            key,
+            value,
+            from: self.from.get(key).copied().unwrap_or("default"),
+        };
+        vec![
+            row("fresh_seconds", self.fresh_seconds.into()),
+            row("session_conserve", self.session_conserve.into()),
+            row("weekly_conserve", self.weekly_conserve.into()),
+            row("session_out", self.session_out.into()),
+            row("weekly_out", self.weekly_out.into()),
+            row("conserve_sizes", serde_json::json!(self.conserve_sizes)),
+            row("unknown_sizes", serde_json::json!(self.unknown_sizes)),
+        ]
     }
 }
 
@@ -155,6 +307,9 @@ pub struct Harness {
     pub command: Option<String>,
     /// The built-in reader the plan's usage should come from, for the stale machine file check.
     pub reader: Option<ReaderKind>,
+    /// Overrides `[thresholds]` for this plan.
+    #[serde(default)]
+    pub thresholds: Thresholds,
 }
 
 /// The built-in readers a harness can name as its usage source.
@@ -297,6 +452,9 @@ pub struct Route {
     pub judge: Option<String>,
     /// With `judge`: where escalated work goes; none means the orchestrator takes it.
     pub escalate: Option<String>,
+    /// Overrides `[thresholds]` and the harness's thresholds for this route's picks.
+    #[serde(default)]
+    pub thresholds: Thresholds,
     pub candidates: Vec<Candidate>,
 }
 
@@ -332,6 +490,14 @@ pub struct Candidate {
     #[serde(default)]
     pub effort: String,
     pub tier: Option<i64>,
+    /// The work sizes this candidate takes; all of them when unset.
+    pub sizes: Option<Vec<Size>>,
+}
+
+impl Candidate {
+    pub fn takes_size(&self, size: Size) -> bool {
+        self.sizes.as_ref().is_none_or(|s| s.contains(&size))
+    }
 }
 
 /// A validated config, the file it came from, and the rules hash shown in route tags.
@@ -390,7 +556,22 @@ impl Config {
                 _ => {}
             }
             self.validate_cascade(id, route)?;
+            route
+                .thresholds
+                .validate(&format!("routes.{id}.thresholds"))?;
             for c in &route.candidates {
+                match &c.sizes {
+                    Some(_) if route.council => {
+                        return Err(format!("route {id}: a council member takes no sizes"));
+                    }
+                    Some(_) if c.target == "self" => {
+                        return Err(format!("route {id}: self takes no sizes"));
+                    }
+                    Some(s) if s.is_empty() => {
+                        return Err(format!("route {id}: {} has empty sizes", c.target));
+                    }
+                    _ => {}
+                }
                 if c.target == "self" {
                     if c.tier.is_some() {
                         return Err(format!(
@@ -418,7 +599,17 @@ impl Config {
                 ));
             }
         }
+        // Files that already set these [thresholds] keys outside the range must keep loading
+        // (docs/versioning.md); the new keys and layers have no such files.
+        Thresholds {
+            session_out: self.thresholds.session_out,
+            weekly_out: self.thresholds.weekly_out,
+            ..Thresholds::default()
+        }
+        .validate("thresholds")?;
         for (id, h) in &self.harnesses {
+            h.thresholds
+                .validate(&format!("harnesses.{id}.thresholds"))?;
             if let Some(command) = &h.command {
                 let ok = if Path::new(command).is_absolute() {
                     !command.chars().any(char::is_control)
@@ -503,6 +694,19 @@ impl Config {
             next = self.routes.get(name).and_then(|r| r.escalate.as_deref());
         }
         Ok(())
+    }
+
+    /// The thresholds in force: the defaults, then `[thresholds]`, then the harness's, then the route's.
+    pub fn limits(&self, harness: Option<&str>, route: Option<&Route>) -> Limits {
+        let mut limits = Limits::default();
+        limits.apply(&self.thresholds, "thresholds");
+        if let Some(h) = harness.and_then(|h| self.harnesses.get(h)) {
+            limits.apply(&h.thresholds, "harness");
+        }
+        if let Some(r) = route {
+            limits.apply(&r.thresholds, "route");
+        }
+        limits
     }
 
     /// Whether `[evaluation] models` lists `harness/model`, the harness by id or alias.
@@ -778,6 +982,77 @@ mod tests {
             Preview::Trial
         );
         assert!(parse(&with("later")).is_err());
+    }
+
+    #[test]
+    fn thresholds_come_from_the_most_specific_layer() {
+        let c = parse(
+            "version = 1\n[thresholds]\nsession_out = 95\nweekly_conserve = 80\n[harnesses.a.thresholds]\nout = 70\n[harnesses.b]\n[routes.r]\ncandidates = [{ target = \"self\" }]\n[routes.r.thresholds]\nweekly_out = 60\nconserve_sizes = []\n",
+        )
+        .unwrap();
+        let global = c.limits(Some("b"), None);
+        assert_eq!(
+            (
+                global.session_out,
+                global.weekly_out,
+                global.weekly_conserve
+            ),
+            (95.0, 90.0, 80.0)
+        );
+        let plan = c.limits(Some("a"), None);
+        assert_eq!(
+            (plan.session_out, plan.weekly_out),
+            (70.0, 70.0),
+            "a plan's out beats a global session_out"
+        );
+        let route = c.limits(Some("a"), c.routes.get("r"));
+        assert_eq!((route.session_out, route.weekly_out), (70.0, 60.0));
+        assert!(!route.takes(State::Conserve, Size::Small));
+        let from: Vec<(&str, &str)> = route.rows().iter().map(|r| (r.key, r.from)).collect();
+        assert!(from.contains(&("weekly_out", "route")));
+        assert!(from.contains(&("session_out", "harness")));
+        assert!(from.contains(&("weekly_conserve", "thresholds")));
+        assert!(from.contains(&("fresh_seconds", "default")));
+    }
+
+    #[test]
+    fn rejects_thresholds_and_sizes_that_cannot_apply() {
+        assert!(
+            parse("version = 1\n[thresholds]\nout = 101\n").is_ok(),
+            "older files keep loading"
+        );
+        assert!(parse("version = 1\n[thresholds]\nweekly_out = 101\n").is_err());
+        assert!(
+            parse("version = 1\n[harnesses.a.thresholds]\nout = 101\n")
+                .unwrap_err()
+                .contains("harnesses.a.thresholds.out 101")
+        );
+        assert!(
+            parse("version = 1\n[harnesses.a.thresholds]\nfresh_seconds = -1\n")
+                .unwrap_err()
+                .contains("harnesses.a.thresholds.fresh_seconds")
+        );
+        assert!(parse("version = 1\n[thresholds]\nunknown_sizes = [\"huge\"]\n").is_err());
+        let route = |c: &str| format!("version = 1\n[harnesses.a]\n[routes.r]\n{c}");
+        assert!(
+            parse(&route("candidates = [{ target = \"a/m\", sizes = [] }]\n"))
+                .unwrap_err()
+                .contains("empty sizes")
+        );
+        assert!(
+            parse(&route(
+                "candidates = [{ target = \"self\", sizes = [\"small\"] }]\n"
+            ))
+            .unwrap_err()
+            .contains("self takes no sizes")
+        );
+        assert!(
+            parse(&route(
+                "council = true\ncandidates = [{ target = \"a/m\", sizes = [\"small\"] }]\n"
+            ))
+            .unwrap_err()
+            .contains("council member")
+        );
     }
 
     #[test]

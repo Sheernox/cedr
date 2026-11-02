@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::config::Config;
+use crate::config::{Config, Limits};
 use crate::readings::{Readings, WindowKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -96,14 +96,27 @@ pub fn versions(harness: &str, name: &str, readings: &Readings) -> Option<Vec<St
     Some(matches.into_iter().map(|(_, _, m)| m.clone()).collect())
 }
 
-/// The state of every window that applies to `model`, a short summary for the route tag, and the
-/// pool's use. Plans are there to be used, so the pick follows current use, not pace.
+/// A plan's pool under its own thresholds, for answers about the plan rather than one route.
 pub fn pool(
     harness: &str,
     model: &str,
     readings: &Readings,
     config: &Config,
     now: DateTime<Utc>,
+) -> Pool {
+    let limits = config.limits(Some(harness), None);
+    pool_with(harness, model, readings, config, now, &limits)
+}
+
+/// The state of every window that applies to `model` under `t`, a short summary for the route tag,
+/// and the pool's use. Plans are there to be used, so the pick follows current use, not pace.
+pub fn pool_with(
+    harness: &str,
+    model: &str,
+    readings: &Readings,
+    config: &Config,
+    now: DateTime<Utc>,
+    t: &Limits,
 ) -> Pool {
     if let Some(summary) = readings.absent.get(harness) {
         return Pool {
@@ -124,7 +137,6 @@ pub fn pool(
             usage: None,
         };
     }
-    let t = &config.thresholds;
     let unknown = |summary: String| Pool {
         state: State::Unknown,
         summary,
@@ -173,7 +185,7 @@ pub fn pool(
         let here = match (w.percent, w.resets_at) {
             (None, _) => State::Unknown,
             (Some(_), Some(reset)) if reset <= now => State::Unknown,
-            (Some(p), _) if p >= t.out => State::Out,
+            (Some(p), _) if p >= if session { t.session_out } else { t.weekly_out } => State::Out,
             (Some(p), _)
                 if p >= if session {
                     t.session_conserve

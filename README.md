@@ -29,7 +29,7 @@
 </tr>
 <tr valign="top">
 <td align="center"><a href="https://cedr.dev/docs/route"><img src="assets/products/route.svg" width="40" height="40" alt=""></a><br><a href="https://cedr.dev/docs/route"><b>Route</b></a></td>
-<td>Picks the agent, model and effort for each kind of work from your <code>routes.toml</code>. Equally suited work goes to the plan with the most room left, and plans near their limits are skipped.</td>
+<td>Picks the agent, model and effort for each kind of work from your <code>routes.toml</code>. Equally suited work goes to the plan with the most room left, and plans near their limits are skipped. You set the limits per plan or route, and the models per route and work size.</td>
 <td><code>cedr route pick review.code</code></td>
 </tr>
 <tr valign="top">

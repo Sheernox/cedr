@@ -216,6 +216,8 @@ fn mcp_serves_picks_and_returns_errors_as_tool_errors() {
         "route_verdict",
         "route_pools",
         "route_list",
+        "route_show",
+        "route_models",
     ] {
         assert!(tools.iter().any(|x| x == t), "{tools:?}");
     }
@@ -441,4 +443,207 @@ fn import_emits_valid_config_and_lists_converted_tiers() {
     let bad = s.cedr(&["route", "import", &output.display().to_string()]);
     assert_eq!(bad.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&bad.stderr).contains("unsupported"));
+}
+
+/// A scratch copy of the fixture routes, since these commands write to the file.
+fn editable(s: &Scratch) -> String {
+    let path = s.dir.path().join("routes.toml");
+    std::fs::copy(config(), &path).unwrap();
+    path.display().to_string()
+}
+
+#[test]
+fn a_threshold_edit_changes_the_next_pick_and_is_reversible() {
+    let s = Scratch::new(40.0, 20.0);
+    let cfg = editable(&s);
+    let readings = s.readings();
+    let pick = || {
+        s.cedr(&[
+            "route",
+            "pick",
+            "review.code",
+            "--config",
+            &cfg,
+            "--readings",
+            &readings,
+            "--no-record",
+            "--format",
+            "json",
+        ])
+    };
+    let target = |o: &std::process::Output| {
+        let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+        v["delegates"][0]["target"].as_str().map(str::to_string)
+    };
+    assert_eq!(target(&pick()).as_deref(), Some("claude/claude-sonnet-5-5"));
+
+    let set = s.cedr(&[
+        "route",
+        "thresholds",
+        "--harness",
+        "claude",
+        "--set",
+        "weekly_conserve=10",
+        "--config",
+        &cfg,
+    ]);
+    assert_eq!(
+        set.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+    assert!(
+        stdout(&set).contains("thresholds changed (rules "),
+        "{}",
+        stdout(&set)
+    );
+    assert_eq!(target(&pick()).as_deref(), Some("codex/gpt-6.1-sol"));
+
+    let shown = s.cedr(&[
+        "route",
+        "thresholds",
+        "--harness",
+        "claude",
+        "--config",
+        &cfg,
+        "--format",
+        "json",
+    ]);
+    let rows: Value = serde_json::from_slice(&shown.stdout).unwrap();
+    let row = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["key"] == "weekly_conserve")
+        .unwrap();
+    assert_eq!(
+        (row["value"].as_f64(), row["from"].as_str()),
+        (Some(10.0), Some("harness"))
+    );
+
+    s.cedr(&[
+        "route",
+        "thresholds",
+        "--harness",
+        "claude",
+        "--unset",
+        "weekly_conserve",
+        "--config",
+        &cfg,
+    ]);
+    assert_eq!(target(&pick()).as_deref(), Some("claude/claude-sonnet-5-5"));
+
+    let refused = s.cedr(&["route", "thresholds", "--set", "out=101", "--config", &cfg]);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("between 0 and 100"));
+}
+
+#[test]
+fn show_reports_each_size_and_candidate_edits_and_disabling_reach_it() {
+    let s = Scratch::new(40.0, 20.0);
+    let cfg = editable(&s);
+    let readings = s.readings();
+    let show = || {
+        let o = s.cedr(&[
+            "route",
+            "show",
+            "impl",
+            "--config",
+            &cfg,
+            "--readings",
+            &readings,
+            "--format",
+            "json",
+        ]);
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        serde_json::from_slice::<Value>(&o.stdout).unwrap()
+    };
+    let v = show();
+    assert_eq!(v["picks"].as_array().unwrap().len(), 3);
+    assert_eq!(v["picks"][2]["targets"][0], "codex/gpt-6.1-sol");
+    assert_eq!(v["candidates"][0]["model"], "gpt-6.1-sol");
+    assert_eq!(
+        v["candidates"][0]["takes"],
+        json!(["small", "medium", "large"])
+    );
+    assert_eq!(v["candidates"][1]["target"], "self");
+
+    let edit = s.cedr(&[
+        "route",
+        "add",
+        "impl",
+        "claude/sonnet",
+        "--sizes",
+        "large",
+        "--at",
+        "1",
+        "--config",
+        &cfg,
+    ]);
+    assert_eq!(
+        edit.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&edit.stderr)
+    );
+    let v = show();
+    assert_eq!(
+        v["picks"][0]["targets"][0], "codex/gpt-6.1-sol",
+        "large only: small work skips it"
+    );
+    assert_eq!(v["picks"][0]["reason"], "primary");
+    assert_eq!(v["picks"][2]["targets"][0], "claude/claude-sonnet-5-5");
+
+    s.cedr(&["route", "remove", "impl", "claude/sonnet", "--config", &cfg]);
+    assert_eq!(show()["candidates"].as_array().unwrap().len(), 2);
+
+    assert_eq!(
+        s.cedr(&["route", "disable", "impl", "--config", &cfg])
+            .status
+            .code(),
+        Some(0)
+    );
+    let v = show();
+    assert_eq!(
+        (v["enabled"].as_bool(), v["picks"][1]["reason"].as_str()),
+        (Some(false), Some("disabled"))
+    );
+    s.cedr(&["route", "enable", "impl", "--config", &cfg]);
+    assert_eq!(show()["enabled"], true);
+    assert_eq!(
+        s.cedr(&["route", "disable", "nope", "--config", &cfg])
+            .status
+            .code(),
+        Some(2)
+    );
+}
+
+#[test]
+fn models_lists_what_each_harness_offers() {
+    let s = Scratch::new(40.0, 20.0);
+    let cfg = config().display().to_string();
+    let readings = s.readings();
+    let o = s.cedr(&[
+        "route",
+        "models",
+        "--config",
+        &cfg,
+        "--readings",
+        &readings,
+        "--format",
+        "json",
+    ]);
+    let rows: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(
+        rows.as_array()
+            .unwrap()
+            .contains(&json!({"harness": "codex", "models": ["gpt-6.1-sol", "gpt-6-sol"]})),
+        "{rows}"
+    );
 }

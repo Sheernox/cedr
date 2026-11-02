@@ -4,6 +4,7 @@
 
 pub mod config;
 pub mod council;
+pub mod edit;
 pub mod error;
 pub mod history;
 pub mod import;

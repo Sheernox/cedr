@@ -1,15 +1,16 @@
 //! The pick, manual tags, pool rows and route listings (docs/route.md, Pick and Route tag).
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::config::{Candidate, Config, Preview, Route};
+use crate::config::{Candidate, Config, LimitRow, Preview, Route};
 use crate::error::{Error, Result};
-use crate::pool::{Pool, State, pool, resolve, round_pct, versions};
+use crate::pool::{Pool, State, pool, pool_with, resolve, round_pct, versions};
 use crate::readings::Readings;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Size {
     Small,
     Medium,
@@ -17,6 +18,8 @@ pub enum Size {
 }
 
 impl Size {
+    pub const ALL: [Size; 3] = [Size::Small, Size::Medium, Size::Large];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Size::Small => "small",
@@ -276,12 +279,15 @@ impl Context<'_> {
             result.reason = Some("disabled".into());
             return Ok(result);
         }
+        let mut size_limited = false;
         for group in tiers(&route.candidates) {
             if group[0].target == "self" {
                 break;
             }
+            let group: Vec<&Candidate> = group.iter().filter(|c| c.takes_size(size)).collect();
+            size_limited |= group.is_empty();
             let mut options: Vec<Choice> = Vec::new();
-            for c in group {
+            for c in &group {
                 let (harness, name) = c.target.split_once('/').expect("validated target");
                 if avoid.iter().any(|a| a == harness) {
                     result.skipped.push(format!("{harness}=avoided"));
@@ -291,14 +297,16 @@ impl Context<'_> {
                     result.skipped.push(format!("{harness}=unresolved"));
                     continue;
                 };
-                let p = pool(harness, &model, self.readings, self.config, self.now);
-                let eligible = match p.state {
-                    State::Ready => true,
-                    State::Conserve => size == Size::Small,
-                    State::Unknown => size != Size::Large,
-                    State::Out | State::Absent => false,
-                };
-                if eligible {
+                let limits = self.config.limits(Some(harness), Some(route));
+                let p = pool_with(
+                    harness,
+                    &model,
+                    self.readings,
+                    self.config,
+                    self.now,
+                    &limits,
+                );
+                if limits.takes(p.state, size) {
                     options.push(Choice {
                         harness,
                         model,
@@ -353,10 +361,12 @@ impl Context<'_> {
         if result.delegates.is_empty() {
             // Kept work records no pick, so a run would name nothing.
             result.run = None;
-            result.reason = Some(if result.skipped.is_empty() {
-                "orchestrator-only route".to_string()
-            } else {
+            result.reason = Some(if !result.skipped.is_empty() {
                 format!("no eligible delegate: {}", result.skipped.join(", "))
+            } else if size_limited {
+                format!("no candidate for {} work", size.as_str())
+            } else {
+                "orchestrator-only route".to_string()
             });
         } else if let Some(judge) = &route.judge {
             result.cascade = Some(Cascade {
@@ -420,6 +430,105 @@ impl Context<'_> {
         })
     }
 
+    /// What a route would do at each size right now and why, without recording anything.
+    pub fn show(&self, route_id: &str) -> Result<RouteView> {
+        let picks = Size::ALL
+            .iter()
+            .map(|&size| {
+                let p = self.pick(route_id, size, &[])?;
+                Ok(SizePick {
+                    size,
+                    targets: p.delegates.iter().map(|d| d.target.clone()).collect(),
+                    reason: p
+                        .delegates
+                        .first()
+                        .map(|d| d.reason.clone())
+                        .or(p.reason)
+                        .unwrap_or_default(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let route = &self.config.routes[route_id];
+        let candidates = route
+            .candidates
+            .iter()
+            .map(|c| self.candidate_view(route, c))
+            .collect();
+        Ok(RouteView {
+            id: route_id.to_string(),
+            work: route.work.clone(),
+            enabled: route.enabled,
+            council: route.council,
+            role: route.role.clone(),
+            rules: self.rules.to_string(),
+            picks,
+            candidates,
+        })
+    }
+
+    fn candidate_view(&self, route: &Route, c: &Candidate) -> CandidateView {
+        let mut view = CandidateView {
+            target: c.target.clone(),
+            effort: c.effort.clone(),
+            tier: c.tier,
+            sizes: c.sizes.clone(),
+            model: None,
+            state: None,
+            summary: None,
+            takes: Vec::new(),
+            thresholds: Vec::new(),
+        };
+        let Some((harness, name)) = c.target.split_once('/') else {
+            return view;
+        };
+        let limits = self.config.limits(Some(harness), Some(route));
+        view.thresholds = limits.rows();
+        let Some((model, _)) = self.resolve_for(harness, name, Size::Medium) else {
+            return view;
+        };
+        let p = pool_with(
+            harness,
+            &model,
+            self.readings,
+            self.config,
+            self.now,
+            &limits,
+        );
+        // A preview version can make one size resolve to another model, with other windows.
+        view.takes = Size::ALL
+            .into_iter()
+            .filter(|&s| {
+                c.takes_size(s)
+                    && self.resolve_for(harness, name, s).is_some_and(|(m, _)| {
+                        let here =
+                            pool_with(harness, &m, self.readings, self.config, self.now, &limits);
+                        limits.takes(here.state, s)
+                    })
+            })
+            .collect();
+        view.model = Some(model);
+        view.state = Some(p.state);
+        view.summary = Some(p.summary);
+        view
+    }
+
+    /// The model ids each harness offers, from the readings and the config's own lists.
+    pub fn models(&self) -> Vec<ModelRow> {
+        self.config
+            .harnesses
+            .keys()
+            .map(|harness| ModelRow {
+                harness: harness.clone(),
+                models: self
+                    .readings
+                    .models
+                    .get(harness)
+                    .cloned()
+                    .unwrap_or_default(),
+            })
+            .collect()
+    }
+
     /// Each harness's shared windows, then one row per model window a route uses, whose state
     /// includes that window as a pick for its models would.
     pub fn pools(&self) -> Vec<PoolRow> {
@@ -469,6 +578,47 @@ pub struct PoolRow {
     pub summary: String,
     #[serde(rename = "use")]
     pub usage: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelRow {
+    pub harness: String,
+    pub models: Vec<String>,
+}
+
+/// `cedr route show`: docs/route.md, Commands.
+#[derive(Debug, Clone, Serialize)]
+pub struct RouteView {
+    pub id: String,
+    pub work: String,
+    pub enabled: bool,
+    pub council: bool,
+    pub role: String,
+    pub rules: String,
+    pub picks: Vec<SizePick>,
+    pub candidates: Vec<CandidateView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SizePick {
+    pub size: Size,
+    /// Empty when the work is kept.
+    pub targets: Vec<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CandidateView {
+    pub target: String,
+    pub effort: String,
+    pub tier: Option<i64>,
+    pub sizes: Option<Vec<Size>>,
+    pub model: Option<String>,
+    pub state: Option<State>,
+    pub summary: Option<String>,
+    /// The sizes it would accept now.
+    pub takes: Vec<Size>,
+    pub thresholds: Vec<LimitRow>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -930,5 +1080,119 @@ candidates = [{ target = "codex/sol" }]
             .collect();
         assert_eq!(groups, [2, 1, 1]);
         assert_eq!(tiers(&c.routes["council"].candidates).len(), 3);
+    }
+
+    #[test]
+    fn route_thresholds_and_sizes_shape_the_pick() {
+        let text = r#"version = 1
+[harnesses.codex]
+expect = ["primary"]
+[thresholds]
+conserve_sizes = []
+unknown_sizes = []
+[routes.tight]
+candidates = [{ target = "codex/sol" }]
+[routes.tight.thresholds]
+weekly_conserve = 30
+[routes.open]
+candidates = [{ target = "codex/sol" }]
+[routes.open.thresholds]
+weekly_conserve = 30
+conserve_sizes = ["large"]
+[routes.gated]
+candidates = [
+  { target = "codex/luna", sizes = ["small"] },
+  { target = "codex/sol", sizes = ["large"] },
+  { target = "self" },
+]
+"#;
+        let config = Config::parse(text, Path::new("t.toml")).unwrap();
+        let reading = |percent: Value| {
+            let mut r = Readings::default();
+            r.merge(&config, &json!({
+                "harnesses": [{"harness": "codex", "fetchedAt": "2026-10-29T01:59:00Z", "windows": [
+                    {"id": "primary", "kind": "weekly", "percent": percent, "resetsAt": "2026-11-02T00:00:00Z"}]}],
+                "models": {"codex": ["gpt-6-sol", "gpt-6-luna"]}
+            }));
+            r
+        };
+        let used = reading(json!(40));
+        let ctx = |r| Context {
+            config: &config,
+            rules: "x",
+            readings: r,
+            now: now(),
+            warnings: &[],
+        };
+        let c = ctx(&used);
+        let reason = |route, size| c.pick(route, size, &[]).unwrap().reason;
+        assert_eq!(
+            reason("tight", Size::Small).as_deref(),
+            Some("no eligible delegate: codex=conserve")
+        );
+        assert_eq!(c.pick("open", Size::Large, &[]).unwrap().delegates.len(), 1);
+        assert!(reason("open", Size::Small).is_some());
+        // Unknown takes nothing here, so a plan with no reading is passed over at every size.
+        let none = Readings {
+            models: used.models.clone(),
+            ..Readings::default()
+        };
+        assert!(
+            ctx(&none)
+                .pick("tight", Size::Small, &[])
+                .unwrap()
+                .delegates
+                .is_empty()
+        );
+
+        let gated = |size| c.pick("gated", size, &[]).unwrap();
+        assert_eq!(gated(Size::Small).delegates[0].target, "codex/gpt-6-luna");
+        assert_eq!(gated(Size::Small).delegates[0].reason, "primary");
+        assert_eq!(gated(Size::Large).delegates[0].target, "codex/gpt-6-sol");
+        assert_eq!(
+            gated(Size::Large).delegates[0].reason,
+            "primary",
+            "a size limit is not a fallback"
+        );
+        assert_eq!(
+            gated(Size::Medium).reason.as_deref(),
+            Some("no candidate for medium work")
+        );
+    }
+
+    #[test]
+    fn show_judges_each_size_on_the_model_that_size_resolves_to() {
+        let text = r#"version = 1
+[evaluation]
+models = ["a/gpt-6-sol"]
+[harnesses.a]
+[model_windows.held]
+harness = "a"
+model = "gpt-6-sol"
+[routes.r]
+candidates = [{ target = "a/sol" }]
+"#;
+        let config = Config::parse(text, Path::new("t.toml")).unwrap();
+        let mut r = Readings::default();
+        r.merge(&config, &json!({
+            "harnesses": [{"harness": "a", "fetchedAt": "2026-10-29T01:59:00Z", "windows": [
+                {"id": "held", "kind": "weekly", "percent": 95, "resetsAt": "2026-11-02T00:00:00Z"}]}],
+            "models": {"a": ["gpt-6-sol", "gpt-6.1-sol"]}
+        }));
+        let ctx = Context {
+            config: &config,
+            rules: "x",
+            readings: &r,
+            now: now(),
+            warnings: &[],
+        };
+        let v = ctx.show("r").unwrap();
+        assert_eq!(v.picks[0].targets, ["a/gpt-6.1-sol"]);
+        assert_eq!(v.candidates[0].takes, [Size::Small]);
+        assert_eq!(
+            v.candidates[0].state,
+            Some(State::Out),
+            "state is what a medium pick sees"
+        );
     }
 }
