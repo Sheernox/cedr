@@ -176,6 +176,7 @@ dependencies = [
 name = "cedr"
 version = "0.8.0"
 dependencies = [
+ "cedr-bench",
  "cedr-core",
  "cedr-monitor",
  "cedr-route",
@@ -197,6 +198,21 @@ dependencies = [
  "tokio",
  "toml",
  "toml_edit",
+]
+
+[[package]]
+name = "cedr-bench"
+version = "0.8.0"
+dependencies = [
+ "cedr-monitor",
+ "chrono",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]

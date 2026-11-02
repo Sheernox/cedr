@@ -28,6 +28,7 @@ cedr sends anonymous usage events to cedr.dev so the team can see how many peopl
 | `install_id` | generated | Random UUID v4, created on the first recorded event; never derived from the machine, user or account |
 | `notice` | absent | `1` once the notice above was shown |
 | `auto_update` | `true` | See [update.md](update.md) |
+| `bench_budget_usd` | absent | Bench's cap; see [bench.md](bench.md) |
 
 ## Events
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/cedr-sync", "crates/cedr-monitor", "crates/cedr-core", "crates/cedr-route", "crates/cedr"]
+members = ["crates/cedr-sync", "crates/cedr-monitor", "crates/cedr-core", "crates/cedr-route", "crates/cedr-bench", "crates/cedr"]
 
 [workspace.package]
 version = "0.8.0"
@@ -13,3 +13,4 @@ cedr-sync = { path = "crates/cedr-sync" }
 cedr-core = { path = "crates/cedr-core" }
 cedr-route = { path = "crates/cedr-route" }
 cedr-monitor = { path = "crates/cedr-monitor" }
+cedr-bench = { path = "crates/cedr-bench" }

@@ -1,6 +1,6 @@
 # cedr
 
-The open-source `cedr` CLI from [cedr.dev](https://cedr.dev): every coding agent, one control panel. Route picks the agent, model and effort for each kind of work. Council merges reviews from several vendors into one gate. Guard lints, pins and verifies the skills and MCP servers agents load. Sync compiles one setup into every agent's files. Monitor reports usage, spend and plan limits.
+The open-source `cedr` CLI from [cedr.dev](https://cedr.dev): every coding agent, one control panel. Route picks the agent, model and effort for each kind of work. Council merges reviews from several vendors into one gate. Guard lints, pins and verifies the skills and MCP servers agents load. Sync compiles one setup into every agent's files. Monitor reports usage, spend and plan limits. Bench measures whether a change to an agent's setup or model helps.
 
 This project is coded and maintained by AI agents, directed by its maintainers. Write for the next agent: it knows only this file, the code and the contracts. Human contributors: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -100,6 +100,7 @@ Never put customers, pricing, business strategy, hosted-service plans, private i
 - `crates/cedr-core`: Guard (discovery, lint, lock, surfaces, diff, outdated).
 - `crates/cedr-sync`: Sync (sources, per-agent emitters, merge, check, import).
 - `crates/cedr-monitor`: Monitor (sources, store, pricing, reports, limits, push, schedule).
+- `crates/cedr-bench`: Bench (suite, harness adapters, trial runner, report).
 - `docs/`: contracts, plus Guard's status and known gaps in `docs/guard.md`. `fixtures/`: test repos, tarballs and configs. `action.yml`: the GitHub Action.
 
 ## Taste

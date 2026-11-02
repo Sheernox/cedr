@@ -1,5 +1,5 @@
 name: cedr
-description: Check Guard inventory and Sync agent configuration, report drift, and repair generated files with a pull request
+description: Check Guard inventory and Sync agent configuration, report drift, repair generated files with a pull request, and run Bench suites
 author: Sheernox
 branding:
   icon: shield
@@ -31,6 +31,15 @@ inputs:
   sync-fix:
     description: "Repair Sync drift with a PR on push, schedule or workflow_dispatch; needs contents and pull-requests write"
     default: "false"
+  bench:
+    description: "A Bench suite to run, for example .cedr/bench/agents.toml; empty skips Bench. A suite is code: never point this at one from an untrusted pull request"
+    default: ""
+  bench-budget-usd:
+    description: Cap for the Bench run in USD at API prices; default the app's cap when push-org and CEDR_API_KEY are set, else the CLI default
+    default: ""
+  bench-fail-on:
+    description: "Fail when the candidate's pass rate is lower (lower), also with no overlap in the intervals (separated), or never"
+    default: never
   push-org:
     description: When set with the CEDR_API_KEY env, send the results to this cedr.dev organization (also when the checks fail)
     default: ""
@@ -123,6 +132,28 @@ runs:
       env:
         INPUT_PATH: ${{ inputs.path }}
       run: cedr outdated "$INPUT_PATH" --format github
+
+    - name: cedr bench
+      id: bench
+      if: ${{ always() && inputs.bench != '' }}
+      shell: bash
+      continue-on-error: true
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_SUITE: ${{ inputs.bench }}
+        INPUT_BUDGET: ${{ inputs.bench-budget-usd }}
+        INPUT_FAIL_ON: ${{ inputs.bench-fail-on }}
+        INPUT_ORG: ${{ inputs.push-org }}
+      run: |
+        set -uo pipefail
+        cd "$INPUT_PATH" || exit 2
+        args=(bench run "$INPUT_SUITE" --fail-on "$INPUT_FAIL_ON")
+        if [ -n "$INPUT_BUDGET" ]; then
+          args+=(--budget-usd "$INPUT_BUDGET")
+        elif [ -n "$INPUT_ORG" ] && [ -n "${CEDR_API_KEY:-}" ]; then
+          cedr bench budget --pull --org "$INPUT_ORG" || exit 2
+        fi
+        cedr "${args[@]}" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
     - name: cedr sync fix
       id: sync-fix
@@ -217,6 +248,7 @@ runs:
         VERIFY: ${{ steps.verify.outcome }}
         SYNC: ${{ steps.sync.outcome }}
         SYNC_FIX: ${{ steps.sync-fix.outcome }}
+        BENCH: ${{ steps.bench.outcome }}
       run: |
         echo "cedr guard lint: $LINT, cedr guard verify: $VERIFY"
-        [ "$LINT" != failure ] && [ "$VERIFY" != failure ] && [ "$SYNC" != failure ] && [ "$SYNC_FIX" != failure ]
+        [ "$LINT" != failure ] && [ "$VERIFY" != failure ] && [ "$SYNC" != failure ] && [ "$SYNC_FIX" != failure ] && [ "$BENCH" != failure ]
