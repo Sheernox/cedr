@@ -2,6 +2,41 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.8.0 (2026-11-01)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.0.png" alt="cedr v0.8.0: remote watch" width="770">
+
+**v0.8.0** · 13 changes from 1 contributor
+
+### Highlights
+Guard can now watch remote MCP servers. A remote server has no version, so a pin could never notice its tools changing; `cedr guard remote` compares what a server lists now with what you locked. Route and Council can also read Grok Build's plan usage and balance work onto it. **Upgrade step:** none; cedr updates itself. A lock made with `--remote` needs this version or later to diff its surfaces.
+
+### Features
+- **Guard** adds `cedr guard lock --remote` and `cedr guard remote`, which report added and removed tools, schema and description changes, new hosts and expanded capabilities. They send no credentials and contact only public HTTPS addresses. A server that is down or needs a login reports as that, never as unchanged. `[remote] interval_minutes` limits how often a scheduled run really reads a server. Contract: [docs/design.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/design.md).
+- **Route** has a built-in `grok` reader for Grok Build's weekly allowance, which Council's picks use too. `cedr monitor limits` shows the reading, `cedr doctor` checks Grok Build's MCP registration, and `cedr route import` sets its effort option. The plan's pool is shared with the vendor's other products, so the percent can rise with no Grok Build turn. Contract: [docs/route.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/route.md).
+- **Monitor** adds `responseSet` to each row it pushes, a digest of the responses behind the row. It lets the same usage from a copied log be told apart from distinct usage, and the responses' identities never leave the machine. Contract: [docs/monitor.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/monitor.md).
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* docs(agents): record an approval only when a maintainer gave it for that exact head
+* docs: drop the 0.5.0 caveat from the self-update note
+* docs: stop naming specific versions in examples so they cannot go stale
+* docs(guard): drop the symlink gap that guard already handles ([#16](https://github.com/Sheernox/cedr/pull/16))
+* feat(route): read grok build plan usage so picks can balance it ([#16](https://github.com/Sheernox/cedr/pull/16))
+* feat(monitor): identify the responses behind each pushed row ([#17](https://github.com/Sheernox/cedr/pull/17))
+* feat(guard): detect tool changes on remote mcp servers ([#18](https://github.com/Sheernox/cedr/pull/18))
+* fix(guard): report servers that drop tools and keep overlapping reads apart ([#19](https://github.com/Sheernox/cedr/pull/19))
+* fix(guard): fail when a remote read cannot be recorded ([#20](https://github.com/Sheernox/cedr/pull/20))
+* test(guard): skip the unwritable directory case when running as root ([#21](https://github.com/Sheernox/cedr/pull/21))
+* build(banner): render the v0.8.0 release hero
+* docs: changelog for 0.8.0
+* chore(release): cedr 0.8.0
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.7.0...v0.8.0
+</details>
+
 ## v0.7.0 (2026-11-01)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.7.0.png" alt="cedr v0.7.0: grok build" width="770">
