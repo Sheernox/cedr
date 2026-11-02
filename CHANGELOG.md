@@ -6,7 +6,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.0.png" alt="cedr v0.8.0: bench" width="770">
 
-**v0.8.0** · 25 changes from 1 contributor
+**v0.8.0** · 26 changes from 1 contributor
 
 ### Highlights
 **Bench is here.** It tells you whether a change to your rules, a skill or a model helps before you merge it: real tasks against a baseline and a candidate, your tests deciding each trial, and a budget on every run that defaults to $2.00. Start with `cedr bench init`.
@@ -54,6 +54,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 * docs: finish the 0.8.0 changelog after the release review
 * fix(route): keep comments through awkward candidate lists and windows line endings
 * fix(bench): report an interrupt as the stop reason and save the run if output is gone
+* fix(route): name the routes file as given when reporting an edit
 
 **Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.7.0...v0.8.0
 </details>

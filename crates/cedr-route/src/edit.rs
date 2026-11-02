@@ -36,7 +36,8 @@ pub struct Applied {
 /// Replaces the file at `path` with what `edit` makes of its text, when that validates. The file
 /// keeps its mode, since it may hold a readings URL with a token; a symlink stays a symlink.
 pub fn apply(path: &Path, edit: impl FnOnce(&str) -> Result<String>) -> Result<Applied> {
-    let path = std::fs::canonicalize(path).map_err(io_err(path))?;
+    let given = path;
+    let path = std::fs::canonicalize(given).map_err(io_err(given))?;
     if let Some(sync) = load_local(&path)?
         .sync
         .filter(|s| s.routes == RoutesFrom::Org)
@@ -60,7 +61,8 @@ pub fn apply(path: &Path, edit: impl FnOnce(&str) -> Result<String>) -> Result<A
     Ok(Applied {
         old_rules: rules_hash(old.as_bytes()),
         new_rules: rules_hash(new.as_bytes()),
-        path,
+        // The path as the user knows it: Windows' canonical form starts with \\?\.
+        path: given.to_path_buf(),
     })
 }
 
@@ -859,7 +861,8 @@ out = 90 # reserve for interactive work
         std::fs::write(&real, FILE).unwrap();
         std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
         symlink(&real, &link).unwrap();
-        apply(&link, |t| set_enabled(t, "r", false)).unwrap();
+        let applied = apply(&link, |t| set_enabled(t, "r", false)).unwrap();
+        assert_eq!(applied.path, link);
         assert!(
             std::fs::symlink_metadata(&link)
                 .unwrap()
