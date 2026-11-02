@@ -266,7 +266,13 @@ pub fn run(
                     dearest = dearest.max(cost);
                 }
                 progress(&format!("{label}: {}", trial.status.name()));
+                // Spend the budget cannot see must not repeat unless the user agreed to it.
+                let blind = trial.spent_unknown() && !options.allow_unpriced;
                 trials.push(trial);
+                if blind {
+                    stop = Some(Stop::UnknownCost);
+                    break 'run;
+                }
             }
         }
     }
@@ -466,7 +472,7 @@ fn assemble(
         finished_at,
         budget_usd,
         spent_usd: (spent * 10000.0).round() / 10000.0,
-        unpriced_trials: trials.iter().filter(|t| t.cost_usd.is_none()).count() as u32,
+        unpriced_trials: trials.iter().filter(|t| t.spent_unknown()).count() as u32,
         complete,
         stop,
         variants,

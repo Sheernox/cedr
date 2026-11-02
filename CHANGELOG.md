@@ -6,7 +6,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.0.png" alt="cedr v0.8.0: bench" width="770">
 
-**v0.8.0** · 15 changes from 1 contributor
+**v0.8.0** · 18 changes from 1 contributor
 
 ### Highlights
 **Bench is here.** It tells you whether a change to your rules, a skill or a model helps before you merge it: real tasks against a baseline and a candidate, your tests deciding each trial, and a budget on every run that defaults to $2.00. Start with `cedr bench init`.
@@ -39,6 +39,9 @@ Guard can now watch remote MCP servers. A remote server has no version, so a pin
 * chore(release): cedr 0.8.0
 * docs(agents): let agents choose changelog section order
 * docs: define the version scheme and what it promises
+* feat(bench): measure whether an agent change helps with task suites
+* docs: lead the 0.8.0 changelog and hero with bench
+* fix(bench): stop a run whose spend the budget cannot see
 
 **Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.7.0...v0.8.0
 </details>

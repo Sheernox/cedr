@@ -51,7 +51,7 @@ The two variants must differ in at least one of `harness`, `model`, `effort`, `p
 
 **Refs.** A configuration or skill change is a difference between two refs (`main` and a pull request's head, say); a model change is a difference in fields. Only committed work is measured. The suite, prompts and `test_files` always come from the working tree, so both variants face the same task whichever ref they start from.
 
-**`test_files`.** An agent can edit the tests it is judged by. The contents of the `test_files` directory are copied onto the root of the trial's clone after the agent stops and before `test` runs (`<test_files>/tests/a.js` lands at `tests/a.js`), so tests kept there decide the trial as written. This narrows the problem without closing it: the agent can still change what those tests call.
+**`test_files`.** An agent can edit the tests it is judged by. The contents of the `test_files` directory are copied onto the root of the trial's clone after the agent stops and before `test` runs (`<test_files>/tests/a.js` lands at `tests/a.js`), replacing whatever is there without following links, so tests kept there decide the trial as written. This narrows the problem without closing it: the agent can still change what those tests call.
 
 ### Harnesses
 
@@ -83,7 +83,9 @@ Every run has a cap in USD at API prices, including on a plan where nothing is b
 
 A suite can never set its own budget. The cap must be a finite number above 0.
 
-Before each trial, a run stops when what it has spent plus the most expensive trial so far would pass the cap. `claude` also receives what is left as its own limit. Other harnesses are only checked between trials, so a trial can overrun the cap, by at most what it spends before its timeout. A trial killed at its timeout or failing before it reports has an unknown cost: it is left out of `spent_usd` and counted in `unpriced_trials`. A run stopped this way is incomplete, with `stop` set to `"budget"`.
+Before each trial, a run stops when what it has spent plus the most expensive trial so far would pass the cap. `claude` also receives what is left as its own limit. Other harnesses are only checked between trials, so a trial can overrun the cap, by at most what it spends before its timeout. A run stopped this way is incomplete, with `stop` set to `"budget"`.
+
+A trial killed at its timeout, or an agent that reports no cost, has an unknown cost: it is left out of `spent_usd` and counted in `unpriced_trials`. The budget cannot see that spend, so the run stops there, incomplete, with `stop` set to `"unknown_cost"`, unless `--allow-unpriced` was passed.
 
 Trials run in order: for each task, for each trial number, baseline then candidate. A run stopped early has therefore spent evenly on both variants.
 
@@ -119,7 +121,7 @@ Validates the suite, resolves the refs and prints what a run would do, starting 
 Runs the suite. Progress goes to stderr, the report to stdout. Exit codes:
 
 - `0`: complete, and the `--fail-on` condition (default `never`) did not hold.
-- `1`: complete, and it held. `lower`: the candidate passed a smaller share of its scored trials. `separated`: lower, and the two intervals do not overlap.
+- `1`: complete, and it held. `lower`: the candidate passed a smaller share of its scored trials, compared by count and not the rounded rates. `separated`: lower, and the two intervals do not overlap.
 - `3`: incomplete, whatever the counts say. A partial result never passes.
 - `2`: usage, config or I/O failure, including a refs problem found before any trial.
 
@@ -131,7 +133,7 @@ Recorded runs, newest first, 20 by default. JSON: an array of `{"id", "suite", "
 
 ### `cedr bench show <ID|PATH> [--fail-on ...] [--format text|json]`
 
-Prints a recorded result, with the same report and exit codes as the run. Results are read as untrusted input: capped at 16 MiB and validated.
+Prints a recorded result, with the same report and exit codes as the run. Results are read as untrusted input: capped at 16 MiB and refused when `complete`, `summary` or `separated` do not follow from the trials.
 
 Remove a result by deleting its file.
 
@@ -190,7 +192,7 @@ bench agent-config: complete, $1.27 of $2.00 (b-20261101T193000Z-1a2b3c)
 pass rate +33 points; the intervals overlap, so this run does not separate them
 ```
 
-An incomplete run says `incomplete (budget)` or `incomplete (N unscored)` on its first line.
+An incomplete run says `incomplete (budget)`, `incomplete (unknown cost)` or `incomplete (N unscored)` on its first line.
 
 ## MCP tools
 

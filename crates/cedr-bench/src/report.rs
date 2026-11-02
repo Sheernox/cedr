@@ -49,6 +49,7 @@ impl Status {
 #[serde(rename_all = "snake_case")]
 pub enum Stop {
     Budget,
+    UnknownCost,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +103,13 @@ pub struct Trial {
     pub cached_tokens: Option<u64>,
     pub cost_usd: Option<f64>,
     pub models: Vec<String>,
+}
+
+impl Trial {
+    /// Whether an agent may have spent money this trial did not report. A failed setup never started one.
+    pub fn spent_unknown(&self) -> bool {
+        self.cost_usd.is_none() && self.status != Status::SetupFailed
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -232,7 +240,11 @@ impl BenchResult {
             return 3;
         }
         let (b, c) = (&self.summary.baseline, &self.summary.candidate);
-        let lower = matches!((b.pass_rate, c.pass_rate), (Some(b), Some(c)) if c < b);
+        // From the counts: rounded rates can hide a regression across many trials.
+        let lower = b.scored > 0
+            && c.scored > 0
+            && u64::from(c.passed) * u64::from(b.scored)
+                < u64::from(b.passed) * u64::from(c.scored);
         let held = match fail_on {
             FailOn::Never => false,
             FailOn::Lower => lower,
@@ -251,6 +263,7 @@ impl BenchResult {
         let state = match (self.complete, self.stop) {
             (true, _) => "complete".to_string(),
             (false, Some(Stop::Budget)) => "incomplete (budget)".to_string(),
+            (false, Some(Stop::UnknownCost)) => "incomplete (unknown cost)".to_string(),
             (false, None) => format!("incomplete ({} unscored)", self.unscored()),
         };
         let mut out = format!(
@@ -280,7 +293,7 @@ impl BenchResult {
             let median = row
                 .duration_ms_median
                 .map_or("-".to_string(), |ms| format!("{}s", ms / 1000));
-            let cost = row.cost_usd.map_or("-".to_string(), |c| format!("${c:.2}"));
+            let cost = row.cost_usd.map_or("-".to_string(), money);
             out.push_str(&format!(
                 "  {name:<11} {:<7} {rate:<6} {interval:<12} {median:<7} {cost}\n",
                 format!("{}/{}", row.passed, row.scored)
@@ -325,8 +338,8 @@ pub fn clean(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).collect()
 }
 
-/// Validates a result read from disk: the shape comes from serde, the rest must hold before the
-/// counts are trusted for an exit code.
+/// Validates a result read from disk: the shape comes from serde, and the verdict fields must
+/// follow from the trials, because an exit code is decided from them.
 pub fn parse(bytes: &[u8]) -> Result<BenchResult, String> {
     let result: BenchResult =
         serde_json::from_slice(bytes).map_err(|e| format!("not a bench result: {e}"))?;
@@ -335,6 +348,18 @@ pub fn parse(bytes: &[u8]) -> Result<BenchResult, String> {
             "unknown result version {}, this cedr reads {VERSION}",
             result.version
         ));
+    }
+    let complete = result.stop.is_none() && result.trials.iter().all(|t| t.status.scored());
+    if result.complete != complete {
+        return Err("complete does not match its stop and trials".into());
+    }
+    let baseline = summarize(&result.trials, VariantName::Baseline);
+    let candidate = summarize(&result.trials, VariantName::Candidate);
+    if result.summary.baseline != baseline
+        || result.summary.candidate != candidate
+        || result.separated != separated(&baseline, &candidate)
+    {
+        return Err("summary does not match its trials".into());
     }
     Ok(result)
 }
@@ -479,7 +504,7 @@ mod tests {
 
     #[test]
     fn a_hostile_result_cannot_write_terminal_escapes_or_pass_as_another_version() {
-        let mut r = result((1, 1), (1, 1), true);
+        let mut r = result((0, 0), (0, 0), true);
         r.suite.name = "evil\u{1b}]0;owned\u{7}".into();
         assert!(!r.text().contains('\u{1b}'));
         let json = serde_json::to_vec(&r).unwrap();
@@ -488,5 +513,37 @@ mod tests {
         let err = parse(&serde_json::to_vec(&r).unwrap()).unwrap_err();
         assert!(err.contains("version 2"), "{err}");
         assert!(parse(b"{}").is_err());
+    }
+
+    #[test]
+    fn a_result_file_cannot_claim_a_pass_its_trials_do_not_support() {
+        use Status::*;
+        let bytes = |r: &BenchResult| serde_json::to_vec(r).unwrap();
+        let mut r = result((0, 0), (0, 0), true);
+        r.trials = vec![trial(VariantName::Baseline, AgentError, 1, None)];
+        r.summary.baseline = summarize(&r.trials, VariantName::Baseline);
+        assert!(parse(&bytes(&r)).unwrap_err().contains("complete"));
+        r.complete = false;
+        assert!(parse(&bytes(&r)).is_ok());
+
+        let mut stopped = result((0, 0), (0, 0), true);
+        stopped.stop = Some(Stop::Budget);
+        assert!(parse(&bytes(&stopped)).unwrap_err().contains("complete"));
+
+        let mut inflated = result((0, 0), (0, 0), true);
+        inflated.trials = vec![trial(VariantName::Candidate, Failed, 1, None)];
+        inflated.summary.candidate = VariantSummary {
+            passed: 1,
+            ..summarize(&inflated.trials, VariantName::Candidate)
+        };
+        assert!(parse(&bytes(&inflated)).unwrap_err().contains("summary"));
+    }
+
+    #[test]
+    fn lower_is_decided_from_counts_rounded_rates_would_hide() {
+        let mut r = result((1500, 3000), (1499, 3000), true);
+        r.summary.baseline.pass_rate = Some(0.5);
+        r.summary.candidate.pass_rate = Some(0.5);
+        assert_eq!(r.exit_code(FailOn::Lower), 1);
     }
 }

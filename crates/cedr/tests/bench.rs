@@ -651,3 +651,92 @@ fn the_apps_cap_is_pulled_into_settings_and_an_org_without_one_clears_it() {
     task.join().unwrap();
     assert_eq!(stdout_json(&out)["source"], "default");
 }
+
+#[test]
+fn a_priced_harness_that_reports_no_cost_stops_the_run_instead_of_spending_blind() {
+    let repo = Repo::new();
+    repo.program(
+        "claude",
+        r#"if [ "$1" = --version ]; then echo 1; exit 0; fi
+echo '{"type":"result","subtype":"success","is_error":false}'"#,
+    );
+    let suite = repo.suite(
+        r#"version = 1
+trials = 3
+[baseline]
+harness = "claude"
+model = "a"
+[candidate]
+harness = "claude"
+model = "b"
+[[tasks]]
+id = "t"
+prompt = "p"
+test = "true"
+"#,
+    );
+    let out = repo.run(&[
+        "bench",
+        "run",
+        &suite,
+        "--format",
+        "json",
+        "--budget-usd",
+        "0.01",
+    ]);
+    assert_eq!(code(&out), 3);
+    let r = stdout_json(&out);
+    assert_eq!(r["stop"], "unknown_cost");
+    assert_eq!(r["trials"].as_array().unwrap().len(), 1);
+    assert_eq!(r["unpriced_trials"], 1);
+    assert!(
+        String::from_utf8_lossy(
+            &repo
+                .run(&["bench", "show", r["id"].as_str().unwrap()])
+                .stdout
+        )
+        .contains("incomplete (unknown cost)")
+    );
+
+    // The user can agree to it, and then every trial runs.
+    let out = repo.run(&[
+        "bench",
+        "run",
+        &suite,
+        "--allow-unpriced",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&out), 0);
+    assert_eq!(stdout_json(&out)["trials"].as_array().unwrap().len(), 6);
+}
+
+#[test]
+fn an_agent_that_never_reads_its_prompt_cannot_take_the_run_down() {
+    let repo = Repo::new();
+    repo.program(
+        "claude",
+        r#"if [ "$1" = --version ]; then echo 1; exit 0; fi
+echo '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.01}'"#,
+    );
+    // Larger than a pipe's buffer, so a writer would still be writing when the agent exits.
+    repo.write(".cedr/bench/prompt.md", &"p".repeat(1024 * 1024));
+    let suite = repo.suite(
+        r#"version = 1
+trials = 1
+[baseline]
+harness = "claude"
+model = "a"
+[candidate]
+harness = "claude"
+model = "b"
+[[tasks]]
+id = "t"
+prompt_file = ".cedr/bench/prompt.md"
+test = "true"
+"#,
+    );
+    let out = repo.run(&["bench", "run", &suite, "--format", "json"]);
+    assert_eq!(out.status.code(), Some(0), "killed by a signal when None");
+    assert_eq!(stdout_json(&out)["summary"]["candidate"]["passed"], 1);
+}

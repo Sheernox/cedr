@@ -2,7 +2,7 @@
 //! clone the agent controlled.
 
 use std::collections::VecDeque;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
@@ -33,29 +33,29 @@ impl StepOutput {
 
 /// Runs `cmd` to completion or until `timeout`, feeding it `stdin` and capturing the end of stdout.
 /// Stderr is discarded: agents write to it freely, and nothing reads it. On a timeout, and after a
-/// normal exit on Unix, the whole process group is killed, so no helper outlives its trial.
+/// normal exit, the whole process group is killed, so no helper outlives its trial.
 pub fn run_step(
     mut cmd: Command,
     stdin: Option<&str>,
     timeout: Duration,
 ) -> std::io::Result<StepOutput> {
+    // Stdin is a file, not a pipe: `cedr` runs with the default SIGPIPE, so writing to a child that
+    // exits without reading would kill the whole run.
+    let input = match stdin {
+        Some(text) => {
+            let mut file = tempfile::tempfile()?;
+            file.write_all(text.as_bytes())?;
+            file.seek(SeekFrom::Start(0))?;
+            Stdio::from(file)
+        }
+        None => Stdio::null(),
+    };
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        });
+        .stdin(input);
     isolate(&mut cmd);
     let mut child = cmd.spawn()?;
     let pid = child.id();
-    if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {
-        let text = text.to_string();
-        // A child that never reads must not block the timeout below; it can only fail on a closed pipe.
-        std::thread::spawn(move || {
-            let _ = pipe.write_all(text.as_bytes());
-        });
-    }
     let captured = Arc::new(Mutex::new(VecDeque::new()));
     let (drained_tx, drained_rx) = mpsc::channel();
     if let Some(mut pipe) = child.stdout.take() {
@@ -75,22 +75,29 @@ pub fn run_step(
         });
     }
     let (done_tx, done_rx) = mpsc::channel();
+    // The child comes back with its status so its handle stays open through kill_tree: on Windows
+    // that keeps the pid from being reused while taskkill walks the tree under it.
     std::thread::spawn(move || {
-        let _ = done_tx.send(child.wait());
+        let status = child.wait();
+        let _ = done_tx.send((status, child));
     });
-    let status = match done_rx.recv_timeout(timeout) {
-        Ok(status) => Some(status?),
+    let (status, held) = match done_rx.recv_timeout(timeout) {
+        Ok((status, child)) => (Some(status?), Some(child)),
         Err(_) => {
             kill_tree(pid);
-            let _ = done_rx.recv_timeout(DRAIN_GRACE);
-            None
+            (
+                None,
+                done_rx
+                    .recv_timeout(DRAIN_GRACE)
+                    .ok()
+                    .map(|(_, child)| child),
+            )
         }
     };
-    // A reaped process's group can only hold its own leftovers on Unix; elsewhere the pid could
-    // already belong to something unrelated.
-    if cfg!(unix) && status.is_some() {
+    if status.is_some() {
         kill_tree(pid);
     }
+    drop(held);
     let _ = drained_rx.recv_timeout(DRAIN_GRACE);
     let stdout = captured
         .lock()
@@ -331,8 +338,8 @@ pub fn walk_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
 }
 
 /// Copies the tree at `from` onto `clone`. The agent has had the run of `clone`, and a symlink it
-/// left at any destination would send this write outside the clone, so symlinks on the way are
-/// replaced rather than followed.
+/// or hard link it left at any destination would send this write outside the clone, so what is
+/// there is replaced rather than followed.
 pub fn overlay(from: &Path, clone: &Path) -> Result<()> {
     for (name, source) in walk_files(from)? {
         let mut dest = clone.to_path_buf();
@@ -345,7 +352,9 @@ pub fn overlay(from: &Path, clone: &Path) -> Result<()> {
                 Ok(meta) if last && meta.is_dir() => {
                     std::fs::remove_dir_all(&dest).map_err(io_error(&dest))?;
                 }
-                Ok(meta) if !last && !meta.is_dir() => {
+                // Removed even at the destination: writing over a hard link the agent made would
+                // change the file it points at, wherever that is.
+                Ok(meta) if !meta.is_dir() => {
                     std::fs::remove_file(&dest).map_err(io_error(&dest))?;
                 }
                 _ => {}
@@ -445,6 +454,27 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(clone.join("top.txt")).unwrap(),
+            "real"
+        );
+    }
+
+    #[test]
+    fn overlay_replaces_a_hard_link_instead_of_writing_through_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside.txt");
+        std::fs::write(&outside, "victim").unwrap();
+        let clone = dir.path().join("clone");
+        std::fs::create_dir(&clone).unwrap();
+        std::fs::hard_link(&outside, clone.join("check.txt")).unwrap();
+        let from = dir.path().join("from");
+        std::fs::create_dir(&from).unwrap();
+        std::fs::write(from.join("check.txt"), "real").unwrap();
+
+        overlay(&from, &clone).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "victim");
+        assert_eq!(
+            std::fs::read_to_string(clone.join("check.txt")).unwrap(),
             "real"
         );
     }
