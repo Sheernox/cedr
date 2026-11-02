@@ -5,7 +5,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use toml_edit::{Array, DocumentMut, InlineTable, Item, Value, table, value};
+use toml_edit::{Array, DocumentMut, InlineTable, Item, TableLike, Value, table, value};
 
 use crate::config::{Config, Limits, RoutesFrom, load_local, rules_hash};
 use crate::error::{Error, Result, io_err, parse_err};
@@ -221,7 +221,7 @@ pub fn set_thresholds(
         layer.remove(key);
     }
     for (key, item) in changes {
-        layer.insert(key, item);
+        replace(layer, key, item);
     }
     if layer.is_empty() {
         holder.remove("thresholds");
@@ -229,12 +229,23 @@ pub fn set_thresholds(
     Ok(doc.to_string())
 }
 
+/// Sets a key, keeping the comment on the value it replaces.
+fn replace(holder: &mut dyn TableLike, key: &str, mut item: Item) {
+    if let (Some(old), Some(new)) = (
+        holder.get(key).and_then(Item::as_value),
+        item.as_value_mut(),
+    ) {
+        *new.decor_mut() = old.decor().clone();
+    }
+    holder.insert(key, item);
+}
+
 pub fn set_enabled(text: &str, route: &str, on: bool) -> Result<String> {
     let mut doc = document(text)?;
-    entry(&mut doc, "routes", route, "route")?
+    let holder = entry(&mut doc, "routes", route, "route")?
         .as_table_like_mut()
-        .ok_or_else(|| unknown("route", route))?
-        .insert("enabled", value(on));
+        .ok_or_else(|| unknown("route", route))?;
+    replace(holder, "enabled", value(on));
     Ok(doc.to_string())
 }
 
@@ -275,20 +286,77 @@ fn multiline(a: &Array) -> bool {
     })
 }
 
-/// Puts `v` at `at` in the array's own style: each on its line when it already is, else spaced.
-fn insert_styled(a: &mut Array, at: usize, v: Value) {
-    let at = at.min(a.len());
+/// In a multi-line array, the text before an item is the end of the previous item's line, where its
+/// trailing comment sits, and then the item's own comment lines and indent. Splits it there.
+fn split_lines(text: &str) -> (&str, &str) {
+    text.split_at(text.find('\n').map_or(0, |i| i + 1))
+}
+
+/// The text between the item before `at` and whatever follows: the item at `at`, or the array's end.
+fn gap_at(a: &Array, at: usize) -> String {
+    let text = match a.get(at) {
+        Some(item) => item.decor().prefix().and_then(|p| p.as_str()),
+        None => a.trailing().as_str(),
+    };
+    text.unwrap_or("").to_string()
+}
+
+fn set_gap_at(a: &mut Array, at: usize, text: String) {
+    match a.get_mut(at) {
+        Some(item) => item.decor_mut().set_prefix(text),
+        None => a.set_trailing(text),
+    }
+}
+
+/// An item out of a multi-line array, with the comments that belong to it.
+struct Lifted {
+    item: Value,
+    /// Its comment lines and indent.
+    above: String,
+    /// The end of its line, with any trailing comment.
+    after: String,
+}
+
+/// Removes the item, leaving every other item's comments on that item.
+fn lift(a: &mut Array, at: usize) -> Lifted {
+    let before = gap_at(a, at);
+    let (prev_end, above) = split_lines(&before);
+    let next = gap_at(a, at + 1);
+    let (after, next_above) = split_lines(&next);
+    set_gap_at(a, at + 1, format!("{prev_end}{next_above}"));
+    Lifted {
+        above: above.to_string(),
+        after: after.to_string(),
+        item: a.remove(at),
+    }
+}
+
+/// The reverse of [`lift`], at any position.
+fn land(a: &mut Array, at: usize, lifted: Lifted) {
+    let before = gap_at(a, at);
+    let (prev_end, next_above) = split_lines(&before);
+    let (prefix, next) = (
+        format!("{prev_end}{}", lifted.above),
+        format!("{}{next_above}", lifted.after),
+    );
+    set_gap_at(a, at, next);
+    a.insert_formatted(at, lifted.item.decorated(prefix, ""));
+}
+
+/// The indent of the array's items, without any comment lines.
+fn item_indent(a: &Array) -> String {
+    let first = a.get(0).and_then(|v| v.decor().prefix());
+    let text = first.and_then(|p| p.as_str()).unwrap_or("\n  ");
+    text.rsplit('\n').next().unwrap_or("  ").to_string()
+}
+
+/// Puts a new or moved item at `at`, in the array's own style. A `lifted` item keeps its comments.
+fn insert_styled(a: &mut Array, at: usize, item: Value, lifted: Option<(String, String)>) {
     if multiline(a) {
-        let prefix = a
-            .iter()
-            .next()
-            .and_then(|f| f.decor().prefix())
-            .and_then(|p| p.as_str())
-            .unwrap_or("\n  ")
-            .to_string();
-        a.insert_formatted(at, v.decorated(&prefix, ""));
+        let (above, after) = lifted.unwrap_or_else(|| (item_indent(a), "\n".to_string()));
+        land(a, at, Lifted { item, above, after });
     } else {
-        a.insert(at, v);
+        a.insert(at, item);
         a.fmt();
     }
 }
@@ -298,19 +366,7 @@ fn set_field(t: &mut InlineTable, key: &str, v: impl Into<Value>) {
     t.fmt();
 }
 
-/// Adds the candidate, or changes only what the edit names on the one with that target.
-pub fn add_candidate(text: &str, route: &str, edit: &CandidateEdit) -> Result<String> {
-    let mut doc = document(text)?;
-    let list = candidates(&mut doc, route)?;
-    let found = list.iter().position(|v| target_of(v) == Some(edit.target));
-    let mut item = match found {
-        Some(i) => list.remove(i),
-        None => {
-            let mut t = InlineTable::new();
-            t.insert("target", edit.target.into());
-            Value::InlineTable(t)
-        }
-    };
+fn apply_fields(item: &mut Value, route: &str, edit: &CandidateEdit) -> Result<()> {
     let t = item
         .as_inline_table_mut()
         .ok_or_else(|| Error::Usage(format!("route {route}: a candidate is not a table")))?;
@@ -324,16 +380,42 @@ pub fn add_candidate(text: &str, route: &str, edit: &CandidateEdit) -> Result<St
         let names: Array = sizes.iter().map(|s| s.as_str()).collect();
         set_field(t, "sizes", names);
     }
-    let default_at = || {
-        let last_is_self = list.iter().last().and_then(target_of) == Some("self");
-        match (found, last_is_self && edit.target != "self") {
-            (Some(i), _) => i,
-            (None, true) => list.len() - 1,
-            (None, false) => list.len(),
+    Ok(())
+}
+
+/// Adds the candidate, or changes only what the edit names on the one with that target. A candidate
+/// after a final `self` could never be picked, so `--at` past the end stops before it.
+pub fn add_candidate(text: &str, route: &str, edit: &CandidateEdit) -> Result<String> {
+    let mut doc = document(text)?;
+    let list = candidates(&mut doc, route)?;
+    let found = list.iter().position(|v| target_of(v) == Some(edit.target));
+    if let Some(i) = found
+        && edit.at.is_none_or(|at| at == i)
+    {
+        let item = list
+            .get_mut(i)
+            .ok_or_else(|| Error::Usage(format!("route {route}: a candidate is not a table")))?;
+        apply_fields(item, route, edit)?;
+        return Ok(doc.to_string());
+    }
+    let (mut item, comments) = match found {
+        Some(i) if multiline(list) => {
+            let lifted = lift(list, i);
+            (lifted.item, Some((lifted.above, lifted.after)))
+        }
+        Some(i) => (list.remove(i), None),
+        None => {
+            let mut t = InlineTable::new();
+            t.insert("target", edit.target.into());
+            (Value::InlineTable(t), None)
         }
     };
-    let at = edit.at.unwrap_or_else(default_at);
-    insert_styled(list, at, item);
+    apply_fields(&mut item, route, edit)?;
+    let end = match list.iter().last().and_then(target_of) {
+        Some("self") if edit.target != "self" => list.len() - 1,
+        _ => list.len(),
+    };
+    insert_styled(list, edit.at.unwrap_or(end).min(end), item, comments);
     Ok(doc.to_string())
 }
 
@@ -344,8 +426,10 @@ pub fn remove_candidate(text: &str, route: &str, target: &str) -> Result<String>
         .iter()
         .position(|v| target_of(v) == Some(target))
         .ok_or_else(|| Error::Usage(format!("route {route} has no candidate {target:?}")))?;
-    list.remove(i);
-    if !multiline(list) {
+    if multiline(list) {
+        lift(list, i);
+    } else {
+        list.remove(i);
         list.fmt();
     }
     Ok(doc.to_string())
@@ -402,6 +486,108 @@ candidates = [{ target = "codex/sol" }]
         let back = set_thresholds(&text, &Scope::Harness("codex"), &[], &unset).unwrap();
         assert!(!back.contains("thresholds"), "{back}");
         check(&back);
+    }
+
+    const COMMENTED: &str = r#"version = 1
+
+[harnesses.codex]
+[harnesses.muse]
+
+[routes.r]
+enabled = true # for now
+candidates = [
+  # primary, for most work
+  { target = "codex/sol" }, # first choice
+  { target = "muse/spark" }, # second choice
+  # last resort
+  { target = "self" }, # always there
+]
+
+[thresholds]
+out = 90 # reserve for interactive work
+"#;
+
+    #[test]
+    fn edits_keep_each_comment_on_the_line_it_belongs_to() {
+        let set = vec!["out=80".to_string()];
+        let text = set_thresholds(COMMENTED, &Scope::All, &set, &[]).unwrap();
+        assert!(
+            text.contains("out = 80 # reserve for interactive work\n"),
+            "{text}"
+        );
+        let text = set_enabled(COMMENTED, "r", false).unwrap();
+        assert!(text.contains("enabled = false # for now\n"), "{text}");
+
+        let added = add_candidate(COMMENTED, "r", &add("codex/luna")).unwrap();
+        assert_eq!(
+            added,
+            COMMENTED.replace(
+                "  # last resort\n",
+                "  { target = \"codex/luna\" },\n  # last resort\n"
+            )
+        );
+
+        let sized = add_candidate(
+            COMMENTED,
+            "r",
+            &CandidateEdit {
+                sizes: Some(vec![Size::Small]),
+                ..add("codex/sol")
+            },
+        )
+        .unwrap();
+        assert!(
+            sized.contains("  # primary, for most work\n  { target = \"codex/sol\", sizes = [\"small\"] }, # first choice\n"),
+            "{sized}"
+        );
+
+        let removed = remove_candidate(COMMENTED, "r", "self").unwrap();
+        assert!(
+            removed.contains("{ target = \"muse/spark\" }, # second choice\n]"),
+            "{removed}"
+        );
+        assert!(
+            !removed.contains("last resort") && !removed.contains("always there"),
+            "{removed}"
+        );
+
+        let moved = add_candidate(
+            COMMENTED,
+            "r",
+            &CandidateEdit {
+                at: Some(1),
+                ..add("codex/sol")
+            },
+        )
+        .unwrap();
+        assert!(
+            moved.contains(concat!(
+                "  { target = \"muse/spark\" }, # second choice\n",
+                "  # primary, for most work\n",
+                "  { target = \"codex/sol\" }, # first choice\n",
+                "  # last resort\n",
+            )),
+            "{moved}"
+        );
+    }
+
+    #[test]
+    fn a_position_past_the_end_stops_before_a_final_self() {
+        let text = add_candidate(
+            COMMENTED,
+            "r",
+            &CandidateEdit {
+                at: Some(98),
+                ..add("codex/luna")
+            },
+        )
+        .unwrap();
+        let targets: Vec<String> = check(&text).routes["r"]
+            .candidates
+            .iter()
+            .map(|c| c.target.clone())
+            .collect();
+        assert_eq!(targets, ["codex/sol", "muse/spark", "codex/luna", "self"]);
     }
 
     #[test]
@@ -476,8 +662,8 @@ candidates = [{ target = "codex/sol" }]
         assert_eq!(sol.sizes, Some(vec![Size::Small]));
         assert_eq!(c.routes["r"].candidates.len(), 2);
         let moved = CandidateEdit {
-            at: Some(1),
-            ..add("codex/sol")
+            at: Some(0),
+            ..add("self")
         };
         assert_eq!(
             targets(&add_candidate(FILE, "r", &moved).unwrap(), "r"),

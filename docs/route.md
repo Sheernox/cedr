@@ -200,7 +200,7 @@ A family's newest offered version is in preview when `[evaluation] models` is no
 `thresholds`, `add`, `remove`, `enable` and `disable` edit the `routes.toml` in use, keeping its comments, layout and file mode, and print `<path>: <change> (rules <old> -> <new>)`. The result must validate before anything is written, so a refused edit leaves the file as it was; a refused edit exits 2, and so does any unknown route, harness, key or candidate.
 
 - `--set` takes a number, or for `conserve_sizes` and `unknown_sizes` a comma-separated list of sizes (empty for none). `--unset` falls back to the next layer. Without `--harness` or `--route` the layer is `[thresholds]`.
-- `add` puts a new candidate before a final `self`, or last; `--at N` is a 1-based position, and moves an existing one. On an existing candidate only the options given change. A `[[routes.<id>.candidates]]` list is rewritten as an inline array, dropping its comments.
+- `add` puts a new candidate before a final `self`, or last; `--at N` is a 1-based position, and moves an existing one; past the end, it stops before a final `self`, since nothing after `self` can be picked. On an existing candidate only the options given change. A `[[routes.<id>.candidates]]` list is rewritten as an inline array, dropping its comments.
 - A file with `[sync] routes = "org"` refuses these edits, since its routes come from the org: change them where the org keeps them.
 - Creating and deleting routes is done in the file.
 
