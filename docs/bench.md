@@ -85,7 +85,7 @@ A suite can never set its own budget. The cap must be a finite number above 0. A
 
 Before each trial, a run stops when what it has spent plus the most expensive trial so far would pass the cap. `claude` also receives what is left as its own limit. Other harnesses are only checked between trials, so a trial can overrun the cap, by at most what it spends before its timeout. A run stopped this way is incomplete, with `stop` set to `"budget"`.
 
-A trial killed at its timeout, or an agent that reports no cost, has an unknown cost: it is left out of `spent_usd` and counted in `unpriced_trials`. The budget cannot see that spend, so the run stops there, incomplete, with `stop` set to `"unknown_cost"`, unless `--allow-unpriced` was passed.
+A trial whose agent was killed at its timeout or by an interrupt, or an agent that reports no cost, has an unknown cost: it is left out of `spent_usd` and counted in `unpriced_trials`. The budget cannot see that spend, so the run stops there, incomplete, with `stop` set to `"unknown_cost"`, unless `--allow-unpriced` was passed.
 
 Trials run in order: for each task, for each trial number, baseline then candidate. A run stopped early has therefore spent evenly on both variants.
 
@@ -95,16 +95,23 @@ Trials run in order: for each task, for each trial number, baseline then candida
 
 A trial clones the repo at the variant's commit into a temporary directory (sharing its objects, with no remote), runs `setup`, runs the agent, copies `test_files`, runs `test`, and removes the directory. The prompt goes to a vendor CLI on stdin and to a `command` through `{prompt_file}`, a file outside the clone. Output from each step is capped at 16 MiB and is not kept.
 
+The repo needs its full history, since a clone of a shallow one cannot reach every ref: `bench plan` and `bench run` refuse a shallow clone. In GitHub Actions, set `fetch-depth: 0` on `actions/checkout`.
+
+Each step runs on its own, and what it leaves running is killed when it ends on Linux and macOS, so a server started in `setup` is gone by `test`: start it in the `test` command. On Windows, a process a step leaves behind keeps running.
+
 | Status | Meaning | Scored |
 |---|---|---|
 | `passed` | `test` exited 0 | Yes |
 | `failed` | `test` exited non-zero | Yes |
 | `timeout` | The agent or `test` ran past the timeout | Yes, as not passed |
-| `setup_failed` | `setup` failed or timed out | No |
-| `agent_error` | The agent could not run or reported an error | No |
+| `setup_failed` | `setup` failed or timed out, or the agent could not start | No |
+| `agent_error` | The agent exited with an error or reported one | No |
 | `budget` | The vendor CLI stopped at its limit | No |
+| `interrupted` | The run was interrupted during this trial | No |
 
 An unscored trial, or a run stopped by budget, makes the run incomplete.
+
+On Linux and macOS, Ctrl-C (or SIGTERM or SIGHUP) kills the running step, removes its clone and ends the run with what it measured: saved as usual, incomplete, with `stop` set to `"interrupted"`. A second signal ends cedr at once. On Windows, Ctrl-C ends cedr and the step together, and that run is not saved.
 
 ## Commands
 
@@ -192,7 +199,7 @@ bench agent-config: complete, $1.27 of $2.00 (b-20261101T193000Z-1a2b3c)
 pass rate +33 points; the intervals overlap, so this run does not separate them
 ```
 
-An incomplete run says `incomplete (budget)`, `incomplete (unknown cost)` or `incomplete (N unscored)` on its first line.
+An incomplete run says `incomplete (budget)`, `incomplete (unknown cost)`, `incomplete (interrupted)` or `incomplete (N unscored)` on its first line.
 
 ## MCP tools
 
@@ -206,4 +213,4 @@ There is no `bench_run`: it spends money and can take hours, so an agent runs it
 
 ## GitHub Action
 
-`action.yml` gains `bench` (a suite path; empty, the default, skips Bench), `bench-budget-usd` (else the app's cap when `push-org` and `CEDR_API_KEY` are set, else the default) and `bench-fail-on` (default `never`). The workflow installs the vendor CLIs and sets their API keys in the environment; in CI use API keys, not a signed-in plan. A failure or an incomplete run fails the action once the other checks have run. The report goes to the job summary. Do not point it at a suite from an untrusted pull request: a suite is code.
+`action.yml` gains `bench` (a suite path; empty, the default, skips Bench), `bench-budget-usd` (else the app's cap when `push-org` and `CEDR_API_KEY` are set, else the default), `bench-fail-on` (default `never`) and `bench-allow-unpriced` (default `false`). The workflow checks out the full history (`fetch-depth: 0`) and installs the vendor CLIs and sets their API keys in the environment; in CI use API keys, not a signed-in plan. A failure or an incomplete run fails the action once the other checks have run. The report goes to the job summary. Do not point it at a suite from an untrusted pull request: a suite is code.

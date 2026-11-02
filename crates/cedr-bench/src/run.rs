@@ -82,7 +82,7 @@ fn variant_info(root: &Path, variant: &Variant) -> Result<VariantInfo> {
     let commit = exec::resolve_ref(root, &git_ref)?;
     Ok(VariantInfo {
         harness: variant.harness,
-        harness_version: harness_version(variant),
+        harness_version: harness_version(variant, root),
         model: variant.model.clone(),
         effort: variant.effort.clone(),
         permissions: variant.permissions,
@@ -93,11 +93,11 @@ fn variant_info(root: &Path, variant: &Variant) -> Result<VariantInfo> {
     })
 }
 
-fn harness_version(variant: &Variant) -> Option<String> {
+fn harness_version(variant: &Variant, root: &Path) -> Option<String> {
     if variant.harness == HarnessKind::Command {
         return None;
     }
-    let mut cmd = Command::new(exec::find_program(harness::program(variant))?);
+    let mut cmd = Command::new(exec::find_program(harness::program(variant), root)?);
     cmd.arg("--version");
     let out = exec::run_step(cmd, None, Duration::from_secs(10)).ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
@@ -125,6 +125,10 @@ pub fn plan(
     let suite = &loaded.suite;
     let tasks = selection.tasks(loaded)?;
     let trials_each = selection.trials(loaded)?;
+    exec::refuse_shallow(&loaded.root)?;
+    for task in &tasks {
+        task.prompt_text(&loaded.root)?;
+    }
     let baseline = variant_info(&loaded.root, &suite.baseline)?;
     let candidate = variant_info(&loaded.root, &suite.candidate)?;
     if !differ(
@@ -144,7 +148,7 @@ pub fn plan(
         ("candidate", &suite.candidate),
     ] {
         let program = harness::program(variant);
-        if exec::find_program(program).is_none() {
+        if exec::find_program(program, &loaded.root).is_none() {
             warnings.push(format!("{name}: {program} is not installed"));
         }
         if variant.permissions == crate::suite::Permissions::Full {
@@ -202,7 +206,7 @@ pub fn run(
         ("baseline", &suite.baseline),
         ("candidate", &suite.candidate),
     ] {
-        if exec::find_program(harness::program(variant)).is_none() {
+        if exec::find_program(harness::program(variant), &loaded.root).is_none() {
             return Err(invalid(format!(
                 "{name}: {} is not installed",
                 harness::program(variant)
@@ -216,7 +220,13 @@ pub fn run(
         }
     }
     let tasks = options.selection.tasks(loaded)?;
+    // Read before anything spends, so a file that went bad cannot discard trials already paid for.
+    let prompts = tasks
+        .iter()
+        .map(|task| task.prompt_text(&loaded.root))
+        .collect::<Result<Vec<_>>>()?;
     let timeout = Duration::from_secs(suite.timeout_seconds);
+    exec::catch_interrupts();
     let started_at = now();
     let mut trials: Vec<Trial> = Vec::new();
     let mut spent = 0.0_f64;
@@ -234,10 +244,13 @@ pub fn run(
             &plan.variants.candidate,
         ),
     ];
-    'run: for task in &tasks {
-        let prompt = task.prompt_text(&loaded.root)?;
+    'run: for (task, prompt) in tasks.iter().zip(&prompts) {
         for number in 1..=plan.trials_each {
             for (name, variant, info) in variants {
+                if exec::interrupted() {
+                    stop = Some(Stop::Interrupted);
+                    break 'run;
+                }
                 if over_budget(spent, dearest, options.budget_usd) {
                     stop = Some(Stop::Budget);
                     break 'run;
@@ -253,13 +266,14 @@ pub fn run(
                 let trial = run_trial(TrialInput {
                     root: &loaded.root,
                     task,
-                    prompt: &prompt,
+                    prompt,
                     variant,
                     commit: &info.commit,
                     name,
                     number,
                     timeout,
                     budget_left,
+                    note: &mut |reason| progress(&format!("{label}: {reason}")),
                 });
                 if let Some(cost) = trial.cost_usd {
                     spent += cost;
@@ -310,6 +324,8 @@ struct TrialInput<'a> {
     number: u32,
     timeout: Duration,
     budget_left: f64,
+    /// Why a trial could not get going. Goes to the terminal only: it can name paths.
+    note: &'a mut dyn FnMut(&str),
 }
 
 /// Removes what a trial's environment must not carry (docs/bench.md, Trust).
@@ -336,11 +352,23 @@ fn scrub(cmd: &mut Command, secrets_too: bool) {
 /// Runs one trial. Anything that goes wrong is the trial's status, never an error: a run that has
 /// already spent money keeps what it measured.
 fn run_trial(input: TrialInput) -> Trial {
+    let TrialInput {
+        root,
+        task,
+        prompt,
+        variant,
+        commit,
+        name,
+        number,
+        timeout,
+        budget_left,
+        note,
+    } = input;
     let started = Instant::now();
     let finish = |status, test_exit, usage: Usage| Trial {
-        task: input.task.id.clone(),
-        variant: input.name,
-        trial: input.number,
+        task: task.id.clone(),
+        variant: name,
+        trial: number,
         status,
         test_exit,
         duration_ms: started.elapsed().as_millis() as u64,
@@ -351,14 +379,20 @@ fn run_trial(input: TrialInput) -> Trial {
         models: usage.models,
     };
     let unscored = |status| finish(status, None, Usage::default());
-    let Ok(dir) = tempfile::Builder::new().prefix("cedr-bench-").tempdir() else {
-        return unscored(Status::SetupFailed);
+    let dir = match tempfile::Builder::new().prefix("cedr-bench-").tempdir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            note(&format!("temporary directory: {e}"));
+            return unscored(Status::SetupFailed);
+        }
     };
     let clone = dir.path().join("repo");
     let prompt_file = dir.path().join("prompt.md");
-    if exec::clone_at(input.root, input.commit, &clone).is_err()
-        || std::fs::write(&prompt_file, input.prompt).is_err()
-    {
+    let prepared = exec::clone_at(root, commit, &clone).and_then(|()| {
+        std::fs::write(&prompt_file, prompt).map_err(|e| format!("prompt file: {e}"))
+    });
+    if let Err(reason) = prepared {
+        note(&reason);
         return unscored(Status::SetupFailed);
     }
 
@@ -366,29 +400,41 @@ fn run_trial(input: TrialInput) -> Trial {
         let mut cmd = exec::shell(script);
         cmd.current_dir(&clone);
         scrub(&mut cmd, true);
-        exec::run_step(cmd, None, input.timeout)
+        exec::run_step(cmd, None, timeout)
     };
-    if let Some(setup) = &input.task.setup
+    if let Some(setup) = &task.setup
         && !step(setup).is_ok_and(|out| out.succeeded())
     {
         return unscored(Status::SetupFailed);
     }
 
+    // An agent that never started spent nothing, so it is a setup failure and not an unknown cost.
     let Some((mut agent, stdin)) =
-        harness::command(input.variant, input.prompt, &prompt_file, input.budget_left)
+        harness::command(variant, prompt, &prompt_file, budget_left, root)
     else {
-        return unscored(Status::AgentError);
+        note("the agent's program is not installed");
+        return unscored(Status::SetupFailed);
     };
     agent.current_dir(&clone);
     scrub(&mut agent, false);
-    let output = match exec::run_step(agent, stdin.as_deref(), input.timeout) {
+    let output = match exec::run_step(agent, stdin.as_deref(), timeout) {
         Ok(output) => output,
-        Err(_) => return unscored(Status::AgentError),
+        Err(e) => {
+            note(&format!("the agent could not start: {e}"));
+            return unscored(Status::SetupFailed);
+        }
     };
-    let timed_out = output.status.is_none();
-    let (end, usage) = harness::parse(input.variant, &output.stdout, output.succeeded());
-    if timed_out {
-        return finish(Status::Timeout, None, usage);
+    let killed = output.status.is_none();
+    let (end, mut usage) = harness::parse(variant, &output.stdout, output.succeeded());
+    if killed || exec::interrupted() {
+        // What a killed agent printed is not all it spent, so its cost is unknown (docs/bench.md).
+        usage.cost_usd = None;
+        let status = if exec::interrupted() {
+            Status::Interrupted
+        } else {
+            Status::Timeout
+        };
+        return finish(status, None, usage);
     }
     match end {
         AgentEnd::Finished => {}
@@ -397,14 +443,18 @@ fn run_trial(input: TrialInput) -> Trial {
     }
 
     // The agent can leave the clone in a state the copy cannot land on; its cost still counts.
-    if let Some(rel) = &input.task.test_files
-        && exec::overlay(&input.root.join(rel), &clone).is_err()
+    if let Some(rel) = &task.test_files
+        && exec::overlay(&root.join(rel), &clone).is_err()
     {
         return finish(Status::AgentError, None, usage);
     }
-    let Ok(tested) = step(&input.task.test) else {
+    let Ok(tested) = step(&task.test) else {
         return finish(Status::SetupFailed, None, usage);
     };
+    // An interrupted test says nothing about the agent's work.
+    if exec::interrupted() {
+        return finish(Status::Interrupted, None, usage);
+    }
     let status = match tested.status {
         None => Status::Timeout,
         Some(s) if s.success() => Status::Passed,

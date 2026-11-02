@@ -40,6 +40,9 @@ inputs:
   bench-fail-on:
     description: "Fail when the candidate's pass rate is lower (lower), also with no overlap in the intervals (separated), or never"
     default: never
+  bench-allow-unpriced:
+    description: "Run Bench variants whose spend the budget cannot see, such as a command harness: true or false"
+    default: "false"
   push-org:
     description: When set with the CEDR_API_KEY env, send the results to this cedr.dev organization (also when the checks fail)
     default: ""
@@ -143,17 +146,28 @@ runs:
         INPUT_SUITE: ${{ inputs.bench }}
         INPUT_BUDGET: ${{ inputs.bench-budget-usd }}
         INPUT_FAIL_ON: ${{ inputs.bench-fail-on }}
+        INPUT_ALLOW_UNPRICED: ${{ inputs.bench-allow-unpriced }}
         INPUT_ORG: ${{ inputs.push-org }}
       run: |
         set -uo pipefail
         cd "$INPUT_PATH" || exit 2
         args=(bench run "$INPUT_SUITE" --fail-on "$INPUT_FAIL_ON")
+        case "$INPUT_ALLOW_UNPRICED" in
+          true) args+=(--allow-unpriced) ;;
+          false) ;;
+          *) echo "::error title=cedr::bench-allow-unpriced must be true or false"; exit 2 ;;
+        esac
         if [ -n "$INPUT_BUDGET" ]; then
           args+=(--budget-usd "$INPUT_BUDGET")
         elif [ -n "$INPUT_ORG" ] && [ -n "${CEDR_API_KEY:-}" ]; then
           cedr bench budget --pull --org "$INPUT_ORG" || exit 2
         fi
-        cedr "${args[@]}" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+        report="$RUNNER_TEMP/cedr-bench-report.txt"
+        cedr "${args[@]}" | tee "$report"
+        status=${PIPESTATUS[0]}
+        # The report is a text table: outside a code block, markdown would run its lines together.
+        { echo '```text'; cat "$report"; echo '```'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+        exit "$status"
 
     - name: cedr sync fix
       id: sync-fix

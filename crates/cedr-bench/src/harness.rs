@@ -58,10 +58,11 @@ pub fn command(
     prompt: &str,
     prompt_file: &Path,
     budget_left: f64,
+    root: &Path,
 ) -> Option<(Command, Option<String>)> {
     match variant.harness {
         HarnessKind::Claude => {
-            let mut cmd = Command::new(exec::find_program("claude")?);
+            let mut cmd = Command::new(exec::find_program("claude", root)?);
             cmd.args([
                 "-p",
                 "--output-format",
@@ -85,7 +86,7 @@ pub fn command(
             Some((cmd, Some(prompt.to_string())))
         }
         HarnessKind::Codex => {
-            let mut cmd = Command::new(exec::find_program("codex")?);
+            let mut cmd = Command::new(exec::find_program("codex", root)?);
             cmd.args([
                 "exec",
                 "--json",
@@ -112,7 +113,7 @@ pub fn command(
                     .replace("{model}", &variant.model)
                     .replace("{effort}", variant.effort.as_deref().unwrap_or(""))
             };
-            let mut cmd = Command::new(exec::find_program(&argv[0])?);
+            let mut cmd = Command::new(exec::find_program(&argv[0], root)?);
             cmd.args(argv[1..].iter().map(fill));
             Some((cmd, None))
         }
@@ -144,9 +145,13 @@ fn add(total: &mut Option<u64>, n: Option<u64>) {
     }
 }
 
+/// Above this, a reported cost is noise rather than spend, and sums of it could overflow to infinity,
+/// which JSON cannot hold.
+const MAX_REPORTED_COST: f64 = 1e9;
+
 /// A cost a harness reports: a finite, non-negative number, since this total decides when a run stops.
 fn cost(value: Option<f64>) -> Option<f64> {
-    value.filter(|c| c.is_finite() && *c >= 0.0)
+    value.filter(|c| (0.0..=MAX_REPORTED_COST).contains(c))
 }
 
 fn parse_claude(text: &str) -> (AgentEnd, Usage) {
@@ -219,7 +224,9 @@ fn parse_codex(text: &str, model: &str) -> (AgentEnd, Usage) {
                 add(&mut write, token(row, "cache_write_input_tokens"));
                 add(&mut output, token(row, "output_tokens"));
             }
-            Some("turn.failed" | "error") => failed = true,
+            // Codex also emits top-level `error` events for retries it recovers from, so only a
+            // failed or missing turn counts.
+            Some("turn.failed") => failed = true,
             _ => {}
         }
     }
@@ -340,6 +347,28 @@ mod tests {
         let p = cedr_monitor::pricing::price("gpt-6.1-sol").unwrap();
         let expected = (9190.0 * p.input + 51456.0 * p.cache_read + 89.0 * p.output) / 1_000_000.0;
         assert!((usage.cost_usd.unwrap() - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_codex_retry_that_recovers_is_not_an_error() {
+        let v = variant(HarnessKind::Codex, "gpt-6.1-sol");
+        let retried =
+            format!("{{\"type\":\"error\",\"message\":\"Reconnecting... 1/5\"}}\n{CODEX_OK}");
+        let (end, usage) = parse(&v, retried.as_bytes(), true);
+        assert_eq!(end, AgentEnd::Finished);
+        assert!(usage.cost_usd.is_some());
+        let gave_up = r#"{"type":"error","message":"Reconnecting... 5/5"}"#;
+        assert_eq!(parse(&v, gave_up.as_bytes(), true).0, AgentEnd::Error);
+    }
+
+    #[test]
+    fn a_cost_too_large_to_be_real_is_unknown() {
+        let v = variant(HarnessKind::Command, "m");
+        assert_eq!(parse(&v, br#"{"cost_usd": 1e305}"#, true).1.cost_usd, None);
+        assert_eq!(
+            parse(&v, br#"{"cost_usd": 1.5}"#, true).1.cost_usd,
+            Some(1.5)
+        );
     }
 
     #[test]

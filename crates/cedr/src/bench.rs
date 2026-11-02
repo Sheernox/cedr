@@ -359,7 +359,12 @@ pub(crate) fn doctor_checks(root: &Path, mut add: impl FnMut(&str, &str, String,
             format!("{} ({source})", report::money(cap)),
             "",
         ),
-        Err(e) => add("bench.budget", "fail", e, "Run cedr bench budget --unset"),
+        Err(e) => add(
+            "bench.budget",
+            "fail",
+            e,
+            "Fix or remove the settings file it names; cedr bench budget --unset clears a broken value",
+        ),
     }
     let dir = root.join(".cedr").join("bench");
     let mut suites: Vec<PathBuf> = std::fs::read_dir(&dir)

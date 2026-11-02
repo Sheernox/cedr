@@ -750,3 +750,156 @@ fn a_settings_file_that_cannot_be_read_is_an_error_rather_than_the_default_cap()
     assert_eq!(code(&out), 2);
     assert!(String::from_utf8_lossy(&out.stderr).contains("cli.toml"));
 }
+
+#[test]
+fn an_interrupt_kills_the_agent_and_its_children_and_keeps_what_was_measured() {
+    let repo = Repo::new();
+    let marker = repo.dir.path().join("agent.pid");
+    repo.program(
+        "agent",
+        &format!(
+            "sleep 60 &\necho $! > {}.tmp\nmv {0}.tmp {0}\nwait",
+            marker.display()
+        ),
+    );
+    let suite = repo.suite(&command_suite(1));
+    let child = repo
+        .cedr(&run_args(&suite))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !marker.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the agent never started"
+        );
+        std::thread::yield_now();
+    }
+    let signal = |args: &[String]| {
+        Command::new("kill")
+            .args(args)
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+    };
+    assert!(signal(&["-INT".into(), child.id().to_string()]).success());
+    let out = child.wait_with_output().unwrap();
+
+    assert_eq!(code(&out), 3);
+    let r = stdout_json(&out);
+    assert_eq!(r["stop"], "interrupted");
+    assert_eq!(r["complete"], false);
+    assert_eq!(r["trials"].as_array().unwrap().len(), 1);
+    assert_eq!(r["trials"][0]["status"], "interrupted");
+    let helper = fs::read_to_string(&marker).unwrap().trim().to_string();
+    let alive = signal(&["-0".into(), helper]).success();
+    assert!(!alive, "the agent's child outlived the run");
+    let saved = repo.run(&["bench", "history", "--format", "json"]);
+    assert_eq!(stdout_json(&saved)[0]["stop"], "interrupted");
+    let left: Vec<_> = fs::read_dir(repo.dir.path().join("tmp")).unwrap().collect();
+    assert!(left.is_empty(), "the clone was left behind: {left:?}");
+}
+
+#[test]
+fn a_timed_out_agent_has_an_unknown_cost_even_after_printing_one() {
+    let repo = Repo::new();
+    repo.program(
+        "codex",
+        r#"if [ "$1" = --version ]; then echo 1; exit 0; fi
+echo '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":10}}'
+sleep 30"#,
+    );
+    let suite = repo.suite(
+        r#"version = 1
+trials = 2
+timeout_seconds = 1
+[baseline]
+harness = "codex"
+model = "gpt-6.1-sol"
+effort = "low"
+[candidate]
+harness = "codex"
+model = "gpt-6.1-sol"
+effort = "high"
+[[tasks]]
+id = "t"
+prompt = "p"
+test = "true"
+"#,
+    );
+    let out = repo.run(&["bench", "run", &suite, "--format", "json"]);
+    assert_eq!(code(&out), 3);
+    let r = stdout_json(&out);
+    assert_eq!(r["stop"], "unknown_cost");
+    assert_eq!(r["trials"].as_array().unwrap().len(), 1);
+    assert_eq!(r["trials"][0]["cost_usd"], Value::Null);
+    assert_eq!(r["unpriced_trials"], 1);
+}
+
+#[test]
+fn a_prompt_file_that_cannot_be_read_stops_the_run_before_any_spend() {
+    let repo = Repo::new();
+    let marker = repo.dir.path().join("ran");
+    repo.program("agent", &format!("touch {}", marker.display()));
+    fs::write(repo.root().join("bad.md"), [0xff_u8, 0xfe]).unwrap();
+    let suite = repo.suite(&format!(
+        "{}\n[[tasks]]\nid = \"second\"\nprompt_file = \"bad.md\"\ntest = \"true\"\n",
+        command_suite(1)
+    ));
+    assert_eq!(code(&repo.run(&["bench", "plan", &suite])), 2);
+    assert_eq!(code(&repo.run(&run_args(&suite))), 2);
+    assert!(!marker.exists(), "an agent started before the refusal");
+}
+
+#[test]
+fn a_shallow_clone_is_refused_before_any_trial() {
+    let repo = Repo::new();
+    repo.write("x", "x\n");
+    repo.commit("second");
+    let shallow = repo.dir.path().join("shallow");
+    git(
+        repo.dir.path(),
+        &[
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            &format!("file://{}", repo.root().display()),
+            shallow.to_str().unwrap(),
+        ],
+    );
+    fs::create_dir_all(shallow.join(".cedr/bench")).unwrap();
+    let suite = shallow.join(".cedr/bench/s.toml");
+    fs::write(&suite, command_suite(1)).unwrap();
+    let out = repo
+        .cedr(&["bench", "plan", suite.to_str().unwrap()])
+        .current_dir(&shallow)
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 2);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("fetch-depth: 0"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_relative_command_path_is_from_the_repo_root_wherever_cedr_runs() {
+    let repo = Repo::new();
+    let script = repo.write("tools/agent.sh", &format!("#!/bin/sh\n{AGENT}\n"));
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    repo.write("sub/keep", "");
+    repo.commit("tools");
+    let suite = repo.suite(&command_suite(1).replace("\"agent\"", "\"./tools/agent.sh\""));
+    let out = repo
+        .cedr(&run_args(&suite))
+        .current_dir(repo.root().join("sub"))
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+    let r = stdout_json(&out);
+    assert_eq!(r["trials"][1]["status"], "passed");
+}

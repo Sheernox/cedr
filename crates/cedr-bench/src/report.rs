@@ -25,6 +25,7 @@ pub enum Status {
     SetupFailed,
     AgentError,
     Budget,
+    Interrupted,
 }
 
 impl Status {
@@ -36,6 +37,7 @@ impl Status {
             Status::SetupFailed => "setup_failed",
             Status::AgentError => "agent_error",
             Status::Budget => "budget",
+            Status::Interrupted => "interrupted",
         }
     }
 
@@ -50,6 +52,7 @@ impl Status {
 pub enum Stop {
     Budget,
     UnknownCost,
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,12 +218,10 @@ pub fn summarize(trials: &[Trial], variant: VariantName) -> VariantSummary {
         cost_usd: (!costs.is_empty()).then(|| costs.iter().sum()),
         tokens: own
             .iter()
-            .map(|t| {
-                t.input_tokens.unwrap_or(0)
-                    + t.output_tokens.unwrap_or(0)
-                    + t.cached_tokens.unwrap_or(0)
-            })
-            .sum(),
+            .flat_map(|t| [t.input_tokens, t.output_tokens, t.cached_tokens])
+            .flatten()
+            // Harness output and result files are untrusted, and a count can be anything.
+            .fold(0, u64::saturating_add),
     }
 }
 
@@ -264,6 +265,7 @@ impl BenchResult {
             (true, _) => "complete".to_string(),
             (false, Some(Stop::Budget)) => "incomplete (budget)".to_string(),
             (false, Some(Stop::UnknownCost)) => "incomplete (unknown cost)".to_string(),
+            (false, Some(Stop::Interrupted)) => "incomplete (interrupted)".to_string(),
             (false, None) => format!("incomplete ({} unscored)", self.unscored()),
         };
         let mut out = format!(
@@ -367,6 +369,27 @@ pub fn parse(bytes: &[u8]) -> Result<BenchResult, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summaries_of_ordinary_costs_read_back_exactly() {
+        // A sum of six-decimal costs prints with 17 digits, the case a default JSON float parse gets wrong.
+        for seed in 0..500_u32 {
+            let costs: Vec<f64> = (1..=6_u32)
+                .map(|i| f64::from((seed + 1) * i * 7919 % 99_991) / 1e6)
+                .collect();
+            let sum: f64 = costs.iter().sum();
+            let back: f64 = serde_json::from_str(&serde_json::to_string(&sum).unwrap()).unwrap();
+            assert_eq!(back, sum, "{costs:?}");
+        }
+    }
+
+    #[test]
+    fn a_token_count_from_a_harness_cannot_overflow_the_summary() {
+        let mut row = trial(VariantName::Baseline, Status::Passed, 1, None);
+        row.input_tokens = Some(u64::MAX);
+        row.output_tokens = Some(1);
+        assert_eq!(summarize(&[row], VariantName::Baseline).tokens, u64::MAX);
+    }
 
     fn trial(variant: VariantName, status: Status, ms: u64, cost: Option<f64>) -> Trial {
         Trial {

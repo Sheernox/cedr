@@ -5,9 +5,10 @@ use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::{Result, invalid, io_error};
 
@@ -18,9 +19,43 @@ pub const MAX_OUTPUT: usize = 16 * 1024 * 1024;
 /// for as long as it likes, and must not hang the run.
 const DRAIN_GRACE: Duration = Duration::from_secs(5);
 
+/// How often a running step checks for an interrupt.
+const INTERRUPT_POLL: Duration = Duration::from_millis(50);
+
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the user asked this run to stop. A step in progress is killed when this turns true.
+pub fn interrupted() -> bool {
+    INTERRUPTED.load(Ordering::SeqCst)
+}
+
+/// Turns the first SIGINT, SIGTERM or SIGHUP into [`interrupted`]. Each step leads its own process
+/// group, so a signal to cedr's group never reaches it: without this, cedr would die and leave the
+/// agent running, past its timeout and the budget. A second signal has the default effect.
+#[cfg(unix)]
+pub fn catch_interrupts() {
+    extern "C" fn on_signal(signal: libc::c_int) {
+        INTERRUPTED.store(true, Ordering::SeqCst);
+        // SAFETY: signal is async-signal-safe and takes no pointers.
+        unsafe {
+            libc::signal(signal, libc::SIG_DFL);
+        }
+    }
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        // SAFETY: the handler only stores an atomic and calls signal.
+        unsafe {
+            libc::signal(signal, on_signal as *const () as libc::sighandler_t);
+        }
+    }
+}
+
+/// On Windows a step shares cedr's console, so Ctrl-C reaches it directly and ends both.
+#[cfg(not(unix))]
+pub fn catch_interrupts() {}
+
 #[derive(Debug)]
 pub struct StepOutput {
-    /// None when the step timed out and was killed.
+    /// None when the step timed out, or was interrupted, and was killed.
     pub status: Option<ExitStatus>,
     pub stdout: Vec<u8>,
 }
@@ -32,8 +67,10 @@ impl StepOutput {
 }
 
 /// Runs `cmd` to completion or until `timeout`, feeding it `stdin` and capturing the end of stdout.
-/// Stderr is discarded: agents write to it freely, and nothing reads it. On a timeout, and after a
-/// normal exit, the whole process group is killed, so no helper outlives its trial.
+/// Stderr is discarded: agents write to it freely, and nothing reads it. On a timeout or an interrupt,
+/// and after a normal exit, the whole process group is killed, so no helper outlives its trial. On
+/// Windows there is no group: `taskkill` walks the tree of a running process, so after a normal exit
+/// a helper the step left behind keeps running.
 pub fn run_step(
     mut cmd: Command,
     stdin: Option<&str>,
@@ -81,9 +118,21 @@ pub fn run_step(
         let status = child.wait();
         let _ = done_tx.send((status, child));
     });
-    let (status, held) = match done_rx.recv_timeout(timeout) {
-        Ok((status, child)) => (Some(status?), Some(child)),
-        Err(_) => {
+    let deadline = Instant::now() + timeout;
+    let finished = loop {
+        match done_rx.recv_timeout(INTERRUPT_POLL) {
+            Ok(done) => break Some(done),
+            Err(mpsc::RecvTimeoutError::Disconnected) => break None,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if interrupted() || Instant::now() >= deadline {
+                    break None;
+                }
+            }
+        }
+    };
+    let (status, held) = match finished {
+        Some((status, child)) => (Some(status?), Some(child)),
+        None => {
             kill_tree(pid);
             (
                 None,
@@ -138,11 +187,17 @@ fn kill_tree(pid: u32) {
 
 /// A shell command as the platform runs one.
 pub fn shell(script: &str) -> Command {
-    if cfg!(windows) {
+    #[cfg(windows)]
+    {
+        // Rust's argument escaping is for programs, and cmd reads quotes by its own rules, so a
+        // script with quotes would reach its program changed. /S makes cmd strip exactly the outer pair.
+        use std::os::windows::process::CommandExt;
         let mut cmd = Command::new("cmd");
-        cmd.args(["/C", script]);
+        cmd.raw_arg(format!("/S /C \"{script}\""));
         cmd
-    } else {
+    }
+    #[cfg(not(windows))]
+    {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", script]);
         cmd
@@ -150,8 +205,9 @@ pub fn shell(script: &str) -> Command {
 }
 
 /// The program's path on `PATH`, trying Windows' executable extensions so `claude.cmd` is found.
-/// Rust escapes arguments for `.cmd` and `.bat` targets, or refuses when it cannot.
-pub fn find_program(name: &str) -> Option<PathBuf> {
+/// Rust escapes arguments for `.cmd` and `.bat` targets, or refuses when it cannot. A name with a
+/// directory in it is relative to the repo root, like every other path in a suite.
+pub fn find_program(name: &str, root: &Path) -> Option<PathBuf> {
     let path = Path::new(name);
     let candidates = |p: &Path| -> Vec<PathBuf> {
         if cfg!(windows) && p.extension().is_none() {
@@ -165,7 +221,7 @@ pub fn find_program(name: &str) -> Option<PathBuf> {
     };
     if path.components().count() > 1 {
         // Absolute, because the step runs from inside a trial's clone.
-        return candidates(path)
+        return candidates(&root.join(path))
             .into_iter()
             .find(|p| p.is_file())
             .and_then(|p| std::fs::canonicalize(p).ok());
@@ -197,10 +253,11 @@ fn git_stdout(dir: &Path, args: &[&str], what: &str) -> Result<String> {
         .output()
         .map_err(|e| invalid(format!("{what}: cannot run git: {e}")))?;
     if !output.status.success() {
-        return Err(invalid(format!(
-            "{what}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(invalid(match stderr.trim() {
+            "" => what.to_string(),
+            reason => format!("{what}: {reason}"),
+        }));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -212,6 +269,23 @@ pub fn git_root(dir: &Path) -> Result<PathBuf> {
         &format!("{}: not in a git repo", dir.display()),
     )?;
     Ok(PathBuf::from(text.trim()))
+}
+
+/// A trial's clone can only reach commits on the shallow source's own branches, so a ref fetched on
+/// its own would fail every trial while the other variant kept spending. Better to refuse up front.
+pub fn refuse_shallow(root: &Path) -> Result<()> {
+    let text = git_stdout(
+        root,
+        &["rev-parse", "--is-shallow-repository"],
+        &format!("{}: cannot read the repo", root.display()),
+    )?;
+    if text.trim() == "true" {
+        return Err(invalid(format!(
+            "{}: a shallow clone cannot run Bench; run git fetch --unshallow (in GitHub Actions, set fetch-depth: 0 on actions/checkout)",
+            root.display()
+        )));
+    }
+    Ok(())
 }
 
 pub fn resolve_ref(root: &Path, git_ref: &str) -> Result<String> {
@@ -412,7 +486,7 @@ mod tests {
     #[test]
     fn a_daemon_holding_the_pipe_does_not_hang_a_step_that_exited() {
         // setsid escapes the process group, as a daemon does; only the grace period can end the wait.
-        if find_program("setsid").is_none() {
+        if find_program("setsid", Path::new("/")).is_none() {
             return;
         }
         let out = run_step(

@@ -577,7 +577,6 @@ pub enum SyncRules {
     None,
     PlanRequired,
 }
-/// Reads organization rules using the same key, client and URL rules as Route.
 /// The organization's Bench cap from the app (docs/bench.md, Budget); None when it has set none.
 pub fn get_bench_budget(sync: &Sync, key: &str) -> Result<Option<f64>> {
     let mut url = reqwest::Url::parse(&format!("{}/bench/settings", sync.url()))
@@ -608,6 +607,7 @@ pub fn get_bench_budget(sync: &Sync, key: &str) -> Result<Option<f64>> {
     }
 }
 
+/// Reads organization rules using the same key, client and URL rules as Route.
 pub fn get_sync_rules(sync: &Sync, key: &str) -> Result<SyncRules> {
     let mut url = reqwest::Url::parse(&format!("{}/sync/rules", sync.url()))
         .map_err(|_| sync_err("pull", "invalid API URL"))?;
