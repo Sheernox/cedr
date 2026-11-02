@@ -6,7 +6,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.0.png" alt="cedr v0.8.0: bench" width="770">
 
-**v0.8.0** · 26 changes from 1 contributor
+**v0.8.0** · 27 changes from 1 contributor
 
 ### Highlights
 **Bench is here.** It tells you whether a change to your rules, a skill or a model helps before you merge it: real tasks against a baseline and a candidate, your tests deciding each trial, and a budget on every run that defaults to $2.00. Start with `cedr bench init`.
@@ -22,7 +22,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 - **Guard** adds `cedr guard lock --remote` and `cedr guard remote`, which report added and removed tools, schema and description changes, new hosts and expanded capabilities. They send no credentials and contact only public HTTPS addresses. A server that is down or needs a login reports as that, never as unchanged. `[remote] interval_minutes` limits how often a scheduled run really reads a server. Contract: [docs/design.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/design.md).
 - **Route** has a built-in `grok` reader for Grok Build's weekly allowance, which Council's picks use too. `cedr monitor limits` shows the reading, `cedr doctor` checks Grok Build's MCP registration, and `cedr route import` sets its effort option. The plan's pool is shared with the vendor's other products, so the percent can rise with no Grok Build turn. Contract: [docs/route.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/route.md).
 - **Route** gives you control of its limits and models. `[thresholds]` can now be set per plan and per route, session and weekly limits can differ (`session_out`, `weekly_out`), and `conserve_sizes` and `unknown_sizes` choose what work a low or unread plan still takes. A candidate's `sizes` sends small and large work to different models. `cedr route thresholds`, `add`, `remove`, `enable` and `disable` make these changes for you, keeping your file's comments; `cedr route show` explains what a route would pick at each size and why, and `cedr route models` lists what you can choose from. Older cedr versions refuse a `routes.toml` using the new keys, so upgrade every machine that shares one. Contract: [docs/route.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/route.md#thresholds).
-- **Monitor** adds `responseSet` to each row it pushes, a digest of the responses behind the row, so the same usage from a copied log can be told apart from distinct usage. The responses' identities never leave the machine. Contract: [docs/monitor.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/monitor.md).
+- **Monitor** adds `responseSet` to each row it pushes, a digest of the responses behind the row, so a log copied between your machines counts once in the app. Past hours count once after `cedr monitor push --full` on each machine. The responses' identities never leave the machine. Contract: [docs/monitor.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/monitor.md).
 - **Versioning** is now written down: what counts as public API, what each bump means, and how breaking changes reach you. Read [docs/versioning.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/versioning.md).
 
 <details>
@@ -55,6 +55,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 * fix(route): keep comments through awkward candidate lists and windows line endings
 * fix(bench): report an interrupt as the stop reason and save the run if output is gone
 * fix(route): name the routes file as given when reporting an edit
+* docs: say how a copied log counts once in the 0.8.0 changelog
 
 **Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.7.0...v0.8.0
 </details>
