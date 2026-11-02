@@ -6,7 +6,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.0.png" alt="cedr v0.8.0: remote watch" width="770">
 
-**v0.8.0** · 13 changes from 1 contributor
+**v0.8.0** · 14 changes from 1 contributor
 
 ### Highlights
 Guard can now watch remote MCP servers. A remote server has no version, so a pin could never notice its tools changing; `cedr guard remote` compares what a server lists now with what you locked. Route and Council can also read Grok Build's plan usage and balance work onto it. **Upgrade step:** none; cedr updates itself. A lock made with `--remote` needs this version or later to diff its surfaces.
@@ -33,6 +33,7 @@ Guard can now watch remote MCP servers. A remote server has no version, so a pin
 * build(banner): render the v0.8.0 release hero
 * docs: changelog for 0.8.0
 * chore(release): cedr 0.8.0
+* docs(agents): let agents choose changelog section order
 
 **Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.7.0...v0.8.0
 </details>
