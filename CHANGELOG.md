@@ -6,7 +6,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.0.png" alt="cedr v0.8.0: remote watch" width="770">
 
-**v0.8.0** · 14 changes from 1 contributor
+**v0.8.0** · 15 changes from 1 contributor
 
 ### Highlights
 Guard can now watch remote MCP servers. A remote server has no version, so a pin could never notice its tools changing; `cedr guard remote` compares what a server lists now with what you locked. Route and Council can also read Grok Build's plan usage and balance work onto it. **Upgrade step:** none; cedr updates itself. A lock made with `--remote` needs this version or later to diff its surfaces.
@@ -15,6 +15,7 @@ Guard can now watch remote MCP servers. A remote server has no version, so a pin
 - **Guard** adds `cedr guard lock --remote` and `cedr guard remote`, which report added and removed tools, schema and description changes, new hosts and expanded capabilities. They send no credentials and contact only public HTTPS addresses. A server that is down or needs a login reports as that, never as unchanged. `[remote] interval_minutes` limits how often a scheduled run really reads a server. Contract: [docs/design.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/design.md).
 - **Route** has a built-in `grok` reader for Grok Build's weekly allowance, which Council's picks use too. `cedr monitor limits` shows the reading, `cedr doctor` checks Grok Build's MCP registration, and `cedr route import` sets its effort option. The plan's pool is shared with the vendor's other products, so the percent can rise with no Grok Build turn. Contract: [docs/route.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/route.md).
 - **Monitor** adds `responseSet` to each row it pushes, a digest of the responses behind the row. It lets the same usage from a copied log be told apart from distinct usage, and the responses' identities never leave the machine. Contract: [docs/monitor.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/monitor.md).
+- **Versioning** is now written down: what counts as public API, what each bump means, and how breaking changes reach you. Read [docs/versioning.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/versioning.md).
 
 <details>
 <summary>Full changelog</summary>
@@ -34,6 +35,7 @@ Guard can now watch remote MCP servers. A remote server has no version, so a pin
 * docs: changelog for 0.8.0
 * chore(release): cedr 0.8.0
 * docs(agents): let agents choose changelog section order
+* docs: define the version scheme and what it promises
 
 **Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.7.0...v0.8.0
 </details>

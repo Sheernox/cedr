@@ -17,7 +17,7 @@
 `cedr` is the command line tool behind [cedr.dev](https://cedr.dev): every coding agent, one control panel. It picks the agent, model and effort for each kind of work, merges reviews from several vendors into one gate, pins the skills and MCP servers your agents load, compiles one setup into each agent's own files, and reports usage, spend and plan limits across them. Any agent that speaks MCP can call it directly.
 
 > [!NOTE]
-> cedr is in public beta. Commands and file formats may still change before 1.0.
+> cedr is in public beta. Commands and file formats may still change before 1.0. See [how versions work](docs/versioning.md).
 
 ## ✨ Products
 

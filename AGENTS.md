@@ -69,6 +69,7 @@ The usual defect here is a change that works where you tested it and is missing 
 
 ## Releases
 
+- Versions follow SemVer, and [docs/versioning.md](docs/versioning.md) defines the public API and the 0.x rules: a minor for anything new or breaking, a patch for fixes only. When in doubt, it's a minor.
 - Each version bump ships a full `CHANGELOG.md` entry, and the release workflow publishes it as the notes (it fails when the tag has none). Format: a hero image 770 wide by absolute URL (rendered from `banner/releases/` by `scripts/render-banner.py`), a `**vX.Y.Z** · N changes from M contributors` line, Highlights, then whatever sections suit the release, in the order that serves its readers (for example Features or Fixes), and a folded Full changelog with the compare link.
 - Agents may release a patch when checks pass and every commit since the last tag was authored in-house.
 - Any outside-authored commit, and every minor or major version, needs a release pull request held open until a maintainer approves it. Post an approval only when a maintainer has approved that exact head in the current conversation, and never otherwise.
