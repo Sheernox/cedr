@@ -2,6 +2,33 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.8.1 (2026-11-01)
+
+![cedr v0.8.1: council, tuned](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.1.png)
+
+**v0.8.1** · 4 changes from 1 contributor
+
+### Highlights
+Council can now be tuned as finely as any other route. A member can review only the work sizes you choose, so a large change can get more reviewers than a small one. `cedr route sync` also says which machine it is pushing from, so the cedr.dev app can show council results per machine.
+
+**Upgrade step:** upgrade every machine that shares a `routes.toml` before setting `sizes` on a council member, because older versions refuse the file.
+
+### Features
+- **Council** members accept `sizes`, the work sizes each one reviews. Every size must keep at least the quorum of members; validation fails otherwise, since that work could never pass.
+- **Route** sync sends this machine's id with each history batch, as `machine` beside `org`. It is left out if the id cannot be read or made, and the records still sync.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* feat(council): let members review chosen work sizes
+* feat(route): name the machine when pushing history
+* build(banner): render the v0.8.1 release hero
+* chore(release): cedr 0.8.1
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.8.0...v0.8.1
+</details>
+
 ## v0.8.0 (2026-11-01)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.0.png" alt="cedr v0.8.0: bench" width="770">
