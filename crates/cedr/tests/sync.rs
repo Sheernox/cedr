@@ -167,6 +167,11 @@ fn pushes_resume_after_the_last_accepted_record() {
         (body["org"].as_str(), body["records"][0]["type"].as_str()),
         (Some("acme"), Some("pick"))
     );
+    let machine = body["machine"].as_str().unwrap();
+    assert!(
+        machine.starts_with("m-") && machine.len() == 14,
+        "{machine}"
+    );
     let second: Value = serde_json::from_str(&seen[1].3).unwrap();
     assert_eq!(
         second["records"].as_array().unwrap().len(),

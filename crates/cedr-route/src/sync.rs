@@ -193,9 +193,15 @@ pub fn push(sync: &Sync, key: &str, history: &Path) -> Result<Pushed> {
     let records = pending(history, offsets.get(&id).copied().unwrap_or(0))?;
     let http = client(sync.url())?;
     let mut total = Pushed::default();
+    // History is local to this machine, so every record pushed from it ran here. The app uses this to show
+    // council results per machine; without an id (an unwritable state dir) the results still sync.
+    let machine_id = machine::machine_id().ok();
     for batch in records.chunks(BATCH) {
-        let body =
+        let mut body =
             json!({"org": sync.org, "records": batch.iter().map(|(_, v)| v).collect::<Vec<_>>()});
+        if let Some(id) = &machine_id {
+            body["machine"] = json!(id);
+        }
         let response = http
             .post(format!("{}/route/history", sync.url()))
             .bearer_auth(key)
