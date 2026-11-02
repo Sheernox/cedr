@@ -283,6 +283,10 @@ pub fn run(
                 // Spend the budget cannot see must not repeat unless the user agreed to it.
                 let blind = trial.spent_unknown() && !options.allow_unpriced;
                 trials.push(trial);
+                if exec::interrupted() {
+                    stop = Some(Stop::Interrupted);
+                    break 'run;
+                }
                 if blind {
                     stop = Some(Stop::UnknownCost);
                     break 'run;
@@ -448,8 +452,9 @@ fn run_trial(input: TrialInput) -> Trial {
     {
         return finish(Status::AgentError, None, usage);
     }
+    // Only an agent can have taken away what the test needs, and it may have spent money doing so.
     let Ok(tested) = step(&task.test) else {
-        return finish(Status::SetupFailed, None, usage);
+        return finish(Status::AgentError, None, usage);
     };
     // An interrupted test says nothing about the agent's work.
     if exec::interrupted() {

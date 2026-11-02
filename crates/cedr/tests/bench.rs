@@ -769,22 +769,8 @@ fn an_interrupt_kills_the_agent_and_its_children_and_keeps_what_was_measured() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while !marker.exists() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the agent never started"
-        );
-        std::thread::yield_now();
-    }
-    let signal = |args: &[String]| {
-        Command::new("kill")
-            .args(args)
-            .stderr(std::process::Stdio::null())
-            .status()
-            .unwrap()
-    };
-    assert!(signal(&["-INT".into(), child.id().to_string()]).success());
+    wait_for(&marker);
+    send("-INT", child.id());
     let out = child.wait_with_output().unwrap();
 
     assert_eq!(code(&out), 3);
@@ -794,7 +780,12 @@ fn an_interrupt_kills_the_agent_and_its_children_and_keeps_what_was_measured() {
     assert_eq!(r["trials"].as_array().unwrap().len(), 1);
     assert_eq!(r["trials"][0]["status"], "interrupted");
     let helper = fs::read_to_string(&marker).unwrap().trim().to_string();
-    let alive = signal(&["-0".into(), helper]).success();
+    let alive = Command::new("kill")
+        .args(["-0", &helper])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success();
     assert!(!alive, "the agent's child outlived the run");
     let saved = repo.run(&["bench", "history", "--format", "json"]);
     assert_eq!(stdout_json(&saved)[0]["stop"], "interrupted");
@@ -902,4 +893,140 @@ fn a_relative_command_path_is_from_the_repo_root_wherever_cedr_runs() {
     assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
     let r = stdout_json(&out);
     assert_eq!(r["trials"][1]["status"], "passed");
+}
+
+/// Waits for an agent's marker file, which it writes once it is running.
+fn wait_for(marker: &Path) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !marker.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the agent never started"
+        );
+        std::thread::yield_now();
+    }
+}
+
+fn send(signal: &str, pid: u32) {
+    let sent = Command::new("kill")
+        .args([signal, &pid.to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+}
+
+#[test]
+fn an_interrupt_is_the_stop_reason_even_when_the_trial_cost_is_unknown() {
+    let repo = Repo::new();
+    let marker = repo.dir.path().join("running");
+    repo.program(
+        "codex",
+        &format!(
+            "if [ \"$1\" = --version ]; then echo 1; exit 0; fi\ntouch {}\nsleep 60",
+            marker.display()
+        ),
+    );
+    let suite = repo.suite(
+        r#"version = 1
+trials = 2
+[baseline]
+harness = "codex"
+model = "gpt-6.1-sol"
+effort = "low"
+[candidate]
+harness = "codex"
+model = "gpt-6.1-sol"
+effort = "high"
+[[tasks]]
+id = "t"
+prompt = "p"
+test = "true"
+"#,
+    );
+    let child = repo
+        .cedr(&["bench", "run", &suite, "--format", "json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for(&marker);
+    send("-TERM", child.id());
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(code(&out), 3);
+    assert_eq!(stdout_json(&out)["stop"], "interrupted");
+}
+
+#[test]
+fn an_interrupt_saves_the_run_when_its_output_has_gone_away() {
+    let repo = Repo::new();
+    let marker = repo.dir.path().join("running");
+    repo.program("agent", &format!("touch {}\nsleep 60", marker.display()));
+    let suite = repo.suite(&command_suite(1));
+    let mut child = repo
+        .cedr(&run_args(&suite))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    drop(child.stderr.take());
+    wait_for(&marker);
+    send("-INT", child.id());
+    assert_eq!(child.wait().unwrap().code(), Some(3));
+    let saved = repo.run(&["bench", "history", "--format", "json"]);
+    assert_eq!(stdout_json(&saved)[0]["stop"], "interrupted");
+}
+
+#[test]
+fn a_hangup_ignored_by_the_parent_does_not_stop_the_run() {
+    let repo = Repo::new();
+    let marker = repo.dir.path().join("running");
+    let go = repo.dir.path().join("go");
+    repo.program(
+        "agent",
+        &format!(
+            "touch {}\nwhile [ ! -e {} ]; do sleep 0.05; done\necho fixed > done",
+            marker.display(),
+            go.display()
+        ),
+    );
+    let suite = repo.suite(&command_suite(1));
+    // The shell ignores the signal and execs cedr, which is what nohup does.
+    let mut args = vec![
+        "-c".to_string(),
+        "trap '' HUP; exec \"$@\"".to_string(),
+        "sh".to_string(),
+    ];
+    args.push(env!("CARGO_BIN_EXE_cedr").to_string());
+    args.extend(run_args(&suite).iter().map(ToString::to_string));
+    let cedr = repo.cedr(&[]);
+    let env = cedr
+        .get_envs()
+        .filter_map(|(key, value)| value.map(|value| (key, value)));
+    let child = Command::new("sh")
+        .args(&args)
+        .current_dir(repo.root())
+        .envs(env)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for(&marker);
+    send("-HUP", child.id());
+    fs::write(&go, "").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(code(&out), 0);
+    assert_eq!(stdout_json(&out)["stop"], Value::Null);
+}
+
+#[test]
+fn an_agent_that_removes_its_clone_has_an_unknown_cost() {
+    let repo = Repo::new();
+    repo.program("agent", "cd .. && rm -rf repo");
+    let suite = repo.suite(&command_suite(1));
+    let out = repo.run(&run_args(&suite));
+    assert_eq!(code(&out), 3);
+    let r = stdout_json(&out);
+    assert_eq!(r["trials"][0]["status"], "agent_error");
+    assert_eq!(r["unpriced_trials"], 2);
 }

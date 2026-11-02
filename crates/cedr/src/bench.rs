@@ -2,6 +2,7 @@
 //! (docs/bench.md). Exit codes: run and show 0 complete, 1 the `--fail-on` condition held, 3
 //! incomplete; 2 usage, suite or I/O failure.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -157,8 +158,9 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
                 budget_usd,
                 allow_unpriced,
             };
+            // Progress must never end a run that has spent money, so its failures are ignored.
             let result = run::run(&loaded, &options, |line| {
-                eprintln!("cedr: bench: {line}");
+                let _ = writeln!(std::io::stderr(), "cedr: bench: {line}");
             })
             .map_err(|e| e.to_string())?;
             let saved = if no_record { Ok(()) } else { save(&result) };
@@ -503,12 +505,15 @@ fn print_json(value: &Value) {
     );
 }
 
+/// Prints the report. A reader that has gone away must not replace the run's exit code with a panic.
 fn print_result(result: &BenchResult, format: Format) {
-    match format {
-        Format::Text => print!("{}", result.text()),
-        Format::Json => println!(
-            "{}",
-            serde_json::to_string_pretty(result).expect("result serializes")
-        ),
-    }
+    let text = match format {
+        Format::Text => result.text(),
+        Format::Json => {
+            let mut json = serde_json::to_string_pretty(result).expect("result serializes");
+            json.push('\n');
+            json
+        }
+    };
+    let _ = std::io::stdout().write_all(text.as_bytes());
 }

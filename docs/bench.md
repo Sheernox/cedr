@@ -104,14 +104,14 @@ Each step runs on its own, and what it leaves running is killed when it ends on 
 | `passed` | `test` exited 0 | Yes |
 | `failed` | `test` exited non-zero | Yes |
 | `timeout` | The agent or `test` ran past the timeout | Yes, as not passed |
-| `setup_failed` | `setup` failed or timed out, or the agent could not start | No |
-| `agent_error` | The agent exited with an error or reported one | No |
+| `setup_failed` | `setup` failed, timed out or was interrupted, or the agent could not start | No |
+| `agent_error` | The agent exited with an error or reported one, or left its clone unable to run `test` | No |
 | `budget` | The vendor CLI stopped at its limit | No |
-| `interrupted` | The run was interrupted during this trial | No |
+| `interrupted` | The run was interrupted during the agent or `test` | No |
 
 An unscored trial, or a run stopped by budget, makes the run incomplete.
 
-On Linux and macOS, Ctrl-C (or SIGTERM or SIGHUP) kills the running step, removes its clone and ends the run with what it measured: saved as usual, incomplete, with `stop` set to `"interrupted"`. A second signal ends cedr at once. On Windows, Ctrl-C ends cedr and the step together, and that run is not saved.
+On Linux and macOS, Ctrl-C (or SIGTERM or SIGHUP) kills the running step, removes its clone and ends the run with what it measured: saved as usual, incomplete, with `stop` set to `"interrupted"`. A signal ignored when cedr started stays ignored, so `nohup` keeps a run going. On Windows, Ctrl-C ends cedr and the step together, and that run is not saved.
 
 ## Commands
 

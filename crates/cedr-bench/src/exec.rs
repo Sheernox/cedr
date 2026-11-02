@@ -29,23 +29,27 @@ pub fn interrupted() -> bool {
     INTERRUPTED.load(Ordering::SeqCst)
 }
 
-/// Turns the first SIGINT, SIGTERM or SIGHUP into [`interrupted`]. Each step leads its own process
-/// group, so a signal to cedr's group never reaches it: without this, cedr would die and leave the
-/// agent running, past its timeout and the budget. A second signal has the default effect.
+/// Turns SIGINT, SIGTERM and SIGHUP into [`interrupted`]. Each step leads its own process group, so a
+/// signal to cedr's group never reaches it: without this, cedr would die and leave the agent running,
+/// past its timeout and the budget. A repeated signal changes nothing, so it cannot end cedr before
+/// the step is killed. A signal the parent chose to ignore stays ignored, as under `nohup`. SIGPIPE
+/// is ignored too, so a reader of the output going away cannot lose a run that has spent money.
 #[cfg(unix)]
 pub fn catch_interrupts() {
-    extern "C" fn on_signal(signal: libc::c_int) {
+    extern "C" fn on_signal(_: libc::c_int) {
         INTERRUPTED.store(true, Ordering::SeqCst);
-        // SAFETY: signal is async-signal-safe and takes no pointers.
-        unsafe {
-            libc::signal(signal, libc::SIG_DFL);
-        }
     }
     for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
-        // SAFETY: the handler only stores an atomic and calls signal.
+        // SAFETY: the handler only stores an atomic.
         unsafe {
-            libc::signal(signal, on_signal as *const () as libc::sighandler_t);
+            if libc::signal(signal, on_signal as *const () as libc::sighandler_t) == libc::SIG_IGN {
+                libc::signal(signal, libc::SIG_IGN);
+            }
         }
+    }
+    // SAFETY: SIG_IGN is not a handler. Command resets SIGPIPE for the processes it starts.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
     }
 }
 
@@ -118,13 +122,14 @@ pub fn run_step(
         let status = child.wait();
         let _ = done_tx.send((status, child));
     });
-    let deadline = Instant::now() + timeout;
+    // None when the timeout is too long to represent, which waits as long as the step takes.
+    let deadline = Instant::now().checked_add(timeout);
     let finished = loop {
         match done_rx.recv_timeout(INTERRUPT_POLL) {
             Ok(done) => break Some(done),
             Err(mpsc::RecvTimeoutError::Disconnected) => break None,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if interrupted() || Instant::now() >= deadline {
+                if interrupted() || deadline.is_some_and(|d| Instant::now() >= d) {
                     break None;
                 }
             }
@@ -451,6 +456,12 @@ fn remove_link(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_timeout_too_long_to_represent_waits_for_the_step() {
+        let out = run_step(shell("exit 0"), None, Duration::MAX).unwrap();
+        assert!(out.succeeded());
+    }
 
     #[test]
     fn agent_files_are_recognised_at_the_depth_they_are_read() {

@@ -149,7 +149,8 @@ runs:
         INPUT_ALLOW_UNPRICED: ${{ inputs.bench-allow-unpriced }}
         INPUT_ORG: ${{ inputs.push-org }}
       run: |
-        set -uo pipefail
+        # Actions runs this with -e, and an incomplete run must still reach the summary below.
+        set +e -uo pipefail
         cd "$INPUT_PATH" || exit 2
         args=(bench run "$INPUT_SUITE" --fail-on "$INPUT_FAIL_ON")
         case "$INPUT_ALLOW_UNPRICED" in
@@ -166,7 +167,9 @@ runs:
         cedr "${args[@]}" | tee "$report"
         status=${PIPESTATUS[0]}
         # The report is a text table: outside a code block, markdown would run its lines together.
-        { echo '```text'; cat "$report"; echo '```'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+        if [ -s "$report" ]; then
+          { echo '```text'; cat "$report"; echo '```'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+        fi
         exit "$status"
 
     - name: cedr sync fix
