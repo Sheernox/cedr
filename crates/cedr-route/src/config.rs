@@ -556,14 +556,27 @@ impl Config {
                 _ => {}
             }
             self.validate_cascade(id, route)?;
+            if route.council {
+                let quorum = route.quorum();
+                for size in Size::ALL {
+                    let takes = route
+                        .candidates
+                        .iter()
+                        .filter(|c| c.sizes.as_ref().is_none_or(|s| s.contains(&size)))
+                        .count();
+                    if takes < quorum {
+                        return Err(format!(
+                            "route {id}: {takes} members take {} work, below its quorum of {quorum}",
+                            size.as_str()
+                        ));
+                    }
+                }
+            }
             route
                 .thresholds
                 .validate(&format!("routes.{id}.thresholds"))?;
             for c in &route.candidates {
                 match &c.sizes {
-                    Some(_) if route.council => {
-                        return Err(format!("route {id}: a council member takes no sizes"));
-                    }
                     Some(_) if c.target == "self" => {
                         return Err(format!("route {id}: self takes no sizes"));
                     }
@@ -1046,13 +1059,20 @@ mod tests {
             .unwrap_err()
             .contains("self takes no sizes")
         );
-        assert!(
-            parse(&route(
-                "council = true\ncandidates = [{ target = \"a/m\", sizes = [\"small\"] }]\n"
-            ))
-            .unwrap_err()
-            .contains("council member")
-        );
+    }
+
+    #[test]
+    fn every_size_a_council_reviews_must_reach_its_quorum() {
+        let route = |c: &str| format!("version = 1\n[harnesses.a]\n[routes.r]\n{c}");
+        let members = |small: &str| {
+            format!(
+                "council = true\nquorum = 2\ncandidates = [\n  {{ target = \"a/m\" }},\n  {{ target = \"a/n\" }},\n  {{ target = \"a/o\", sizes = [\"large\"] }},\n  {{ target = \"a/p\", sizes = [{small}] }},\n]\n"
+            )
+        };
+        assert!(parse(&route(&members("\"small\""))).is_ok());
+        let two = "council = true\nquorum = 2\ncandidates = [\n  { target = \"a/m\" },\n  { target = \"a/n\", sizes = [\"large\"] },\n]\n";
+        let err = parse(&route(two)).unwrap_err();
+        assert!(err.contains("1 members take small work"), "{err}");
     }
 
     #[test]

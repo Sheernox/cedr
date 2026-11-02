@@ -65,6 +65,69 @@ fn a_plan_below_quorum_exits_3_and_still_names_the_members() {
     assert_eq!(not.status.code(), Some(2));
 }
 
+/// Three members, one for large work only, and the council's own weekly stop at 30%.
+const TUNED: &str = r#"version = 1
+[harnesses.codex]
+expect = ["primary"]
+[harnesses.claude]
+expect = ["five_hour", "seven_day"]
+aliases = ["claudeAgent"]
+[routes.tuned]
+work = "review"
+council = true
+quorum = 2
+[routes.tuned.thresholds]
+weekly_out = 30
+[[routes.tuned.candidates]]
+target = "codex/gpt-6.1-sol"
+[[routes.tuned.candidates]]
+target = "claude/claude-opus-5-5"
+[[routes.tuned.candidates]]
+target = "codex/gpt-6-sol"
+sizes = ["large"]
+"#;
+
+#[test]
+fn a_council_plans_members_by_work_size_under_its_own_limits() {
+    let plan = |s: &Scratch, size: &str| -> (Option<i32>, Vec<String>) {
+        let path = s.dir.path().join("tuned.toml");
+        std::fs::write(&path, TUNED).unwrap();
+        let (cfg, readings) = (path.display().to_string(), s.readings());
+        let o = s.cedr(&[
+            "council",
+            "plan",
+            "tuned",
+            "--config",
+            &cfg,
+            "--readings",
+            &readings,
+            "--size",
+            size,
+            "--format",
+            "json",
+        ]);
+        let v: Value = serde_json::from_slice(&o.stdout)
+            .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&o.stderr)));
+        let targets = v["delegates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["model"].as_str().unwrap().to_string())
+            .collect();
+        (o.status.code(), targets)
+    };
+    let room = Scratch::new(10.0, 20.0);
+    assert_eq!(
+        plan(&room, "small").1.len(),
+        2,
+        "the large-only member sits out"
+    );
+    assert_eq!(plan(&room, "large").1.len(), 3);
+    let (code, members) = plan(&Scratch::new(10.0, 40.0), "small");
+    assert_eq!(code, Some(3), "claude is past the council's own stop");
+    assert_eq!(members.len(), 1);
+}
+
 #[test]
 fn merge_reads_text_and_json_reports_and_blocks_on_p1() {
     let s = Scratch::new(10.0, 20.0);
