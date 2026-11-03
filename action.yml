@@ -32,7 +32,7 @@ inputs:
     description: "Repair Sync drift with a PR on push, schedule or workflow_dispatch; needs contents and pull-requests write"
     default: "false"
   bench:
-    description: "A Bench suite to run, for example .cedr/bench/agents.toml; empty skips Bench. A suite is code: never point this at one from an untrusted pull request"
+    description: "A Bench suite to run, for example .cedr/bench/agents.toml; empty skips Bench. Results are sent when push-org and CEDR_API_KEY are set. A suite is code: never point this at one from an untrusted pull request"
     default: ""
   bench-budget-usd:
     description: Cap for the Bench run in USD at API prices; default the app's cap when push-org and CEDR_API_KEY are set, else the CLI default
@@ -44,7 +44,7 @@ inputs:
     description: "Run Bench variants whose spend the budget cannot see, such as a command harness: true or false"
     default: "false"
   push-org:
-    description: When set with the CEDR_API_KEY env, send the results to this cedr.dev organization (also when the checks fail)
+    description: When set with the CEDR_API_KEY env, send Guard, Sync and saved Bench results to this cedr.dev organization (also when checks fail; a Bench send failure only warns)
     default: ""
 
 runs:
@@ -152,7 +152,7 @@ runs:
         # Actions runs this with -e, and an incomplete run must still reach the summary below.
         set +e -uo pipefail
         cd "$INPUT_PATH" || exit 2
-        args=(bench run "$INPUT_SUITE" --fail-on "$INPUT_FAIL_ON")
+        args=(bench run "$INPUT_SUITE" --no-push --fail-on "$INPUT_FAIL_ON")
         case "$INPUT_ALLOW_UNPRICED" in
           true) args+=(--allow-unpriced) ;;
           false) ;;
@@ -169,6 +169,9 @@ runs:
         # The report is a text table: outside a code block, markdown would run its lines together.
         if [ -s "$report" ]; then
           { echo '```text'; cat "$report"; echo '```'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+        fi
+        if [ -n "$INPUT_ORG" ] && [ -n "${CEDR_API_KEY:-}" ]; then
+          cedr bench push --org "$INPUT_ORG" || echo "::warning title=cedr::Bench results were not sent; cedr bench push can send them later"
         fi
         exit "$status"
 

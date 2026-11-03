@@ -90,6 +90,12 @@ impl Repo {
             .env("CEDR_TELEMETRY", "0")
             .env("CEDR_NO_AUTO_UPDATE", "1")
             .env_remove("CEDR_API_KEY")
+            .env_remove("CEDR_ROUTES")
+            .env_remove("GITHUB_ACTIONS")
+            .env_remove("GITHUB_REPOSITORY")
+            .env_remove("GITHUB_SERVER_URL")
+            .env_remove("GITHUB_RUN_ID")
+            .env_remove("GITHUB_REF")
             .env(
                 "PATH",
                 format!(
@@ -436,6 +442,22 @@ fn doctor_reports_the_cap_in_force_and_any_suite_that_would_not_plan() {
             found["message"].as_str().unwrap().to_string(),
         )
     };
+    assert_eq!(check("bench.push").0, "skip");
+    repo.write(".cedr/routes.toml", "version=1\n[sync]\norg='acme'\n");
+    assert_eq!(
+        check("bench.push"),
+        ("ok".into(), "results sent automatically to acme".into())
+    );
+    repo.write(
+        ".cedr/routes.toml",
+        "version=1\n[sync]\norg='acme'\nauto=false\n",
+    );
+    let disabled = check("bench.push");
+    assert_eq!(disabled.0, "skip");
+    assert!(disabled.1.contains("auto = false") && disabled.1.contains("acme"));
+    repo.write(".cedr/routes.toml", "invalid = [");
+    assert_eq!(check("bench.push").0, "warn");
+    repo.write(".cedr/routes.toml", "version=1\n");
     assert_eq!(check("bench.suite").0, "skip");
     assert_eq!(
         check("bench.budget"),
@@ -1029,4 +1051,583 @@ fn an_agent_that_removes_its_clone_has_an_unknown_cost() {
     let r = stdout_json(&out);
     assert_eq!(r["trials"][0]["status"], "agent_error");
     assert_eq!(r["unpriced_trials"], 2);
+}
+
+/// A loopback API with bounded accepts, so a missing request fails instead of hanging the suite.
+struct BenchApi {
+    listener: std::net::TcpListener,
+    url: String,
+}
+
+impl BenchApi {
+    fn new() -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        Self { listener, url }
+    }
+
+    fn respond(&self, replies: Vec<(u16, bool)>) -> std::thread::JoinHandle<Vec<Value>> {
+        use std::io::{Read, Write};
+        let listener = self.listener.try_clone().unwrap();
+        std::thread::spawn(move || {
+            replies.into_iter().map(|(status, duplicate)| {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(std::time::Instant::now() < deadline, "missing Bench request");
+                            std::thread::yield_now();
+                        }
+                        Err(e) => panic!("accept: {e}"),
+                    }
+                };
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0_u8];
+                while !request.ends_with(b"\r\n\r\n") {
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                    assert!(request.len() < 8192);
+                }
+                let headers = String::from_utf8(request).unwrap().to_ascii_lowercase();
+                assert!(headers.starts_with("post /v1/bench/runs http/1.1\r\n"), "{headers}");
+                assert!(headers.contains("authorization: bearer test-key\r\n"));
+                assert!(headers.contains("content-type: application/json\r\n"));
+                let length: usize = headers.lines().find_map(|l| l.strip_prefix("content-length: ")).unwrap().parse().unwrap();
+                let mut bytes = vec![0; length];
+                stream.read_exact(&mut bytes).unwrap();
+                let body: Value = serde_json::from_slice(&bytes).unwrap();
+                let reply = if status == 200 {
+                    serde_json::json!({"ok": true, "id": body["result"]["id"], "duplicate": duplicate})
+                } else {
+                    serde_json::json!({"error": match status {
+                        400 => "bad_request", 403 => "not_a_member", 413 => "too_large", _ => "unavailable",
+                    }, "message": "test-key"})
+                }.to_string();
+                write!(stream, "HTTP/1.1 {status} reply\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
+                body
+            }).collect()
+        })
+    }
+
+    fn assert_no_request(&self) {
+        assert!(
+            matches!(self.listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "unexpected request"
+        );
+    }
+
+    fn config(&self, repo: &Repo, extra: &str) -> String {
+        repo.write(
+            ".cedr/routes.toml",
+            &format!(
+                "version=1\n[sync]\norg='acme'\nurl={:?}\n{extra}\n",
+                self.url
+            ),
+        )
+        .display()
+        .to_string()
+    }
+}
+
+fn seed_result(repo: &Repo) -> Value {
+    repo.program("agent", AGENT);
+    let suite = repo.suite(&command_suite(1));
+    let mut args = run_args(&suite);
+    args.push("--no-record");
+    let out = repo.run(&args);
+    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+    stdout_json(&out)
+}
+
+fn store_result(repo: &Repo, id: &str, result: &Value) {
+    let mut result = result.clone();
+    result["id"] = id.into();
+    let dir = repo.dir.path().join("state/cedr/bench");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join(format!("{id}.json")),
+        serde_json::to_vec(&result).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn push_tracks_unsent_ids_per_org_and_explicit_ids_can_be_duplicates() {
+    let repo = Repo::new();
+    let result = seed_result(&repo);
+    for id in ["b-3", "b-1", "b-2"] {
+        store_result(&repo, id, &result);
+    }
+    let state = repo.dir.path().join("state/cedr");
+    fs::write(state.join("bench-pushed-acme.txt"), "b-1\n").unwrap();
+    let api = BenchApi::new();
+    let config = api.config(&repo, "");
+    let send = |extra: &[&str]| {
+        let mut args = vec!["bench", "push", "--config", &config, "--format", "json"];
+        args.extend_from_slice(extra);
+        repo.cedr(&args)
+            .env("CEDR_API_KEY", "test-key")
+            .output()
+            .unwrap()
+    };
+    let task = api.respond(vec![(200, false), (200, false)]);
+    let out = send(&[]);
+    assert_eq!(code(&out), 0);
+    let bodies = task.join().unwrap();
+    assert_eq!(
+        bodies
+            .iter()
+            .map(|b| b["result"]["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["b-2", "b-3"]
+    );
+    assert_eq!(
+        stdout_json(&out),
+        serde_json::json!({"org":"acme","pushed":["b-2","b-3"],"duplicates":[],"failed":[]})
+    );
+    assert_eq!(
+        fs::read_to_string(state.join("bench-pushed-acme.txt")).unwrap(),
+        "b-1\nb-2\nb-3\n"
+    );
+    assert_eq!(stdout_json(&send(&[]))["pushed"], serde_json::json!([]));
+    api.assert_no_request();
+    let task = api.respond(vec![(200, true)]);
+    let out = send(&["b-2"]);
+    task.join().unwrap();
+    assert_eq!(stdout_json(&out)["duplicates"], serde_json::json!(["b-2"]));
+    assert_eq!(stdout_json(&out)["pushed"], serde_json::json!(["b-2"]));
+    let task = api.respond(vec![(200, false); 3]);
+    let out = send(&["--org", "other"]);
+    assert_eq!(code(&out), 0);
+    assert!(task.join().unwrap().iter().all(|b| b["org"] == "other"));
+    assert_eq!(
+        fs::read_to_string(state.join("bench-pushed-other.txt")).unwrap(),
+        "b-1\nb-2\nb-3\n"
+    );
+    assert_eq!(
+        fs::read_to_string(state.join("bench-pushed-acme.txt")).unwrap(),
+        "b-1\nb-2\nb-3\nb-2\n"
+    );
+}
+
+#[test]
+fn auto_sends_only_the_new_run_even_when_incomplete_with_the_exact_body() {
+    let repo = Repo::new();
+    let result = seed_result(&repo);
+    store_result(&repo, "b-old", &result);
+    let api = BenchApi::new();
+    api.config(&repo, &format!("[machine]\nname={:?}", "é".repeat(64)));
+    let suite = repo.suite(&command_suite(10));
+    let mut args = run_args(&suite);
+    args.extend(["--budget-usd", "0.25", "--repo", "acme/web"]);
+    let task = api.respond(vec![(200, false)]);
+    let out = repo
+        .cedr(&args)
+        .env("CEDR_API_KEY", "test-key")
+        .env("GITHUB_ACTIONS", "true")
+        .env("GITHUB_SERVER_URL", "https://github.com")
+        .env("GITHUB_REPOSITORY", "from/env")
+        .env("GITHUB_RUN_ID", "123")
+        .env("GITHUB_REF", "refs/pull/12/merge")
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 3);
+    let mut saved = stdout_json(&out);
+    let id = saved["id"].as_str().unwrap().to_string();
+    let source = saved.as_object_mut().unwrap().remove("source").unwrap();
+    assert_eq!(source["repo"], "acme/web");
+    let bodies = task.join().unwrap();
+    let machine = fs::read_to_string(repo.dir.path().join("state/cedr/machine-id")).unwrap();
+    assert_eq!(
+        bodies,
+        vec![serde_json::json!({
+            "org": "acme", "cli": env!("CARGO_PKG_VERSION"), "repo": "acme/web",
+            "machine": {"id": machine.trim(), "name": "é".repeat(64)},
+            "ci": {"provider":"github", "pr":12, "run_url":"https://github.com/from/env/actions/runs/123"},
+            "result": saved,
+        })]
+    );
+    assert!(bodies[0]["result"].get("source").is_none());
+    assert_eq!(
+        fs::read_to_string(repo.dir.path().join("state/cedr/bench-pushed-acme.txt")).unwrap(),
+        format!("{id}\n")
+    );
+    let shown = repo.run(&["bench", "show", &id, "--format", "json"]);
+    assert_eq!(out.stdout, shown.stdout);
+    assert!(String::from_utf8_lossy(&out.stderr).contains(&format!("pushed {id} to acme")));
+    api.assert_no_request();
+}
+
+#[test]
+fn failed_auto_sends_preserve_complete_regression_and_incomplete_reports_and_exit_codes() {
+    let repo = Repo::new();
+    repo.program("agent", AGENT);
+    let api = BenchApi::new();
+    api.config(&repo, "");
+    let suite = repo.suite(
+        &command_suite(2)
+            .replace("model = \"bad\"", "model = \"x\"")
+            .replace("model = \"good\"", "model = \"bad\"")
+            .replace("model = \"x\"", "model = \"good\""),
+    );
+    for (status, expected, extra, error) in [
+        (400, 0, vec![], "bad_request"),
+        (403, 1, vec!["--fail-on", "lower"], "not_a_member"),
+        (413, 3, vec!["--budget-usd", "0.15"], "too_large"),
+    ] {
+        let task = api.respond(vec![(status, false)]);
+        let mut args = run_args(&suite);
+        args.extend(extra.iter());
+        let out = repo
+            .cedr(&args)
+            .env("CEDR_API_KEY", "test-key")
+            .output()
+            .unwrap();
+        task.join().unwrap();
+        assert_eq!(code(&out), expected);
+        let saved = stdout_json(&out);
+        let id = saved["id"].as_str().unwrap();
+        let mut show_args = vec!["bench", "show", id, "--format", "json"];
+        if expected == 1 {
+            show_args.extend(["--fail-on", "lower"]);
+        }
+        let shown = repo.run(&show_args);
+        assert_eq!(code(&shown), expected);
+        assert_eq!(out.stdout, shown.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("was not sent")
+                && stderr.contains(error)
+                && stderr.contains("cedr bench push"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("test-key"));
+        assert_eq!(
+            stderr
+                .lines()
+                .filter(|l| l.contains("was not sent"))
+                .count(),
+            1
+        );
+    }
+    assert!(
+        !repo
+            .dir
+            .path()
+            .join("state/cedr/bench-pushed-acme.txt")
+            .exists()
+    );
+}
+
+#[test]
+fn automatic_sending_respects_opt_outs_and_silent_unconfigured_states() {
+    let repo = Repo::new();
+    repo.program("agent", AGENT);
+    let suite = repo.suite(&command_suite(1));
+    let api = BenchApi::new();
+    let config = repo.root().join(".cedr/routes.toml");
+    let cases = [
+        (None, None, false),
+        (Some("version=1\n".to_string()), None, false),
+        (
+            Some(format!(
+                "version=1\n[sync]\norg='acme'\nurl={:?}\nauto=false\n",
+                api.url
+            )),
+            None,
+            false,
+        ),
+        (
+            Some(format!(
+                "version=1\n[sync]\norg='acme'\nurl={:?}\n",
+                api.url
+            )),
+            Some("--no-push"),
+            false,
+        ),
+        (
+            Some(format!(
+                "version=1\n[sync]\norg='acme'\nurl={:?}\n",
+                api.url
+            )),
+            Some("--no-record"),
+            false,
+        ),
+        (Some("broken = [".to_string()), None, true),
+    ];
+    for (text, flag, warns) in cases {
+        if let Some(text) = text {
+            fs::write(&config, text).unwrap();
+        }
+        let before = stdout_json(&repo.run(&["bench", "history", "--format", "json"]))
+            .as_array()
+            .unwrap()
+            .len();
+        let mut args = run_args(&suite);
+        if let Some(flag) = flag {
+            args.push(flag);
+        }
+        let out = repo
+            .cedr(&args)
+            .env("CEDR_API_KEY", "test-key")
+            .output()
+            .unwrap();
+        assert_eq!(code(&out), 0);
+        assert_eq!(stdout_json(&out)["complete"], true);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(stderr.contains("was not sent"), warns, "{stderr}");
+        let after = stdout_json(&repo.run(&["bench", "history", "--format", "json"]))
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(after - before, usize::from(flag != Some("--no-record")));
+        api.assert_no_request();
+    }
+    api.config(&repo, "");
+    let out = repo.run(&run_args(&suite));
+    assert_eq!(code(&out), 0, "no key must not fail the run");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("was not sent: no API key"));
+    api.assert_no_request();
+}
+
+#[test]
+fn push_continues_after_local_and_server_failures_and_legacy_results_can_be_sent() {
+    let repo = Repo::new();
+    let result = seed_result(&repo);
+    let mut old = result.clone();
+    old.as_object_mut().unwrap().remove("source");
+    store_result(&repo, "b-1-old", &old);
+    let shown = repo.run(&["bench", "show", "b-1-old", "--format", "json"]);
+    assert_eq!(code(&shown), 0);
+    assert_eq!(stdout_json(&shown)["version"], 1);
+    assert!(stdout_json(&shown)["source"].is_null());
+    let mut big = result.clone();
+    big["suite"]["name"] = "x".repeat(1024 * 1024).into();
+    store_result(&repo, "b-2-big", &big);
+    store_result(&repo, "b-3-denied", &result);
+    store_result(&repo, "b-4-ok", &result);
+    let api = BenchApi::new();
+    let config = api.config(&repo, "");
+    let task = api.respond(vec![(403, false), (200, false)]);
+    let out = repo
+        .cedr(&["bench", "push", "--config", &config, "--format", "json"])
+        .env("CEDR_API_KEY", "test-key")
+        .output()
+        .unwrap();
+    let bodies = task.join().unwrap();
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(code(&out), 2);
+    let report = stdout_json(&out);
+    assert_eq!(report["pushed"], serde_json::json!(["b-4-ok"]));
+    assert_eq!(report["failed"][0]["id"], "b-1-old");
+    assert!(
+        report["failed"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("pass --repo")
+    );
+    assert!(
+        report["failed"][1]["error"]
+            .as_str()
+            .unwrap()
+            .contains("b-2-big: body over 1 MiB")
+    );
+    assert!(
+        report["failed"][2]["error"]
+            .as_str()
+            .unwrap()
+            .contains("not_a_member")
+    );
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("test-key"));
+    assert_eq!(
+        fs::read_to_string(repo.dir.path().join("state/cedr/bench-pushed-acme.txt")).unwrap(),
+        "b-4-ok\n"
+    );
+    api.assert_no_request();
+    let out = repo
+        .cedr(&["bench", "push", "b-1-old", "--config", &config])
+        .env("CEDR_API_KEY", "test-key")
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 2);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.starts_with("b-1-old: no repo name saved; pass --repo\n"),
+        "{text}"
+    );
+    assert!(text.ends_with("pushed 0 to acme\n"));
+    api.assert_no_request();
+    let task = api.respond(vec![(200, true)]);
+    let out = repo
+        .cedr(&[
+            "bench",
+            "push",
+            "b-1-old",
+            "--config",
+            &config,
+            "--repo",
+            "override/repo",
+        ])
+        .env("CEDR_API_KEY", "test-key")
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0);
+    assert_eq!(task.join().unwrap()[0]["repo"], "override/repo");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("pushed 1 to acme (1 duplicates)"));
+}
+
+#[test]
+fn dry_run_prints_the_bodies_without_a_key_request_or_sent_marker() {
+    let repo = Repo::new();
+    let result = seed_result(&repo);
+    store_result(&repo, "b-dry", &result);
+    let api = BenchApi::new();
+    let config = api.config(&repo, "");
+    let out = repo.run(&[
+        "bench",
+        "push",
+        "--config",
+        &config,
+        "--repo",
+        "preview/repo",
+        "--dry-run",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+    let bodies = stdout_json(&out);
+    assert_eq!(bodies.as_array().unwrap().len(), 1);
+    assert_eq!(bodies[0]["result"]["id"], "b-dry");
+    assert_eq!(bodies[0]["repo"], "preview/repo");
+    assert!(bodies[0]["result"].get("source").is_none());
+    assert!(
+        !repo
+            .dir
+            .path()
+            .join("state/cedr/bench-pushed-acme.txt")
+            .exists()
+    );
+    api.assert_no_request();
+}
+
+#[test]
+fn repo_precedence_sanitizes_remotes_and_ci_metadata_only_describes_github_https_runs() {
+    let repo = Repo::new();
+    repo.program("agent", AGENT);
+    let suite = repo.suite(&command_suite(1));
+    git(
+        &repo.root(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/nested/acme/web.git",
+        ],
+    );
+    let run = |extra: &[&str], github: bool, env_repo: &str, server: &str, reference: &str| {
+        let mut args = run_args(&suite);
+        args.push("--no-record");
+        args.extend_from_slice(extra);
+        repo.cedr(&args)
+            .env("GITHUB_ACTIONS", if github { "true" } else { "false" })
+            .env("GITHUB_REPOSITORY", env_repo)
+            .env("GITHUB_SERVER_URL", server)
+            .env("GITHUB_RUN_ID", "456")
+            .env("GITHUB_REF", reference)
+            .output()
+            .unwrap()
+    };
+    let out = run(
+        &["--repo", "explicit/name"],
+        true,
+        "env/name",
+        "https://github.com",
+        "refs/pull/42/merge",
+    );
+    assert_eq!(
+        stdout_json(&out)["source"],
+        serde_json::json!({"repo":"explicit/name", "ci":{"provider":"github", "pr":42, "run_url":"https://github.com/env/name/actions/runs/456"}})
+    );
+    let out = run(
+        &[],
+        true,
+        "env/name",
+        "https://github.com",
+        "refs/heads/main",
+    );
+    assert_eq!(stdout_json(&out)["source"]["repo"], "env/name");
+    assert!(stdout_json(&out)["source"]["ci"]["pr"].is_null());
+    let out = run(
+        &[],
+        true,
+        "env/name",
+        "http://github.com",
+        "refs/pull/42/merge",
+    );
+    assert!(stdout_json(&out)["source"]["ci"].is_null());
+    for github in [true, false] {
+        let out = run(
+            &[],
+            github,
+            "bad name",
+            "https://github.com",
+            "refs/pull/42/merge",
+        );
+        assert_eq!(stdout_json(&out)["source"]["repo"], "acme/web");
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("example.invalid"));
+    }
+    git(
+        &repo.root(),
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@example.invalid:scp/project.git",
+        ],
+    );
+    assert_eq!(
+        stdout_json(&run(&[], false, "ignored/name", "", ""))["source"]["repo"],
+        "scp/project"
+    );
+    git(
+        &repo.root(),
+        &["remote", "set-url", "origin", "invalid name"],
+    );
+    assert_eq!(
+        stdout_json(&run(&[], false, "", "", ""))["source"]["repo"],
+        "repo"
+    );
+    let out = repo
+        .cedr(&run_args(&suite))
+        .env("GITHUB_ACTIONS", "true")
+        .env("GITHUB_REPOSITORY", "env/name")
+        .output()
+        .unwrap();
+    assert!(stdout_json(&out)["source"]["ci"].is_null());
+    let marker = repo.dir.path().join("ran");
+    repo.program("agent", &format!("touch {}", marker.display()));
+    let out = run(
+        &["--repo", "bad name"],
+        true,
+        "valid/name",
+        "https://github.com",
+        "",
+    );
+    assert_eq!(code(&out), 2);
+    assert!(!marker.exists());
+    // If every inferred candidate is invalid, the run still completes with no repo name.
+    repo.program("agent", AGENT);
+    let invalid_root = repo.root().with_file_name("bad name");
+    fs::rename(repo.root(), &invalid_root).unwrap();
+    let suite = invalid_root.join(".cedr/bench/s.toml");
+    let out = repo
+        .cedr(&run_args(suite.to_str().unwrap()))
+        .current_dir(invalid_root)
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0);
+    assert!(stdout_json(&out)["source"]["repo"].is_null());
 }

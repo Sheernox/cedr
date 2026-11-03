@@ -2,13 +2,15 @@
 //! (docs/bench.md). Exit codes: run and show 0 complete, 1 the `--fail-on` condition held, 3
 //! incomplete; 2 usage, suite or I/O failure.
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use cedr_bench::report::{self, BenchResult, FailOn};
+use cedr_bench::report::{self, BenchResult, Ci, CiProvider, FailOn, Source};
 use cedr_bench::run::{self, RunOptions, Selection};
 use cedr_bench::suite;
+use cedr_route::{config, machine};
 use clap::{Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
@@ -78,6 +80,12 @@ pub enum BenchCommand {
         /// Do not save the result
         #[arg(long)]
         no_record: bool,
+        /// Do not send this run to the configured organization
+        #[arg(long)]
+        no_push: bool,
+        /// Repository name recorded with the run
+        #[arg(long, value_name = "NAME")]
+        repo: Option<String>,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
@@ -94,6 +102,26 @@ pub enum BenchCommand {
         id: String,
         #[arg(long, value_enum, default_value_t = FailOnArg::Never)]
         fail_on: FailOnArg,
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
+    /// Send saved runs to an organization (unsent runs by default)
+    Push {
+        /// Saved run ids; explicit ids are sent even when already sent
+        #[arg(value_name = "ID")]
+        ids: Vec<String>,
+        /// Organization public id
+        #[arg(long)]
+        org: Option<String>,
+        /// routes.toml holding API settings
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Repository name, overriding the one saved with each run
+        #[arg(long, value_name = "NAME")]
+        repo: Option<String>,
+        /// Print the bodies without sending or marking them sent
+        #[arg(long)]
+        dry_run: bool,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
@@ -143,9 +171,15 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             fail_on,
             allow_unpriced,
             no_record,
+            no_push,
+            repo,
             format,
         } => {
+            if let Some(name) = repo.as_deref() {
+                common::repo_name(Some(name), Path::new(""))?;
+            }
             let loaded = load(suite.as_deref())?;
+            let source = source(repo.as_deref(), &loaded.root);
             if let Some(cap) = budget_usd {
                 check_cap(cap, "--budget-usd")?;
             }
@@ -159,14 +193,18 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
                 allow_unpriced,
             };
             // Progress must never end a run that has spent money, so its failures are ignored.
-            let result = run::run(&loaded, &options, |line| {
+            let mut result = run::run(&loaded, &options, |line| {
                 let _ = writeln!(std::io::stderr(), "cedr: bench: {line}");
             })
             .map_err(|e| e.to_string())?;
+            result.source = Some(source);
             let saved = if no_record { Ok(()) } else { save(&result) };
             print_result(&result, format);
             // The measurement is on stdout by now, and it cost money: report the failure, keep the output.
             saved?;
+            if !no_record && !no_push {
+                auto_push(&result);
+            }
             Ok(ExitCode::from(result.exit_code(fail_on.into())))
         }
         BenchCommand::History { limit, format } => {
@@ -186,6 +224,21 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             print_result(&result, format);
             Ok(ExitCode::from(result.exit_code(fail_on.into())))
         }
+        BenchCommand::Push {
+            ids,
+            org,
+            config,
+            repo,
+            dry_run,
+            format,
+        } => push(
+            ids,
+            org.as_deref(),
+            config.as_deref(),
+            repo.as_deref(),
+            dry_run,
+            format,
+        ),
         BenchCommand::Budget {
             usd,
             unset,
@@ -216,6 +269,326 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
                 Format::Text => println!("bench budget {} ({source})", report::money(cap)),
             }
             Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+/// Captures only the allowed repository name and GitHub run context, never a remote URL.
+fn source(flag: Option<&str>, root: &Path) -> Source {
+    let valid = |name: String| common::repo_name(Some(&name), root).ok();
+    let github = std::env::var("GITHUB_ACTIONS").is_ok_and(|v| v == "true");
+    let repo = flag
+        .map(str::to_owned)
+        .or_else(|| {
+            github
+                .then(|| std::env::var("GITHUB_REPOSITORY").ok())
+                .flatten()
+                .and_then(valid)
+        })
+        .or_else(|| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(["remote", "get-url", "origin"])
+                .stderr(std::process::Stdio::null())
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            let remote = String::from_utf8(output.stdout).ok()?;
+            let remote = remote.trim();
+            let path = if remote.contains("://") {
+                reqwest::Url::parse(remote).ok()?.path().to_string()
+            } else {
+                // scp-style remotes put the host before ':', outside the path segments.
+                remote
+                    .split_once(':')
+                    .map_or(remote, |(_, p)| p)
+                    .to_string()
+            };
+            let parts: Vec<_> = path.trim_end_matches('/').rsplit('/').take(2).collect();
+            if parts.len() != 2 || parts.iter().any(|p| p.is_empty()) {
+                return None;
+            }
+            valid(format!(
+                "{}/{}",
+                parts[1],
+                parts[0].strip_suffix(".git").unwrap_or(parts[0])
+            ))
+        })
+        .or_else(|| common::repo_name(None, root).ok());
+    let ci = github.then(github_ci).flatten();
+    Source { repo, ci }
+}
+
+fn github_ci() -> Option<Ci> {
+    let server = std::env::var("GITHUB_SERVER_URL").ok()?;
+    let repo = std::env::var("GITHUB_REPOSITORY").ok()?;
+    let run = std::env::var("GITHUB_RUN_ID").ok()?;
+    if server.is_empty() || repo.is_empty() || run.is_empty() {
+        return None;
+    }
+    let run_url = format!("{}/{repo}/actions/runs/{run}", server.trim_end_matches('/'));
+    let url = reqwest::Url::parse(&run_url).ok()?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    let pr = std::env::var("GITHUB_REF").ok().and_then(|r| {
+        let number = r.strip_prefix("refs/pull/")?.strip_suffix("/merge")?;
+        (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| number.parse().ok())
+            .flatten()
+    });
+    Some(Ci {
+        provider: CiProvider::Github,
+        pr,
+        run_url,
+    })
+}
+
+/// Missing configuration is the sole silent lookup failure; a selected but broken file warns.
+fn local_config(root: &Path) -> Result<Option<config::Config>, String> {
+    let path = match config::locate(None, root) {
+        Ok(path) => path,
+        Err(_) => return Ok(None),
+    };
+    config::load_local(&path)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+fn push_machine(config: Option<&config::Config>) -> Result<Value, String> {
+    let fallback = config::Config::parse("version = 1", Path::new("routes.toml"))
+        .map_err(|e| e.to_string())?;
+    Ok(json!({
+        "id": machine::machine_id().map_err(|e| e.to_string())?,
+        "name": common::clip(&machine::machine_name(config.unwrap_or(&fallback)), 64),
+    }))
+}
+
+const MAX_PUSH_BYTES: usize = 1024 * 1024;
+
+fn push_body(
+    result: &BenchResult,
+    sync: &config::Sync,
+    machine: &Value,
+    repo: Option<&str>,
+) -> Result<Value, String> {
+    if !run::is_result_id(&result.id) {
+        return Err("invalid saved result id".into());
+    }
+    let repo = repo
+        .or_else(|| result.source.as_ref().and_then(|s| s.repo.as_deref()))
+        .ok_or("no repo name saved; pass --repo")?;
+    let repo = common::repo_name(Some(repo), Path::new(""))?;
+    let mut saved = serde_json::to_value(result).map_err(|e| e.to_string())?;
+    saved
+        .as_object_mut()
+        .expect("result object")
+        .remove("source");
+    let body = json!({
+        "org": sync.org, "cli": env!("CARGO_PKG_VERSION"), "repo": repo,
+        "machine": machine, "ci": result.source.as_ref().and_then(|s| s.ci.as_ref()),
+        "result": saved,
+    });
+    if body.to_string().len() > MAX_PUSH_BYTES {
+        return Err(format!(
+            "result {}: body over 1 MiB ({MAX_PUSH_BYTES} bytes)",
+            result.id
+        ));
+    }
+    Ok(body)
+}
+
+fn pushed_path(org: &str) -> PathBuf {
+    settings::state_file(&format!("bench-pushed-{org}.txt"))
+}
+
+/// Mark only accepted results. A lost marker is harmless because the server deduplicates ids.
+fn send_result(sync: &config::Sync, key: &str, id: &str, body: &Value) -> Result<bool, String> {
+    let reply = cedr_route::sync::send_bench(sync, key, body).map_err(|e| e.to_string())?;
+    let duplicate = reply["duplicate"]
+        .as_bool()
+        .ok_or("bench reply: missing duplicate")?;
+    if reply["ok"] != true || reply["id"].as_str() != Some(id) {
+        return Err("bench reply: expected ok and matching result id".into());
+    }
+    let path = pushed_path(&sync.org);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    writeln!(file, "{id}").map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(duplicate)
+}
+
+fn push(
+    ids: Vec<String>,
+    org: Option<&str>,
+    config: Option<&Path>,
+    repo: Option<&str>,
+    dry_run: bool,
+    format: Format,
+) -> Result<ExitCode, String> {
+    if let Some(repo) = repo {
+        common::repo_name(Some(repo), Path::new(""))?;
+    }
+    let sync = common::settings(org, config)?;
+    let key = if dry_run {
+        String::new()
+    } else {
+        cedr_route::sync::api_key().map_err(|e| e.to_string())?
+    };
+    // Match common::settings: --org alone never reads the checkout's config in CI.
+    let config = if org.is_some() && config.is_none() {
+        None
+    } else {
+        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+        let path = config::locate(config, &cwd).map_err(|e| e.to_string())?;
+        Some(config::load_local(&path).map_err(|e| e.to_string())?)
+    };
+    let machine = push_machine(config.as_ref())?;
+    let ids = if ids.is_empty() {
+        let path = pushed_path(&sync.org);
+        let sent = match std::fs::read_to_string(&path) {
+            Ok(text) => text.lines().map(str::to_owned).collect::<HashSet<_>>(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashSet::new(),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        };
+        let mut ids = Vec::new();
+        match std::fs::read_dir(results_dir()) {
+            Ok(entries) => {
+                for entry in entries {
+                    let path = entry.map_err(|e| e.to_string())?.path();
+                    if path.extension().is_some_and(|e| e == "json")
+                        && let Some(id) = path.file_stem().and_then(|s| s.to_str())
+                        && !sent.contains(id)
+                    {
+                        ids.push(id.to_string());
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", results_dir().display())),
+        }
+        ids.sort();
+        ids
+    } else {
+        ids
+    };
+    let mut pushed = Vec::new();
+    let mut duplicates = Vec::new();
+    let mut failed = Vec::new();
+    let mut bodies = Vec::new();
+    for id in ids {
+        let outcome: Result<(), String> = (|| {
+            if !run::is_result_id(&id) {
+                return Err("expected a saved run id".into());
+            }
+            let result = read_result(&id)?;
+            if result.id != id {
+                return Err("saved result id does not match its file name".into());
+            }
+            let body = push_body(&result, &sync, &machine, repo)?;
+            if dry_run {
+                bodies.push(body);
+                return Ok(());
+            }
+            let duplicate = send_result(&sync, &key, &id, &body)?;
+            if duplicate {
+                duplicates.push(id.clone());
+            }
+            pushed.push(id.clone());
+            Ok(())
+        })();
+        if let Err(error) = outcome {
+            failed.push(json!({"id": id, "error": error}));
+        }
+    }
+    if dry_run {
+        match format {
+            Format::Json => print_json(&json!(bodies)),
+            Format::Text => {
+                for body in bodies {
+                    print_json(&body);
+                }
+            }
+        }
+        for failure in &failed {
+            eprintln!(
+                "cedr: bench: {}: {}",
+                report::clean(failure["id"].as_str().unwrap_or("")),
+                report::clean(failure["error"].as_str().unwrap_or(""))
+            );
+        }
+    } else {
+        match format {
+            Format::Json => print_json(
+                &json!({"org": sync.org, "pushed": pushed, "duplicates": duplicates, "failed": failed}),
+            ),
+            Format::Text => {
+                for failure in &failed {
+                    println!(
+                        "{}: {}",
+                        report::clean(failure["id"].as_str().unwrap_or("")),
+                        report::clean(failure["error"].as_str().unwrap_or(""))
+                    );
+                }
+                let suffix = if duplicates.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({} duplicates)", duplicates.len())
+                };
+                println!("pushed {} to {}{suffix}", pushed.len(), sync.org);
+            }
+        }
+    }
+    Ok(ExitCode::from(if failed.is_empty() { 0 } else { 2 }))
+}
+
+/// Upload failures cannot replace an expensive measurement's report or gate.
+fn auto_push(result: &BenchResult) {
+    let outcome: Result<Option<String>, String> = (|| {
+        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+        let Some(config) = local_config(&cwd)? else {
+            return Ok(None);
+        };
+        let Some(sync) = config.sync.as_ref().filter(|s| s.auto) else {
+            return Ok(None);
+        };
+        let key = cedr_route::sync::api_key().map_err(|e| e.to_string())?;
+        let machine = push_machine(Some(&config))?;
+        let body = push_body(result, sync, &machine, None)?;
+        send_result(sync, &key, &result.id, &body)?;
+        Ok(Some(sync.org.clone()))
+    })();
+    match outcome {
+        Ok(Some(org)) => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "cedr: bench: pushed {} to {org}",
+                result.id
+            );
+        }
+        Ok(None) => {}
+        Err(error) => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "cedr: bench: {} was not sent: {}; cedr bench push can send it later",
+                result.id,
+                report::clean(&error)
+            );
         }
     }
 }
@@ -352,7 +725,7 @@ fn plan_text(plan: &Value) -> String {
 }
 
 /// `cedr doctor`'s Bench checks (docs/doctor.md): the cap in force, and whether each suite in the
-/// repo would plan. Starts no agent.
+/// repo would plan, plus the automatic upload destination. Starts no agent.
 pub(crate) fn doctor_checks(root: &Path, mut add: impl FnMut(&str, &str, String, &str)) {
     match resolve_budget() {
         Ok((cap, source)) => add(
@@ -366,6 +739,43 @@ pub(crate) fn doctor_checks(root: &Path, mut add: impl FnMut(&str, &str, String,
             "fail",
             e,
             "Fix or remove the settings file it names; cedr bench budget --unset clears a broken value",
+        ),
+    }
+    match local_config(root) {
+        Ok(Some(config)) => match config.sync {
+            Some(sync) if sync.auto => add(
+                "bench.push",
+                "ok",
+                format!("results sent automatically to {}", sync.org),
+                "",
+            ),
+            Some(sync) => add(
+                "bench.push",
+                "skip",
+                format!(
+                    "automatic sending off (auto = false); organization {}",
+                    sync.org
+                ),
+                "Run cedr bench push to send saved results, or set [sync] auto = true",
+            ),
+            None => add(
+                "bench.push",
+                "skip",
+                "no [sync]; results are not sent automatically".into(),
+                "Add [sync] to routes.toml to send results automatically",
+            ),
+        },
+        Ok(None) => add(
+            "bench.push",
+            "skip",
+            "no config; results are not sent automatically".into(),
+            "Add [sync] to routes.toml to send results automatically",
+        ),
+        Err(error) => add(
+            "bench.push",
+            "warn",
+            format!("automatic sending unavailable: {error}"),
+            "Repair routes.toml; cedr bench push can send saved results later",
         ),
     }
     let dir = root.join(".cedr").join("bench");

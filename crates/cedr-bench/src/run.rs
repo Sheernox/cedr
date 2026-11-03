@@ -518,6 +518,7 @@ fn assemble(
     let finished_at = now();
     BenchResult {
         version: VERSION,
+        source: None,
         id: new_id(&started_at),
         suite: SuiteInfo {
             name: loaded.name.clone(),

@@ -150,10 +150,34 @@ pub struct TaskRow {
     pub candidate: Count,
 }
 
+/// Repository and CI context captured when the run starts, independent of its measurements.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Source {
+    pub repo: Option<String>,
+    pub ci: Option<Ci>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ci {
+    pub provider: CiProvider,
+    pub pr: Option<u64>,
+    pub run_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CiProvider {
+    Github,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BenchResult {
     pub version: u32,
+    #[serde(default)]
+    pub source: Option<Source>,
     pub id: String,
     pub suite: SuiteInfo,
     pub started_at: String,
@@ -457,6 +481,7 @@ mod tests {
         let (b, c) = (row(baseline), row(candidate));
         BenchResult {
             version: VERSION,
+            source: None,
             id: "b-x".into(),
             suite: SuiteInfo {
                 name: "s".into(),

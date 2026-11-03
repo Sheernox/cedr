@@ -8,7 +8,7 @@ Bench measures whether an agent configuration, skill or model change improves ou
 
 Unlike Route and Council, Bench starts agents: a repeatable suite in CI has no orchestrator to do it. It runs the vendors' unmodified CLIs with the user's own credentials, and it holds, pools and proxies nothing.
 
-Out of scope: a sandbox of its own, sending results anywhere, and running trials in parallel.
+Out of scope: a sandbox of its own and running trials in parallel.
 
 ## Trust
 
@@ -123,7 +123,7 @@ Writes a commented starter suite to `.cedr/bench/<name>.toml` (default `suite`) 
 
 Validates the suite, resolves the refs and prints what a run would do, starting nothing. JSON: `{"suite", "sha256", "trials_each", "total_trials", "budget_usd", "budget_source", "variants": {"baseline": <variant>, "candidate": <variant>}, "tasks": [{"id", "setup", "test", "test_files"}], "warnings": []}`, where a warning covers a harness that is not installed, `full` permissions and an unpriced variant. Exit 0, or 2 on any error.
 
-### `cedr bench run [SUITE] [--budget-usd N] [--task ID]... [--trials N] [--fail-on never|lower|separated] [--allow-unpriced] [--no-record] [--format text|json]`
+### `cedr bench run [SUITE] [--budget-usd N] [--task ID]... [--trials N] [--fail-on never|lower|separated] [--allow-unpriced] [--no-record] [--no-push] [--repo NAME] [--format text|json]`
 
 Runs the suite. Progress goes to stderr, the report to stdout. Exit codes:
 
@@ -132,7 +132,7 @@ Runs the suite. Progress goes to stderr, the report to stdout. Exit codes:
 - `3`: incomplete, whatever the counts say. A partial result never passes.
 - `2`: usage, config or I/O failure, including a refs problem found before any trial.
 
-Unless `--no-record`, the result is saved to `$XDG_STATE_HOME/cedr/bench/<id>.json`, including when incomplete.
+Unless `--no-record`, the result is saved to `$XDG_STATE_HOME/cedr/bench/<id>.json`, including when incomplete. `--repo` sets the recorded repo name; an invalid explicit name is a usage error before any trial. `--no-push` skips automatic sending; `--no-record` also implies no push.
 
 ### `cedr bench history [--limit N] [--format text|json]`
 
@@ -150,6 +150,7 @@ Remove a result by deleting its file.
 {
   "version": 1,
   "id": "b-20261101T193000Z-1a2b3c",
+  "source": {"repo": "acme/web", "ci": {"provider": "github", "pr": 12, "run_url": "https://github.com/acme/web/actions/runs/123"}},
   "suite": {"name": "agent-config", "sha256": "..."},
   "started_at": "2026-11-01T19:30:00Z",
   "finished_at": "2026-11-01T19:42:00Z",
@@ -186,7 +187,31 @@ Remove a result by deleting its file.
 - `resolved_models` is what the harness reports having used; `codex` does not report one, so it repeats the requested model.
 - `cost_usd` and `pass_rate` are null when nothing can fill them. `spent_usd` is the sum of known costs and `unpriced_trials` counts the rest.
 - `interval` is a 95% Wilson score interval over scored trials, null with none scored. `separated` is true when the variants' intervals do not overlap. Trials of one task are not independent samples of every task, so treat it as a floor: overlapping intervals mean this run does not tell the variants apart, not that they are equal.
-- Results stay on this machine. They hold prompts by reference only: the suite's digest and task ids, never the prompt text, agent output or paths.
+- Results are saved locally and can be sent to an organization as described below. They hold prompts by reference only: the suite's digest and task ids, never the prompt text, agent output or paths.
+- `source` is optional, defaults to null for older files, and is not part of the consistency checks. Its repo name is the first valid name from `--repo`, `GITHUB_REPOSITORY` on GitHub Actions, the last two path segments of the `origin` remote (without `.git`), or the git top level's directory name. Only 1-128 characters of `A-Z a-z 0-9 . _ / -` are allowed. Remote hosts, users and credentials are never kept. Invalid inferred names are ignored; with no valid name, `repo` is null.
+- `source.ci` is null unless `GITHUB_ACTIONS=true` and `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY` and `GITHUB_RUN_ID` are set and form an HTTPS run URL: `$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID`. Its provider is `github`; `pr` is the number in `GITHUB_REF=refs/pull/<n>/merge`, or null for other refs.
+
+## Push
+
+`cedr bench push [ID]... [--org ORG] [--config PATH] [--repo NAME] [--dry-run] [--format text|json]` sends saved results to an organization. Org and API settings follow `cedr sync push`, using `CEDR_API_KEY` or the saved API key. With no ids it sends every result not yet sent to that org, oldest first. Explicit ids send those results again, even if previously sent; the server treats repeats as duplicates. `--repo` overrides each result's `source.repo`. An older result with neither fails with a message to pass `--repo`, while the others continue.
+
+Each body goes to `POST <sync url>/bench/runs` with bearer authentication:
+
+```json
+{"org":"org-...","cli":"<CLI version>","repo":"acme/web","machine":{"id":"...","name":"..."},"ci":{"provider":"github","pr":12,"run_url":"https://github.com/acme/web/actions/runs/123"},"result": <the saved result without source>}
+```
+
+`ci` can be null. The machine id and name are the same as Route uses, with the name clipped to 64 characters. Sending includes the result, repo name, machine id and name, PR number and run URL. Prompts, agent output and paths are never sent. This is an organization upload, with no new telemetry fields. Bodies over 1 MiB are refused locally, naming the result and the limit. A 200 reply is `{"ok":true,"id":"<result id>","duplicate":false}` (or `duplicate:true` on a repeat). Errors follow Sync's rules, including 400 `bad_request`, 403 `not_a_member` and 413 `too_large`.
+
+Successful ids are appended to `$XDG_STATE_HOME/cedr/bench-pushed-<org>.txt`, one per line, after each success. Losing this file only causes safe repeat sends. A failure on one result does not stop the others, except when no key or org is available. Exit 0 when all sent or none were due, 2 otherwise. `--dry-run` prints the bodies it would send and sends nothing, without updating the sent file.
+
+Text output has one line per failure, followed by `pushed N to <org>` and the duplicate count when any. JSON output is `{"org":"org-...","pushed":["ids"],"duplicates":["ids"],"failed":[{"id":"...","error":"..."}]}`. Duplicates also count as pushed.
+
+### Automatic sending
+
+After saving a run, Bench sends that one result (including incomplete runs) when the config in use has `[sync]` and `auto` is not false. It never sends older runs automatically. A machine with `[sync]` already configured starts sending after upgrading. Stop it with `--no-push` on a run, or `[sync] auto = false`, which also stops Route's automatic sync. `--no-record` skips saving and sending.
+
+With no config or no `[sync]`, nothing is printed or sent. Sending runs in process and is waited for, bounded by the client's 15-second timeout. Success prints one line to stderr. Broken config, a missing key, network or server errors print one line saying the result was not sent and that `cedr bench push` can send it later. Sending never changes the run's exit code or its stdout report, including JSON.
 
 ## Text output
 
@@ -213,4 +238,4 @@ There is no `bench_run`: it spends money and can take hours, so an agent runs it
 
 ## GitHub Action
 
-`action.yml` gains `bench` (a suite path; empty, the default, skips Bench), `bench-budget-usd` (else the app's cap when `push-org` and `CEDR_API_KEY` are set, else the default), `bench-fail-on` (default `never`) and `bench-allow-unpriced` (default `false`). The workflow checks out the full history (`fetch-depth: 0`) and installs the vendor CLIs and sets their API keys in the environment; in CI use API keys, not a signed-in plan. A failure or an incomplete run fails the action once the other checks have run. The report goes to the job summary. Do not point it at a suite from an untrusted pull request: a suite is code.
+`action.yml` gains `bench` (a suite path; empty, the default, skips Bench), `bench-budget-usd` (else the app's cap when `push-org` and `CEDR_API_KEY` are set, else the default), `bench-fail-on` (default `never`) and `bench-allow-unpriced` (default `false`). The workflow checks out the full history (`fetch-depth: 0`) and installs the vendor CLIs and sets their API keys in the environment; in CI use API keys, not a signed-in plan. A failure or an incomplete run fails the action once the other checks have run. The report goes to the job summary. The action passes `--no-push` to the run, then, when `push-org` and `CEDR_API_KEY` are set, runs `cedr bench push --org "$INPUT_ORG"` even after a failed or incomplete run. A failed send produces a warning and never changes the Bench gate or job status. Do not point it at a suite from an untrusted pull request: a suite is code.
