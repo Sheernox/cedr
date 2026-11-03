@@ -2,6 +2,37 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.8.2 (2026-11-02)
+
+![cedr v0.8.2: Bench, shared](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.2.png)
+
+**v0.8.2** · 5 changes from 1 contributor
+
+### Highlights
+Bench results can now reach your team. `cedr bench push` sends saved results to a cedr.dev organization, so everyone can read what each change did in one place. Each result carries its repo name and, on GitHub Actions, its pull request and run.
+
+**Upgrade step:** a machine with `[sync]` set now sends each Bench run when it finishes, unless `auto = false`. To stop it, pass `--no-push` on a run, or set `[sync] auto = false`, which also stops Route's automatic sync. Prompts, agent output and paths are never sent. See [what is sent](https://cedr.dev/docs/bench).
+
+### Features
+- **Bench** adds `cedr bench push`. With no ids it sends unsent results saved from the current repo, matched on the repo's name and root commit. Results from other repos are left alone unless you name them or pass `--all`. Sending a result again changes nothing.
+- **Bench** runs send themselves when they finish, under the same rule as Route's automatic sync. A failed send warns and never changes the run's report or exit code, and a busy app is retried.
+- **Bench** runs record the repo name and, on GitHub Actions, the pull request number and run URL. `--repo` sets the name.
+- **GitHub Action** sends Bench results when `push-org` and `CEDR_API_KEY` are set. A failed send only warns, and the Bench gate is unchanged.
+- **Doctor** says whether results are sent automatically, and to which organization.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* feat(bench): send results to an organization so a team reads them together
+* fix(bench): keep a bare push to the current repo and send no local paths
+* fix(bench): match a bare push on the repo's history, and retry a busy app
+* build(banner): render the v0.8.2 release hero
+* chore(release): cedr 0.8.2
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.8.1...v0.8.2
+</details>
+
 ## v0.8.1 (2026-11-01)
 
 ![cedr v0.8.1: council, tuned](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.1.png)
