@@ -1161,6 +1161,12 @@ fn push_tracks_unsent_ids_per_org_and_explicit_ids_can_be_duplicates() {
     for id in ["b-3", "b-1", "b-2"] {
         store_result(&repo, id, &result);
     }
+    let mut other = result.clone();
+    other["source"]["repo"] = "other/repo".into();
+    store_result(&repo, "b-4-other", &other);
+    let mut legacy = result.clone();
+    legacy.as_object_mut().unwrap().remove("source");
+    store_result(&repo, "b-5-legacy", &legacy);
     let state = repo.dir.path().join("state/cedr");
     fs::write(state.join("bench-pushed-acme.txt"), "b-1\n").unwrap();
     let api = BenchApi::new();
@@ -1186,13 +1192,30 @@ fn push_tracks_unsent_ids_per_org_and_explicit_ids_can_be_duplicates() {
     );
     assert_eq!(
         stdout_json(&out),
-        serde_json::json!({"org":"acme","pushed":["b-2","b-3"],"duplicates":[],"failed":[]})
+        serde_json::json!({"org":"acme","pushed":["b-2","b-3"],"duplicates":[],"failed":[],"skipped":2})
     );
     assert_eq!(
         fs::read_to_string(state.join("bench-pushed-acme.txt")).unwrap(),
         "b-1\nb-2\nb-3\n"
     );
-    assert_eq!(stdout_json(&send(&[]))["pushed"], serde_json::json!([]));
+    let out = send(&[]);
+    assert_eq!(
+        code(&out),
+        0,
+        "other repos and older results are not failures"
+    );
+    assert_eq!(stdout_json(&out)["pushed"], serde_json::json!([]));
+    assert_eq!(stdout_json(&out)["skipped"], 2);
+    let out = repo
+        .cedr(&["bench", "push", "--config", &config])
+        .env("CEDR_API_KEY", "test-key")
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "pushed 0 to acme\n2 saved results from other repos left alone; name them or pass --all\n"
+    );
     api.assert_no_request();
     let task = api.respond(vec![(200, true)]);
     let out = send(&["b-2"]);
@@ -1211,6 +1234,24 @@ fn push_tracks_unsent_ids_per_org_and_explicit_ids_can_be_duplicates() {
         fs::read_to_string(state.join("bench-pushed-acme.txt")).unwrap(),
         "b-1\nb-2\nb-3\nb-2\n"
     );
+    let out = send(&["--all", "--repo", "override"]);
+    assert_eq!(code(&out), 2);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be used with"));
+    api.assert_no_request();
+    let task = api.respond(vec![(200, false)]);
+    let out = send(&["--all"]);
+    assert_eq!(
+        code(&out),
+        2,
+        "--all still reports a legacy result with no repo"
+    );
+    assert_eq!(task.join().unwrap()[0]["repo"], "other/repo");
+    assert_eq!(
+        stdout_json(&out)["pushed"],
+        serde_json::json!(["b-4-other"])
+    );
+    assert_eq!(stdout_json(&out)["skipped"], 0);
+    assert_eq!(stdout_json(&out)["failed"][0]["id"], "b-5-legacy");
 }
 
 #[test]
@@ -1358,6 +1399,7 @@ fn automatic_sending_respects_opt_outs_and_silent_unconfigured_states() {
         ),
         (Some("broken = [".to_string()), None, true),
     ];
+    let mut no_push_id = String::new();
     for (text, flag, warns) in cases {
         if let Some(text) = text {
             fs::write(&config, text).unwrap();
@@ -1377,6 +1419,9 @@ fn automatic_sending_respects_opt_outs_and_silent_unconfigured_states() {
             .unwrap();
         assert_eq!(code(&out), 0);
         assert_eq!(stdout_json(&out)["complete"], true);
+        if flag == Some("--no-push") {
+            no_push_id = stdout_json(&out)["id"].as_str().unwrap().to_string();
+        }
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(stderr.contains("was not sent"), warns, "{stderr}");
         let after = stdout_json(&repo.run(&["bench", "history", "--format", "json"]))
@@ -1391,6 +1436,25 @@ fn automatic_sending_respects_opt_outs_and_silent_unconfigured_states() {
     assert_eq!(code(&out), 0, "no key must not fail the run");
     assert!(String::from_utf8_lossy(&out.stderr).contains("was not sent: no API key"));
     api.assert_no_request();
+    // --no-push postpones sending: a later bare push still includes that saved result.
+    let due = stdout_json(&repo.run(&["bench", "history", "--format", "json"]))
+        .as_array()
+        .unwrap()
+        .len();
+    let task = api.respond(vec![(200, false); due]);
+    let out = repo
+        .cedr(&["bench", "push", "--format", "json"])
+        .env("CEDR_API_KEY", "test-key")
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0);
+    assert!(
+        stdout_json(&out)["pushed"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(no_push_id))
+    );
+    assert_eq!(task.join().unwrap().len(), due);
 }
 
 #[test]
@@ -1405,7 +1469,7 @@ fn push_continues_after_local_and_server_failures_and_legacy_results_can_be_sent
     assert_eq!(stdout_json(&shown)["version"], 1);
     assert!(stdout_json(&shown)["source"].is_null());
     let mut big = result.clone();
-    big["suite"]["name"] = "x".repeat(1024 * 1024).into();
+    big["variants"]["baseline"]["resolved_models"] = serde_json::json!(vec!["m".repeat(256); 1100]);
     store_result(&repo, "b-2-big", &big);
     store_result(&repo, "b-3-denied", &result);
     store_result(&repo, "b-4-ok", &result);
@@ -1413,7 +1477,18 @@ fn push_continues_after_local_and_server_failures_and_legacy_results_can_be_sent
     let config = api.config(&repo, "");
     let task = api.respond(vec![(403, false), (200, false)]);
     let out = repo
-        .cedr(&["bench", "push", "--config", &config, "--format", "json"])
+        .cedr(&[
+            "bench",
+            "push",
+            "b-1-old",
+            "b-2-big",
+            "b-3-denied",
+            "b-4-ok",
+            "--config",
+            &config,
+            "--format",
+            "json",
+        ])
         .env("CEDR_API_KEY", "test-key")
         .output()
         .unwrap();
@@ -1433,7 +1508,7 @@ fn push_continues_after_local_and_server_failures_and_legacy_results_can_be_sent
         report["failed"][1]["error"]
             .as_str()
             .unwrap()
-            .contains("b-2-big: body over 1 MiB")
+            .contains("b-2-big: body over 256 KiB (262144 bytes)")
     );
     assert!(
         report["failed"][2]["error"]
@@ -1489,6 +1564,7 @@ fn dry_run_prints_the_bodies_without_a_key_request_or_sent_marker() {
     let out = repo.run(&[
         "bench",
         "push",
+        "b-dry",
         "--config",
         &config,
         "--repo",
@@ -1592,6 +1668,21 @@ fn repo_precedence_sanitizes_remotes_and_ci_metadata_only_describes_github_https
         stdout_json(&run(&[], false, "ignored/name", "", ""))["source"]["repo"],
         "scp/project"
     );
+    for remote in [
+        "/home/alice/web",
+        "file:///home/alice/web.git",
+        "../sibling",
+        "./sibling",
+        "sibling/web",
+        "C:\\Users\\alice\\web",
+        "https://example.invalid/acme/../web.git",
+        "https://example.invalid/acme/%2e%2e/web.git",
+        "git@example.invalid:../acme/web.git",
+    ] {
+        git(&repo.root(), &["remote", "set-url", "origin", remote]);
+        let out = run(&[], false, "", "", "");
+        assert_eq!(stdout_json(&out)["source"]["repo"], "repo", "{remote}");
+    }
     git(
         &repo.root(),
         &["remote", "set-url", "origin", "invalid name"],
@@ -1630,4 +1721,215 @@ fn repo_precedence_sanitizes_remotes_and_ci_metadata_only_describes_github_https
         .unwrap();
     assert_eq!(code(&out), 0);
     assert!(stdout_json(&out)["source"]["repo"].is_null());
+}
+
+#[test]
+fn bare_push_uses_run_name_precedence_and_requires_repo_context() {
+    let repo = Repo::new();
+    let result = seed_result(&repo);
+    for (id, name) in [
+        ("b-flag", "explicit/name"),
+        ("b-actions", "actions/name"),
+        ("b-remote", "remote/name"),
+        ("b-directory", "repo"),
+    ] {
+        let mut result = result.clone();
+        result["source"]["repo"] = name.into();
+        store_result(&repo, id, &result);
+    }
+    git(
+        &repo.root(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/remote/name.git",
+        ],
+    );
+    let api = BenchApi::new();
+    let config = api.config(&repo, "");
+    let args = [
+        "bench",
+        "push",
+        "--config",
+        &config,
+        "--dry-run",
+        "--format",
+        "json",
+    ];
+    // Match from a subdirectory using the git top level, with the same precedence as run.
+    let sub = repo.root().join("nested");
+    fs::create_dir(&sub).unwrap();
+    for (flag, github, expected) in [
+        (Some("explicit/name"), true, "b-flag"),
+        (None, true, "b-actions"),
+        (None, false, "b-remote"),
+    ] {
+        let mut command = repo.cedr(&args);
+        command
+            .current_dir(&sub)
+            .env("GITHUB_ACTIONS", if github { "true" } else { "false" })
+            .env("GITHUB_REPOSITORY", "actions/name");
+        if let Some(flag) = flag {
+            command.args(["--repo", flag]);
+        }
+        let out = command.output().unwrap();
+        assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+        let bodies = stdout_json(&out);
+        assert_eq!(bodies.as_array().unwrap().len(), 1);
+        assert_eq!(bodies[0]["result"]["id"], expected);
+    }
+    git(
+        &repo.root(),
+        &["remote", "set-url", "origin", "/home/alice/web"],
+    );
+    let out = repo.cedr(&args).current_dir(&sub).output().unwrap();
+    assert_eq!(stdout_json(&out)[0]["result"]["id"], "b-directory");
+    let outside = repo.dir.path();
+    let out = repo.cedr(&args).current_dir(outside).output().unwrap();
+    assert_eq!(code(&out), 2);
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        error.contains("run it inside the repo, name ids or pass --all"),
+        "{error}"
+    );
+    // Outside a repo, an explicit name or Actions metadata can still identify the selection.
+    let out = repo
+        .cedr(&args)
+        .current_dir(outside)
+        .args(["--repo", "explicit/name"])
+        .output()
+        .unwrap();
+    assert_eq!(stdout_json(&out)[0]["result"]["id"], "b-flag");
+    let out = repo
+        .cedr(&args)
+        .current_dir(outside)
+        .env("GITHUB_ACTIONS", "true")
+        .env("GITHUB_REPOSITORY", "actions/name")
+        .output()
+        .unwrap();
+    assert_eq!(stdout_json(&out)[0]["result"]["id"], "b-actions");
+    let out = repo
+        .cedr(&args)
+        .current_dir(outside)
+        .arg("--all")
+        .output()
+        .unwrap();
+    assert_eq!(stdout_json(&out).as_array().unwrap().len(), 4);
+    api.assert_no_request();
+}
+
+#[test]
+fn uploads_clean_paths_controls_empty_values_and_lengths_without_changing_saved_results() {
+    let repo = Repo::new();
+    let mut result = seed_result(&repo);
+    result["suite"]["name"] = format!("\u{1b}{}\n", "é".repeat(140)).into();
+    let models = serde_json::json!([
+        "~/models/home.gguf",
+        "./models/here.gguf",
+        "../models/parent.gguf",
+        "C:\\Users\\alice\\drive.gguf",
+        "/home/alice/absolute.gguf",
+        "",
+        "\n\t",
+        "vendor/model",
+        format!("\u{0}{}\n", "é".repeat(270)),
+    ]);
+    let cleaned_models = serde_json::json!([
+        "home.gguf",
+        "here.gguf",
+        "parent.gguf",
+        "drive.gguf",
+        "absolute.gguf",
+        "vendor/model",
+        "é".repeat(256),
+    ]);
+    let baseline = &mut result["variants"]["baseline"];
+    baseline["model"] = "\n/home/alice/models/x.gguf\t".into();
+    baseline["effort"] = "\n\t".into();
+    baseline["ref"] = format!("\u{0}{}\n", "é".repeat(270)).into();
+    baseline["harness_version"] = format!("\u{1b}[31m{}\n", "v".repeat(600)).into();
+    baseline["resolved_models"] = models.clone();
+    let candidate = &mut result["variants"]["candidate"];
+    candidate["model"] = format!("\t{}\n", "é".repeat(270)).into();
+    candidate["effort"] = format!("\t{}\n", "é".repeat(140)).into();
+    candidate["ref"] = "\nmain\t".into();
+    candidate["harness_version"] = "\n\u{1b}".into();
+    candidate["resolved_models"] = models.clone();
+    for trial in result["trials"].as_array_mut().unwrap() {
+        trial["models"] = models.clone();
+    }
+    result["id"] = "b-clean".into();
+    store_result(&repo, "b-clean", &result);
+    let path = repo.dir.path().join("state/cedr/bench/b-clean.json");
+    let original_bytes = fs::read(&path).unwrap();
+    let original_report = repo.run(&["bench", "show", "b-clean", "--format", "json"]);
+    assert_eq!(code(&original_report), 0);
+    assert_eq!(stdout_json(&original_report), result);
+    let api = BenchApi::new();
+    let config = api.config(&repo, "");
+    let task = api.respond(vec![(200, false)]);
+    let out = repo
+        .cedr(&["bench", "push", "b-clean", "--config", &config])
+        .env("CEDR_API_KEY", "test-key")
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+    let bodies = task.join().unwrap();
+    let sent = &bodies[0]["result"];
+    assert_eq!(sent["suite"]["name"], "é".repeat(128));
+    let baseline = &sent["variants"]["baseline"];
+    assert_eq!(baseline["model"], "x.gguf");
+    assert!(baseline["effort"].is_null());
+    assert_eq!(baseline["ref"], "é".repeat(256));
+    assert_eq!(
+        baseline["harness_version"],
+        format!("[31m{}", "v".repeat(508))
+    );
+    let candidate = &sent["variants"]["candidate"];
+    assert_eq!(candidate["model"], "é".repeat(256));
+    assert_eq!(candidate["effort"], "é".repeat(128));
+    assert_eq!(candidate["ref"], "main");
+    assert!(candidate["harness_version"].is_null());
+    assert_eq!(baseline["resolved_models"], cleaned_models);
+    assert_eq!(candidate["resolved_models"], cleaned_models);
+    for trial in sent["trials"].as_array().unwrap() {
+        assert_eq!(trial["models"], cleaned_models);
+    }
+    assert!(!bodies[0].to_string().contains("alice"));
+    assert_eq!(fs::read(path).unwrap(), original_bytes);
+    assert_eq!(
+        repo.run(&["bench", "show", "b-clean", "--format", "json"])
+            .stdout,
+        original_report.stdout
+    );
+}
+
+#[test]
+fn automatic_sending_finds_the_config_from_the_suites_repo_outside_the_working_directory() {
+    let repo = Repo::new();
+    repo.program("agent", AGENT);
+    let suite = repo.suite(&command_suite(1));
+    let api = BenchApi::new();
+    api.config(&repo, "");
+    // A different valid config in cwd must not hide the suite's automatic upload destination.
+    let outside = repo.dir.path().join("outside");
+    fs::create_dir_all(outside.join(".cedr")).unwrap();
+    fs::write(
+        outside.join(".cedr/routes.toml"),
+        "version=1\n[sync]\norg='other'\nauto=false\n",
+    )
+    .unwrap();
+    let task = api.respond(vec![(200, false)]);
+    let out = repo
+        .cedr(&run_args(&suite))
+        .current_dir(outside)
+        .env("CEDR_API_KEY", "test-key")
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+    let bodies = task.join().unwrap();
+    assert_eq!(bodies[0]["org"], "acme");
+    assert_eq!(bodies[0]["result"]["id"], stdout_json(&out)["id"]);
+    assert_eq!(bodies[0]["repo"], "repo");
 }

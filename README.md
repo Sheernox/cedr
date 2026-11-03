@@ -229,12 +229,12 @@ Configure collection and optional automatic pushes in `~/.config/cedr/monitor.to
 | `cedr bench init` | Write a starter suite to `.cedr/bench/` |
 | `cedr bench plan` | Validate a suite and show what a run would do, starting nothing |
 | `cedr bench run` | Run the agents and tests within the budget; `--fail-on lower` fails CI when the candidate does worse |
-| `cedr bench push [id]...` | Send unsent saved results to an organization; `--repo` supplies a missing repo name and `--dry-run` prints bodies without sending |
+| `cedr bench push [id]...` | Send unsent results from the current repo to an organization; `--all` explicitly selects every repo, ids with `--repo` supply a missing name, and `--dry-run` prints bodies without sending |
 | `cedr bench history` | Saved runs, newest first |
 | `cedr bench show <id>` | One saved run's report, with its exit code |
 | `cedr bench budget [USD]` | Show or set the cap (default $2.00); `--pull` stores the one set in the app |
 
-A suite is code: its `setup` and `test` commands run with your permissions, so run ones you trust. Bench runs the vendors' unmodified CLIs with your own sign-in or keys, in a fresh clone for each trial. With `[sync]` already configured, upgrading starts sending each saved run to that organization: the result, repo name, machine id and name, and GitHub PR number and run URL. Prompts, agent output and paths are never sent. Use `--no-push` for one run, or `auto = false` to stop both Bench and Route automatic sending; `--no-record` also skips sending. See [Bench push](docs/bench.md#push).
+A suite is code: its `setup` and `test` commands run with your permissions, so run ones you trust. Bench runs the vendors' unmodified CLIs with your own sign-in or keys, in a fresh clone for each trial. With `[sync]` already configured, upgrading starts sending each saved run to that organization: the result, repo name, machine id and name, and GitHub PR number and run URL. Prompts, agent output and paths are never sent. Uploads reduce path-like model names to their final segment and cap bodies at 256 KiB; larger results stay saved locally. Use `--no-push` to skip automatic sending for that run; a later `cedr bench push` can still send it. Set `auto = false` to stop both Bench and Route automatic sending. `--no-record` keeps a run from being saved or sent. Bare pushes select only the current repo; `--all` explicitly selects every repo. See [Bench push](docs/bench.md#push).
 
 </details>
 

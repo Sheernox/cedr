@@ -77,10 +77,10 @@ pub enum BenchCommand {
         /// Run variants whose spend the budget cannot see
         #[arg(long)]
         allow_unpriced: bool,
-        /// Do not save the result
+        /// Do not save or send this run
         #[arg(long)]
         no_record: bool,
-        /// Do not send this run to the configured organization
+        /// Skip automatic sending for this run; a later bench push can still send it
         #[arg(long)]
         no_push: bool,
         /// Repository name recorded with the run
@@ -105,18 +105,21 @@ pub enum BenchCommand {
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
-    /// Send saved runs to an organization (unsent runs by default)
+    /// Send saved runs to an organization (unsent runs from the current repo by default)
     Push {
         /// Saved run ids; explicit ids are sent even when already sent
         #[arg(value_name = "ID")]
         ids: Vec<String>,
+        /// Send every unsent result on this machine, including other repos
+        #[arg(long, conflicts_with = "repo")]
+        all: bool,
         /// Organization public id
         #[arg(long)]
         org: Option<String>,
         /// routes.toml holding API settings
         #[arg(long)]
         config: Option<PathBuf>,
-        /// Repository name, overriding the one saved with each run
+        /// Repo to select; with ids, override or supply their saved repo name
         #[arg(long, value_name = "NAME")]
         repo: Option<String>,
         /// Print the bodies without sending or marking them sent
@@ -179,7 +182,7 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
                 common::repo_name(Some(name), Path::new(""))?;
             }
             let loaded = load(suite.as_deref())?;
-            let source = source(repo.as_deref(), &loaded.root);
+            let source = source(repo.as_deref(), Some(&loaded.root));
             if let Some(cap) = budget_usd {
                 check_cap(cap, "--budget-usd")?;
             }
@@ -203,7 +206,7 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             // The measurement is on stdout by now, and it cost money: report the failure, keep the output.
             saved?;
             if !no_record && !no_push {
-                auto_push(&result);
+                auto_push(&result, &loaded.root);
             }
             Ok(ExitCode::from(result.exit_code(fail_on.into())))
         }
@@ -226,6 +229,7 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
         }
         BenchCommand::Push {
             ids,
+            all,
             org,
             config,
             repo,
@@ -233,6 +237,7 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             format,
         } => push(
             ids,
+            all,
             org.as_deref(),
             config.as_deref(),
             repo.as_deref(),
@@ -274,8 +279,12 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
 }
 
 /// Captures only the allowed repository name and GitHub run context, never a remote URL.
-fn source(flag: Option<&str>, root: &Path) -> Source {
-    let valid = |name: String| common::repo_name(Some(&name), root).ok();
+fn source(flag: Option<&str>, root: Option<&Path>) -> Source {
+    let valid = |name: String| {
+        (!name.split('/').any(|part| matches!(part, "." | "..")))
+            .then(|| common::repo_name(Some(&name), Path::new("")).ok())
+            .flatten()
+    };
     let github = std::env::var("GITHUB_ACTIONS").is_ok_and(|v| v == "true");
     let repo = flag
         .map(str::to_owned)
@@ -288,7 +297,7 @@ fn source(flag: Option<&str>, root: &Path) -> Source {
         .or_else(|| {
             let output = std::process::Command::new("git")
                 .arg("-C")
-                .arg(root)
+                .arg(root?)
                 .args(["remote", "get-url", "origin"])
                 .stderr(std::process::Stdio::null())
                 .output()
@@ -297,29 +306,63 @@ fn source(flag: Option<&str>, root: &Path) -> Source {
                 return None;
             }
             let remote = String::from_utf8(output.stdout).ok()?;
-            let remote = remote.trim();
-            let path = if remote.contains("://") {
-                reqwest::Url::parse(remote).ok()?.path().to_string()
-            } else {
-                // scp-style remotes put the host before ':', outside the path segments.
-                remote
-                    .split_once(':')
-                    .map_or(remote, |(_, p)| p)
-                    .to_string()
-            };
-            let parts: Vec<_> = path.trim_end_matches('/').rsplit('/').take(2).collect();
-            if parts.len() != 2 || parts.iter().any(|p| p.is_empty()) {
-                return None;
-            }
-            valid(format!(
-                "{}/{}",
-                parts[1],
-                parts[0].strip_suffix(".git").unwrap_or(parts[0])
-            ))
+            remote_repo(remote.trim()).and_then(valid)
         })
-        .or_else(|| common::repo_name(None, root).ok());
+        .or_else(|| common::repo_name(None, root?).ok().and_then(valid));
     let ci = github.then(github_ci).flatten();
     Source { repo, ci }
+}
+
+/// Local remotes may contain account names. Only network remotes can supply owner/name.
+fn remote_repo(remote: &str) -> Option<String> {
+    let (raw_path, path) = if let Some((_, rest)) = remote.split_once("://") {
+        let url = reqwest::Url::parse(remote).ok()?;
+        if url.scheme() == "file" || url.host_str().is_none() {
+            return None;
+        }
+        let raw = rest.find(['/', '\\']).map_or("", |i| &rest[i..]);
+        let raw = raw.split(['?', '#']).next()?;
+        (raw, url.path().to_owned())
+    } else {
+        let (authority, path) = remote.split_once(':')?;
+        let host = authority.rsplit('@').next()?;
+        if host.is_empty()
+            || authority.contains(['/', '\\'])
+            || (authority.len() == 1 && authority.as_bytes()[0].is_ascii_alphabetic())
+        {
+            return None;
+        }
+        (path, path.to_owned())
+    };
+    // URL parsing normalizes dot segments, so reject them before normalization as well.
+    if raw_path.split(['/', '\\']).any(|part| {
+        let dots = part.to_ascii_lowercase().replace("%2e", ".");
+        matches!(dots.as_str(), "." | "..")
+    }) {
+        return None;
+    }
+    let parts: Vec<_> = path.trim_end_matches('/').rsplit('/').take(2).collect();
+    if parts.len() != 2
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || matches!(*p, "." | ".."))
+    {
+        return None;
+    }
+    let name = parts[0].strip_suffix(".git").unwrap_or(parts[0]);
+    if name.is_empty() || matches!(name, "." | "..") {
+        return None;
+    }
+    Some(format!("{}/{name}", parts[1]))
+}
+
+/// A bare push must identify a repo without treating an arbitrary working directory as one.
+fn current_repo(flag: Option<&str>) -> Result<String, String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let root = cedr_bench::exec::git_root(&cwd).ok();
+    source(flag, root.as_deref()).repo.ok_or_else(|| {
+        "bench push: cannot determine repo; run it inside the repo, name ids or pass --all".into()
+    })
 }
 
 fn github_ci() -> Option<Ci> {
@@ -373,7 +416,7 @@ fn push_machine(config: Option<&config::Config>) -> Result<Value, String> {
     }))
 }
 
-const MAX_PUSH_BYTES: usize = 1024 * 1024;
+const MAX_PUSH_BYTES: usize = 256 * 1024;
 
 fn push_body(
     result: &BenchResult,
@@ -388,7 +431,9 @@ fn push_body(
         .or_else(|| result.source.as_ref().and_then(|s| s.repo.as_deref()))
         .ok_or("no repo name saved; pass --repo")?;
     let repo = common::repo_name(Some(repo), Path::new(""))?;
-    let mut saved = serde_json::to_value(result).map_err(|e| e.to_string())?;
+    let mut outgoing = result.clone();
+    clean_outgoing(&mut outgoing);
+    let mut saved = serde_json::to_value(outgoing).map_err(|e| e.to_string())?;
     saved
         .as_object_mut()
         .expect("result object")
@@ -400,11 +445,64 @@ fn push_body(
     });
     if body.to_string().len() > MAX_PUSH_BYTES {
         return Err(format!(
-            "result {}: body over 1 MiB ({MAX_PUSH_BYTES} bytes)",
+            "result {}: body over 256 KiB ({MAX_PUSH_BYTES} bytes)",
             result.id
         ));
     }
     Ok(body)
+}
+
+/// Clean only the outgoing copy: local reports retain exactly what the harness measured.
+fn clean_outgoing(result: &mut BenchResult) {
+    fn text(value: &str, max: usize) -> String {
+        common::clip(&report::clean(value), max)
+    }
+    fn model(value: &str) -> String {
+        let value = report::clean(value);
+        let drive = value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+            && value.as_bytes().get(1) == Some(&b':');
+        let path = value.starts_with('/')
+            || ["~/", "./", "../"]
+                .iter()
+                .any(|prefix| value.starts_with(prefix))
+            || drive;
+        let name = if path {
+            value.rsplit(['/', '\\']).next().unwrap_or("")
+        } else {
+            &value
+        };
+        common::clip(name, 256)
+    }
+    fn optional(value: &mut Option<String>, max: usize) {
+        *value = value
+            .as_deref()
+            .map(|s| text(s, max))
+            .filter(|s| !s.is_empty());
+    }
+    fn models(values: &mut Vec<String>) {
+        *values = values
+            .iter()
+            .map(|s| model(s))
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    result.suite.name = text(&result.suite.name, 128);
+    for variant in [
+        &mut result.variants.baseline,
+        &mut result.variants.candidate,
+    ] {
+        variant.model = model(&variant.model);
+        optional(&mut variant.effort, 128);
+        variant.git_ref = text(&variant.git_ref, 256);
+        optional(&mut variant.harness_version, 512);
+        models(&mut variant.resolved_models);
+    }
+    for trial in &mut result.trials {
+        models(&mut trial.models);
+    }
 }
 
 fn pushed_path(org: &str) -> PathBuf {
@@ -435,6 +533,7 @@ fn send_result(sync: &config::Sync, key: &str, id: &str, body: &Value) -> Result
 
 fn push(
     ids: Vec<String>,
+    all: bool,
     org: Option<&str>,
     config: Option<&Path>,
     repo: Option<&str>,
@@ -444,6 +543,11 @@ fn push(
     if let Some(repo) = repo {
         common::repo_name(Some(repo), Path::new(""))?;
     }
+    let selected_repo = if ids.is_empty() && !all {
+        Some(current_repo(repo)?)
+    } else {
+        None
+    };
     let sync = common::settings(org, config)?;
     let key = if dry_run {
         String::new()
@@ -491,6 +595,7 @@ fn push(
     let mut duplicates = Vec::new();
     let mut failed = Vec::new();
     let mut bodies = Vec::new();
+    let mut skipped = 0;
     for id in ids {
         let outcome: Result<(), String> = (|| {
             if !run::is_result_id(&id) {
@@ -499,6 +604,12 @@ fn push(
             let result = read_result(&id)?;
             if result.id != id {
                 return Err("saved result id does not match its file name".into());
+            }
+            if let Some(selected) = selected_repo.as_deref()
+                && result.source.as_ref().and_then(|s| s.repo.as_deref()) != Some(selected)
+            {
+                skipped += 1;
+                return Ok(());
             }
             let body = push_body(&result, &sync, &machine, repo)?;
             if dry_run {
@@ -535,7 +646,7 @@ fn push(
     } else {
         match format {
             Format::Json => print_json(
-                &json!({"org": sync.org, "pushed": pushed, "duplicates": duplicates, "failed": failed}),
+                &json!({"org": sync.org, "pushed": pushed, "duplicates": duplicates, "failed": failed, "skipped": skipped}),
             ),
             Format::Text => {
                 for failure in &failed {
@@ -551,6 +662,11 @@ fn push(
                     format!(" ({} duplicates)", duplicates.len())
                 };
                 println!("pushed {} to {}{suffix}", pushed.len(), sync.org);
+                if skipped > 0 {
+                    println!(
+                        "{skipped} saved results from other repos left alone; name them or pass --all"
+                    );
+                }
             }
         }
     }
@@ -558,10 +674,9 @@ fn push(
 }
 
 /// Upload failures cannot replace an expensive measurement's report or gate.
-fn auto_push(result: &BenchResult) {
+fn auto_push(result: &BenchResult, root: &Path) {
     let outcome: Result<Option<String>, String> = (|| {
-        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-        let Some(config) = local_config(&cwd)? else {
+        let Some(config) = local_config(root)? else {
             return Ok(None);
         };
         let Some(sync) = config.sync.as_ref().filter(|s| s.auto) else {
