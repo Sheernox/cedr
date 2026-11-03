@@ -155,6 +155,8 @@ pub struct TaskRow {
 #[serde(deny_unknown_fields)]
 pub struct Source {
     pub repo: Option<String>,
+    #[serde(default)]
+    pub root_commit: Option<String>,
     pub ci: Option<Ci>,
 }
 

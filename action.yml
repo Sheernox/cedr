@@ -171,7 +171,7 @@ runs:
           { echo '```text'; cat "$report"; echo '```'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
         fi
         if [ -n "$INPUT_ORG" ] && [ -n "${CEDR_API_KEY:-}" ]; then
-          cedr bench push --org "$INPUT_ORG" || echo "::warning title=cedr::Bench results were not sent; cedr bench push can send them later"
+          cedr bench push --org "$INPUT_ORG" || echo "::warning title=cedr::Bench results were not sent"
         fi
         exit "$status"
 

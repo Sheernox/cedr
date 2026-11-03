@@ -278,7 +278,7 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
     }
 }
 
-/// Captures only the allowed repository name and GitHub run context, never a remote URL.
+/// Captures repository identity and GitHub run context, never a remote URL or checkout path.
 fn source(flag: Option<&str>, root: Option<&Path>) -> Source {
     let valid = |name: String| {
         (!name.split('/').any(|part| matches!(part, "." | "..")))
@@ -310,7 +310,30 @@ fn source(flag: Option<&str>, root: Option<&Path>) -> Source {
         })
         .or_else(|| common::repo_name(None, root?).ok().and_then(valid));
     let ci = github.then(github_ci).flatten();
-    Source { repo, ci }
+    Source {
+        repo,
+        root_commit: root.and_then(root_commit),
+        ci,
+    }
+}
+
+/// Shared history identifies a repo across clones and linked worktrees without keeping a path.
+fn root_commit(root: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-list", "--max-parents=0", "HEAD", "--"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()?
+        .lines()
+        .min()
+        .map(str::to_owned)
 }
 
 /// Local remotes may contain account names. Only network remotes can supply owner/name.
@@ -357,12 +380,18 @@ fn remote_repo(remote: &str) -> Option<String> {
 }
 
 /// A bare push must identify a repo without treating an arbitrary working directory as one.
-fn current_repo(flag: Option<&str>) -> Result<String, String> {
+fn current_repo(flag: Option<&str>) -> Result<Source, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = cedr_bench::exec::git_root(&cwd).ok();
-    source(flag, root.as_deref()).repo.ok_or_else(|| {
-        "bench push: cannot determine repo; run it inside the repo, name ids or pass --all".into()
-    })
+    let source = source(flag, root.as_deref());
+    // A name alone can collide across organizations, so a bare push needs the repo's history too.
+    if source.repo.is_none() || source.root_commit.is_none() {
+        return Err(
+            "bench push: cannot determine repo; run it inside the repo, name ids or pass --all"
+                .into(),
+        );
+    }
+    Ok(source)
 }
 
 fn github_ci() -> Option<Ci> {
@@ -412,8 +441,12 @@ fn push_machine(config: Option<&config::Config>) -> Result<Value, String> {
         .map_err(|e| e.to_string())?;
     Ok(json!({
         "id": machine::machine_id().map_err(|e| e.to_string())?,
-        "name": common::clip(&machine::machine_name(config.unwrap_or(&fallback)), 64),
+        "name": push_machine_name(config.unwrap_or(&fallback)),
     }))
+}
+
+fn push_machine_name(config: &config::Config) -> String {
+    common::clip(&report::clean(&machine::machine_name(config)), 64)
 }
 
 const MAX_PUSH_BYTES: usize = 256 * 1024;
@@ -459,22 +492,36 @@ fn clean_outgoing(result: &mut BenchResult) {
     }
     fn model(value: &str) -> String {
         let value = report::clean(value);
-        let drive = value
-            .as_bytes()
-            .first()
-            .is_some_and(u8::is_ascii_alphabetic)
-            && value.as_bytes().get(1) == Some(&b':');
-        let path = value.starts_with('/')
-            || ["~/", "./", "../"]
+        let file = value.strip_prefix("file:");
+        let path = file.unwrap_or(&value);
+        // A separator is required: `a:mini` is a model name, while `C:\\` and `C:/x` are paths.
+        let drive = path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+            && path.as_bytes().get(1) == Some(&b':')
+            && matches!(path.as_bytes().get(2), Some(b'/' | b'\\'));
+        let is_path = file.is_some()
+            || path.starts_with('/')
+            || path.starts_with("\\\\")
+            || ["~/", "./", "../", ".\\", "..\\"]
                 .iter()
-                .any(|prefix| value.starts_with(prefix))
+                .any(|prefix| path.starts_with(prefix))
             || drive;
-        let name = if path {
-            value.rsplit(['/', '\\']).next().unwrap_or("")
+        let name = if is_path {
+            let path = if drive { &path[2..] } else { path };
+            path.trim_end_matches(['/', '\\'])
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or("")
         } else {
             &value
         };
         common::clip(name, 256)
+    }
+    fn required(value: String) -> String {
+        if value.is_empty() {
+            "unknown".into()
+        } else {
+            value
+        }
     }
     fn optional(value: &mut Option<String>, max: usize) {
         *value = value
@@ -489,14 +536,14 @@ fn clean_outgoing(result: &mut BenchResult) {
             .filter(|s| !s.is_empty())
             .collect();
     }
-    result.suite.name = text(&result.suite.name, 128);
+    result.suite.name = required(text(&result.suite.name, 128));
     for variant in [
         &mut result.variants.baseline,
         &mut result.variants.candidate,
     ] {
-        variant.model = model(&variant.model);
+        variant.model = required(model(&variant.model));
         optional(&mut variant.effort, 128);
-        variant.git_ref = text(&variant.git_ref, 256);
+        variant.git_ref = required(text(&variant.git_ref, 256));
         optional(&mut variant.harness_version, 512);
         models(&mut variant.resolved_models);
     }
@@ -601,12 +648,27 @@ fn push(
             if !run::is_result_id(&id) {
                 return Err("expected a saved run id".into());
             }
-            let result = read_result(&id)?;
+            let result = match read_result(&id) {
+                Ok(result) => result,
+                Err(_) if selected_repo.is_some() => {
+                    skipped += 1;
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
             if result.id != id {
                 return Err("saved result id does not match its file name".into());
             }
-            if let Some(selected) = selected_repo.as_deref()
-                && result.source.as_ref().and_then(|s| s.repo.as_deref()) != Some(selected)
+            if let Some(selected) = &selected_repo
+                && !result.source.as_ref().is_some_and(|saved| {
+                    saved
+                        .repo
+                        .as_deref()
+                        .zip(selected.repo.as_deref())
+                        .is_some_and(|(saved, current)| saved.eq_ignore_ascii_case(current))
+                        && saved.root_commit.is_some()
+                        && saved.root_commit == selected.root_commit
+                })
             {
                 skipped += 1;
                 return Ok(());
@@ -1041,4 +1103,23 @@ fn print_result(result: &BenchResult, format: Format) {
         }
     };
     let _ = std::io::stdout().write_all(text.as_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outgoing_machine_name_removes_controls_before_clipping() {
+        let mut config = config::Config::parse("version=1", Path::new("routes.toml")).unwrap();
+        // Exercise the boundary independently of the config parser's one-line restriction.
+        config.machine = Some(config::Machine {
+            name: Some(format!("host\n\t{}", "é".repeat(70))),
+            skip: Vec::new(),
+        });
+        assert_eq!(
+            push_machine_name(&config),
+            format!("host{}", "é".repeat(60))
+        );
+    }
 }

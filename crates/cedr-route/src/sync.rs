@@ -579,18 +579,36 @@ pub fn send_monitor(sync: &Sync, key: &str, body: &Value) -> Result<Value> {
 
 /// Sends one saved Bench result using Route's transport and bounded reply rules.
 pub fn send_bench(sync: &Sync, key: &str, body: &Value) -> Result<Value> {
-    let response = client(sync.url())?
-        .post(format!("{}/bench/runs", sync.url()))
-        .bearer_auth(key)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(body.to_string())
-        .send()
-        .map_err(|e| sync_err("bench", request_error(e)))?;
-    if !response.status().is_success() {
-        return Err(reply_error("bench", response, key));
+    let client = client(sync.url())?;
+    let mut retries = 0;
+    loop {
+        let response = client
+            .post(format!("{}/bench/runs", sync.url()))
+            .bearer_auth(key)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.to_string())
+            .send()
+            .map_err(|e| sync_err("bench", request_error(e)))?;
+        // A busy organization lock is transient; idempotent result ids make retrying safe.
+        if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE && retries < 2 {
+            let seconds = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(1)
+                .min(5);
+            drop(response);
+            retries += 1;
+            std::thread::sleep(Duration::from_secs(seconds));
+            continue;
+        }
+        if !response.status().is_success() {
+            return Err(reply_error("bench", response, key));
+        }
+        let bytes = read_limited(response, 4096).map_err(|e| sync_err("bench reply", e))?;
+        return serde_json::from_slice(&bytes).map_err(|_| sync_err("bench reply", "invalid JSON"));
     }
-    let bytes = read_limited(response, 4096).map_err(|e| sync_err("bench reply", e))?;
-    serde_json::from_slice(&bytes).map_err(|_| sync_err("bench reply", "invalid JSON"))
 }
 
 /// Organization rules response. Only the contract's specific errors are nonfatal.
