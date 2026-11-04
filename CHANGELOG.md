@@ -4,59 +4,67 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 ## v0.8.3 (2026-11-03)
 
-![cedr v0.8.3: Council, your rules](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.3.png)
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.3.png" alt="cedr v0.8.3: council, your way" width="770">
 
-**v0.8.3** · 8 changes from 1 contributor
+**v0.8.3** · 6 changes from 1 contributor
 
 ### Highlights
-A council now runs closer to how you want it to. Each plan can have its own limits on a route, so a review can use nearly all of Codex and stop early on Muse. A member can wait on standby as a spare, using no plan until another member can't take a review. Rounds can be unlimited, and a review stops by itself when the same blocking findings keep coming back. Members can score a change out of 10, and agents get the whole procedure from `cedr council skill`.
+**Keep members on standby.** Mark a council member `spare = true` and it uses none of its plan until another member can't take a review. Your smallest plan can back up the others without being spent on every change.
 
-**Upgrade step:** upgrade every machine that shares a `routes.toml` before using `harness_thresholds`, `spare`, `fixes`, `advisory`, `spares` or `rounds = "unlimited"`, because older versions refuse the file.
+**Give each plan its own limits.** A route can now use nearly all of Codex and stop much earlier on Muse, without changing how those plans behave anywhere else.
+
+**Let a review run until it's done.** `rounds = "unlimited"` keeps reviewing while the change improves, and stops by itself when the same blocking findings come back, so it can't loop.
+
+**Your agent knows the procedure.** `cedr council skill` prints the whole review, including how to start members in T3 Code. Agents get settings for who fixes findings, and members can score the change.
+
+**Upgrade step:** upgrade every machine that shares a `routes.toml` before using `harness_thresholds`, `spare`, `fixes`, `advisory`, `spares` or `rounds = "unlimited"`, because older versions refuse the file. Nothing changes for a file that doesn't use them.
 
 ### Features
-- **Route** adds `harness_thresholds` on a route: `[routes."review.council".harness_thresholds.codex]` takes any `thresholds` key and beats the route's own `thresholds` for that plan. `cedr route thresholds --route R --harness H` shows and edits that layer.
-- **Council** adds spares: `spare = true` on a member keeps it out of a review unless a member can't take it. `spares = "all"` fills every seat, and `spares = "quorum"` only as many as the quorum needs. The plan names each spare with `spare_for`.
-- **Council** rounds can be `"unlimited"`. `--previous` gives the merge the last round's JSON, and the same blocking findings two rounds in a row stop the review with `stalled: true`.
-- **Council** adds `fixes` and `advisory`, returned by the plan, which say who acts on blocking findings and what happens to the rest.
-- **Council** `cedr council plan --member H/M` plans exactly the members you name, and reports any that are unavailable rather than replacing them.
-- **Council** reports may carry a score out of 10, shown beside the gate and never deciding it. Scores and spares sync as numbers and member names only.
-- **Council** `cedr council skill` prints the procedure, including the steps for T3 Code, and the plan warns when one vendor alone could reach the quorum.
+- **Spares:** `spare = true` keeps a member out of a review unless a member can't take it because it is out of plan room, easing off and unable to take this size of work, not installed, or failed partway. `spares = "all"` fills every empty seat and `spares = "quorum"` only as many as the quorum needs. The plan names each stand-in with `spare_for`, and merges record who stood in for whom.
+- **Limits per plan:** `[routes."review.council".harness_thresholds.codex]` takes any `thresholds` key and beats the route's own limits for that plan. `cedr route thresholds --route R --harness H` shows and edits them.
+- **Unlimited rounds:** pass the last merge's JSON with `--previous`. When every blocking finding returns within 10 lines of where it was, the merge stops with `stalled: true`. This works on numbered rounds too, whenever `--previous` is given.
+- **Who acts on findings:** `fixes` says whether the agent fixes blocking findings or asks you, and `advisory` whether it applies, lists or asks about the rest. The plan returns both, so every agent follows them.
+- **Named members:** `cedr council plan --member codex/sol` plans exactly the members you name. One that is unavailable is reported, not replaced.
+- **Scores:** a report may carry a score out of 10, as `"score": 8` or a `Score: 8/10` line. Merges show scores beside the gate, and they sync to the app as numbers only. A score never decides the gate.
+- **Vendor warning:** the plan warns when one vendor alone could reach the quorum, because different vendors miss different things.
 
 ### Changes
-- **Council** revision briefs tell the author to fix only what the change needs.
-- **Docs** and **Sync** notes say Claude, Gemini, Muse and Grok. Harness ids, targets, paths and JSON are unchanged.
+- Revision briefs now tell the author to fix only what the change needs, and to list anything else as a follow-up.
+- Docs and Sync notes say Claude, Gemini, Muse and Grok. Harness ids, targets, paths and JSON are unchanged.
+
+Contracts: [docs/council.md](https://github.com/Sheernox/cedr/blob/v0.8.3/docs/council.md) and [docs/route.md](https://github.com/Sheernox/cedr/blob/v0.8.3/docs/route.md).
 
 <details>
 <summary>Full changelog</summary>
 
 #### What's Changed
-* feat(route): let a route give one plan its own limits
-* docs: call agents Claude, Gemini, Muse and Grok everywhere people read
-* feat(council): let members score a change and keep revisions in scope
-* feat(council): add spares, unlimited rounds with a stall stop and agent settings
-* build(banner): render the v0.8.3 release hero
-* chore(release): cedr 0.8.3
+* feat(route): let a route give one plan its own limits ([#26](https://github.com/Sheernox/cedr/pull/26))
+* docs: call agents Claude, Gemini, Muse and Grok everywhere people read ([#26](https://github.com/Sheernox/cedr/pull/26))
+* feat(council): let members score a change and keep revisions in scope ([#26](https://github.com/Sheernox/cedr/pull/26))
+* feat(council): add spares, unlimited rounds with a stall stop and agent settings ([#26](https://github.com/Sheernox/cedr/pull/26))
+* build(banner): render the v0.8.3 release hero ([#26](https://github.com/Sheernox/cedr/pull/26))
+* chore(release): cedr 0.8.3 ([#26](https://github.com/Sheernox/cedr/pull/26))
 
 **Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.8.2...v0.8.3
 </details>
 
 ## v0.8.2 (2026-11-02)
 
-![cedr v0.8.2: Bench, shared](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.2.png)
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.2.png" alt="cedr v0.8.2: bench, shared" width="770">
 
 **v0.8.2** · 5 changes from 1 contributor
 
 ### Highlights
-Bench results can now reach your team. `cedr bench push` sends saved results to a cedr.dev organization, so everyone can read what each change did in one place. Each result carries its repo name and, on GitHub Actions, its pull request and run.
+**Bench results now reach your team.** `cedr bench push` sends saved results to your cedr.dev organization, so everyone reads what each change did in one place. Each result carries its repo name and, on GitHub Actions, its pull request and run.
 
-**Upgrade step:** a machine with `[sync]` set now sends each Bench run when it finishes, unless `auto = false`. To stop it, pass `--no-push` on a run, or set `[sync] auto = false`, which also stops Route's automatic sync. Prompts, agent output and paths are never sent. See [what is sent](https://cedr.dev/docs/bench).
+**Upgrade step:** a machine with `[sync]` set now sends each Bench run when it finishes, unless `auto = false`. To stop it, pass `--no-push` on a run, or set `[sync] auto = false`, which also stops Route's automatic sync. Prompts, agent output and paths are never sent. See [what is sent](https://github.com/Sheernox/cedr/blob/v0.8.2/docs/bench.md).
 
 ### Features
-- **Bench** adds `cedr bench push`. With no ids it sends unsent results saved from the current repo, matched on the repo's name and root commit. Results from other repos are left alone unless you name them or pass `--all`. Sending a result again changes nothing.
-- **Bench** runs send themselves when they finish, under the same rule as Route's automatic sync. A failed send warns and never changes the run's report or exit code, and a busy app is retried.
-- **Bench** runs record the repo name and, on GitHub Actions, the pull request number and run URL. `--repo` sets the name.
-- **GitHub Action** sends Bench results when `push-org` and `CEDR_API_KEY` are set. A failed send only warns, and the Bench gate is unchanged.
-- **Doctor** says whether results are sent automatically, and to which organization.
+- **Pushing:** with no ids, `cedr bench push` sends unsent results saved from the current repo, matched on the repo's name and root commit. Results from other repos stay put unless you name them or pass `--all`, and sending a result twice changes nothing.
+- **Automatic sends:** a finished run sends itself under the same rule as Route's automatic sync. A failed send warns and never changes the run's report or exit code, and a busy app is retried.
+- **Run details:** runs record the repo name and, on GitHub Actions, the pull request number and run URL. `--repo` sets the name.
+- **GitHub Action:** sends results when `push-org` and `CEDR_API_KEY` are set. A failed send only warns, and the Bench gate is unchanged.
+- **Doctor:** says whether results are sent automatically, and to which organization.
 
 <details>
 <summary>Full changelog</summary>
@@ -73,18 +81,18 @@ Bench results can now reach your team. `cedr bench push` sends saved results to 
 
 ## v0.8.1 (2026-11-01)
 
-![cedr v0.8.1: council, tuned](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.1.png)
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.1.png" alt="cedr v0.8.1: council, tuned" width="770">
 
 **v0.8.1** · 4 changes from 1 contributor
 
 ### Highlights
-Council can now be tuned as finely as any other route. A member can review only the work sizes you choose, so a large change can get more reviewers than a small one. `cedr route sync` also says which machine it is pushing from, so the cedr.dev app can show council results per machine.
+**Tune a council as finely as any route.** A member can review only the work sizes you choose, so a large change can get more reviewers than a small one. `cedr route sync` also names the machine it pushes from, so the cedr.dev app can show council results per machine.
 
 **Upgrade step:** upgrade every machine that shares a `routes.toml` before setting `sizes` on a council member, because older versions refuse the file.
 
 ### Features
-- **Council** members accept `sizes`, the work sizes each one reviews. Every size must keep at least the quorum of members; validation fails otherwise, since that work could never pass.
-- **Route** sync sends this machine's id with each history batch, as `machine` beside `org`. It is left out if the id cannot be read or made, and the records still sync.
+- **Work sizes:** council members accept `sizes`, the work sizes each one reviews. Every size must keep at least the quorum of members; validation fails otherwise, since that work could never pass.
+- **Machine names:** sync sends this machine's id with each history batch, as `machine` beside `org`. It is left out if the id cannot be read or made, and the records still sync.
 
 <details>
 <summary>Full changelog</summary>
@@ -107,19 +115,19 @@ Council can now be tuned as finely as any other route. A member can review only 
 ### Highlights
 **Bench is here.** It tells you whether a change to your rules, a skill or a model helps before you merge it: real tasks against a baseline and a candidate, your tests deciding each trial, and a budget on every run that defaults to $2.00. Start with `cedr bench init`.
 
-**Route puts you in charge.** Set its plan limits per plan and per route, send different work sizes to different models, and change all of it from the command line. Route and Council can also read Grok Build's plan usage and balance work onto it.
+**Route puts you in charge.** Set plan limits per plan and per route, send different work sizes to different models, and change all of it from the command line. Route and Council can also read Grok's plan usage and balance work onto it.
 
-**Guard watches remote MCP servers.** A remote server has no version, so a pin could never notice its tools changing; `cedr guard remote` compares what a server lists now with what you locked.
+**Guard watches remote MCP servers.** A remote server has no version, so a pin could never notice its tools changing. `cedr guard remote` compares what a server lists now with what you locked.
 
 **Upgrade step:** none; cedr updates itself. Upgrade every machine that shares a `routes.toml` before using Route's new keys in it, because older versions refuse them. A lock made with `--remote` needs this version or later to diff its surfaces.
 
 ### Features
-- **Bench** adds `cedr bench init`, `plan`, `run`, `history`, `show` and `budget`. It runs the unmodified `claude` and `codex` CLIs, and any other agent through a `command` harness, each trial in a fresh clone. Results record the models, CLI versions, commits and a digest of the agent files, and report pass rates with 95% intervals rather than a verdict. Set the cap with `--budget-usd`, `cedr bench budget` or the app's Settings page. Ctrl-C stops the agent and keeps what the run measured. Doctor checks it, MCP gains `bench_plan`, `bench_history` and `bench_show`, and the GitHub Action gains `bench`, `bench-budget-usd`, `bench-fail-on` and `bench-allow-unpriced`. Bench needs the repo's full history, so set `fetch-depth: 0` in CI. A suite is code, so run ones you trust. Contract: [docs/bench.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/bench.md).
-- **Guard** adds `cedr guard lock --remote` and `cedr guard remote`, which report added and removed tools, schema and description changes, new hosts and expanded capabilities. They send no credentials and contact only public HTTPS addresses. A server that is down or needs a login reports as that, never as unchanged. `[remote] interval_minutes` limits how often a scheduled run really reads a server. Contract: [docs/design.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/design.md).
-- **Route** has a built-in `grok` reader for Grok Build's weekly allowance, which Council's picks use too. `cedr monitor limits` shows the reading, `cedr doctor` checks Grok Build's MCP registration, and `cedr route import` sets its effort option. The plan's pool is shared with the vendor's other products, so the percent can rise with no Grok Build turn. Contract: [docs/route.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/route.md).
-- **Route** gives you control of its limits and models. `[thresholds]` can now be set per plan and per route, session and weekly limits can differ (`session_out`, `weekly_out`), and `conserve_sizes` and `unknown_sizes` choose what work a low or unread plan still takes. A candidate's `sizes` sends small and large work to different models. `cedr route thresholds`, `add`, `remove`, `enable` and `disable` make these changes for you, keeping your file's comments; `cedr route show` explains what a route would pick at each size and why, and `cedr route models` lists what you can choose from. Older cedr versions refuse a `routes.toml` using the new keys, so upgrade every machine that shares one. Contract: [docs/route.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/route.md#thresholds).
-- **Monitor** adds `responseSet` to each row it pushes, a digest of the responses behind the row, so a log copied between your machines counts once in the app. Past hours count once after `cedr monitor push --full` on each machine. The responses' identities never leave the machine. Contract: [docs/monitor.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/monitor.md).
-- **Versioning** is now written down: what counts as public API, what each bump means, and how breaking changes reach you. Read [docs/versioning.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/versioning.md).
+- **Bench:** `cedr bench init`, `plan`, `run`, `history`, `show` and `budget`. It runs the unmodified `claude` and `codex` CLIs, and any other agent through a `command` harness, each trial in a fresh clone. Results record the models, CLI versions, commits and a digest of the agent files, and report pass rates with 95% intervals rather than a verdict. Set the cap with `--budget-usd`, `cedr bench budget` or the app's Settings page. Ctrl-C stops the agent and keeps what the run measured. Bench needs the repo's full history, so set `fetch-depth: 0` in CI, and a suite is code, so run ones you trust. Doctor checks it, MCP gains `bench_plan`, `bench_history` and `bench_show`, and the GitHub Action gains `bench`, `bench-budget-usd`, `bench-fail-on` and `bench-allow-unpriced`. Contract: [docs/bench.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/bench.md).
+- **Remote servers:** `cedr guard lock --remote` and `cedr guard remote` report added and removed tools, schema and description changes, new hosts and expanded capabilities. They send no credentials and contact only public HTTPS addresses. A server that is down or needs a login reports as that, never as unchanged. `[remote] interval_minutes` limits how often a scheduled run really reads a server. Contract: [docs/design.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/design.md).
+- **Limits and models:** `[thresholds]` can be set per plan and per route, session and weekly limits can differ (`session_out`, `weekly_out`), and `conserve_sizes` and `unknown_sizes` choose what work a low or unread plan still takes. A candidate's `sizes` sends small and large work to different models. `cedr route thresholds`, `add`, `remove`, `enable` and `disable` make these changes for you and keep your file's comments. `cedr route show` explains what a route would pick at each size and why, and `cedr route models` lists what you can choose from. Contract: [docs/route.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/route.md#thresholds).
+- **Grok's plan:** a built-in `grok` reader reads Grok's weekly allowance, which Council's picks use too. `cedr monitor limits` shows the reading, `cedr doctor` checks Grok's MCP registration, and `cedr route import` sets its effort option. The allowance is shared with the vendor's other products, so the percent can rise with no Grok turn. Contract: [docs/route.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/route.md).
+- **Monitor:** each pushed row adds `responseSet`, a digest of the responses behind it, so a log copied between your machines counts once in the app. Past hours count once after `cedr monitor push --full` on each machine. The responses' identities never leave the machine. Contract: [docs/monitor.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/monitor.md).
+- **Versioning:** what counts as public API, what each bump means, and how breaking changes reach you are now written down in [docs/versioning.md](https://github.com/Sheernox/cedr/blob/v0.8.0/docs/versioning.md).
 
 <details>
 <summary>Full changelog</summary>
@@ -158,7 +166,7 @@ Council can now be tuned as finely as any other route. A member can review only 
 
 ## v0.7.0 (2026-11-01)
 
-<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.7.0.png" alt="cedr v0.7.0: grok build" width="770">
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.7.0.png" alt="cedr v0.7.0: grok" width="770">
 
 **v0.7.0** · 14 changes from 1 contributor
 
@@ -221,7 +229,7 @@ Guard now has its own command, like every other cedr product: `cedr guard lint`,
 
 ## v0.5.2 (2026-10-31)
 
-![cedr v0.5.2: nothing skipped](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.5.2.png)
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.5.2.png" alt="cedr v0.5.2: nothing skipped" width="770">
 
 **v0.5.2** · 4 changes from 1 contributor
 
@@ -245,7 +253,7 @@ Monitor now counts Antigravity conversations that an interrupted turn cut off. B
 
 ## v0.5.1 (2026-10-31)
 
-![cedr v0.5.1: counted right](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.5.1.png)
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.5.1.png" alt="cedr v0.5.1: counted right" width="770">
 
 **v0.5.1** · 4 changes from 1 contributor
 
@@ -274,7 +282,7 @@ Monitor counts Codex usage under the thread that produced it, and repairs what i
 
 ## v0.5.0 (2026-10-30)
 
-![cedr v0.5.0: self-updating](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.5.0.png)
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.5.0.png" alt="cedr v0.5.0: self-updating" width="770">
 
 **v0.5.0** · 5 changes from 1 contributor
 
