@@ -1083,6 +1083,50 @@ candidates = [{ target = "codex/sol" }]
     }
 
     #[test]
+    fn a_route_can_use_all_of_one_plan_and_leave_room_on_another() {
+        let text = r#"version = 1
+[harnesses.codex]
+expect = ["primary"]
+[harnesses.muse]
+expect = ["weekly"]
+[routes."review.council"]
+council = true
+quorum = 1
+candidates = [{ target = "codex/sol" }, { target = "muse/wonder" }]
+[routes."review.council".harness_thresholds.codex]
+weekly_conserve = 95
+weekly_out = 98
+[routes."review.council".harness_thresholds.muse]
+weekly_conserve = 40
+weekly_out = 50
+"#;
+        let config = Config::parse(text, Path::new("t.toml")).unwrap();
+        let mut readings = Readings::default();
+        readings.merge(&config, &json!({
+            "harnesses": [
+                {"harness": "codex", "fetchedAt": "2026-10-29T01:59:00Z", "windows": [
+                    {"id": "primary", "kind": "weekly", "percent": 92, "resetsAt": "2026-11-02T00:00:00Z"}]},
+                {"harness": "muse", "fetchedAt": "2026-10-29T01:59:00Z", "windows": [
+                    {"id": "weekly", "kind": "weekly", "percent": 60, "resetsAt": "2026-11-02T00:00:00Z"}]}],
+            "models": {"codex": ["gpt-6-sol"], "muse": ["muse-wonder-1"]}
+        }));
+        let c = Context {
+            config: &config,
+            rules: "x",
+            readings: &readings,
+            now: now(),
+            warnings: &[],
+        };
+        let pick = c.pick("review.council", Size::Large, &[]).unwrap();
+        let chosen: Vec<&str> = pick.delegates.iter().map(|d| d.harness.as_str()).collect();
+        assert_eq!(
+            chosen,
+            ["codex"],
+            "muse is past its stop at 60%, codex not yet at 92%"
+        );
+    }
+
+    #[test]
     fn route_thresholds_and_sizes_shape_the_pick() {
         let text = r#"version = 1
 [harnesses.codex]

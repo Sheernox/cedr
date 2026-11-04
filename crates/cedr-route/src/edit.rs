@@ -5,7 +5,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use toml_edit::{Array, DocumentMut, InlineTable, Item, RawString, TableLike, Value, table, value};
+use toml_edit::{Array, DocumentMut, InlineTable, Item, RawString, Table, TableLike, Value, value};
 
 use crate::config::{Config, Limits, RoutesFrom, load_local, rules_hash};
 use crate::error::{Error, Result, io_err, parse_err};
@@ -16,6 +16,8 @@ pub enum Scope<'a> {
     All,
     Harness(&'a str),
     Route(&'a str),
+    /// One plan's layer on one route.
+    RouteHarness(&'a str, &'a str),
 }
 
 pub struct CandidateEdit<'a> {
@@ -109,6 +111,13 @@ pub fn scope_limits(config: &Config, scope: &Scope) -> Result<Limits> {
             let route = config.routes.get(*r).ok_or_else(|| unknown("route", r))?;
             config.limits(None, Some(route))
         }
+        Scope::RouteHarness(r, h) => {
+            let route = config.routes.get(*r).ok_or_else(|| unknown("route", r))?;
+            if !config.harnesses.contains_key(*h) {
+                return Err(unknown("harness", h));
+            }
+            config.limits(Some(h), Some(route))
+        }
     })
 }
 
@@ -132,7 +141,7 @@ fn scope_item<'a>(doc: &'a mut DocumentMut, scope: &Scope) -> Result<&'a mut Ite
     match scope {
         Scope::All => Ok(doc.as_item_mut()),
         Scope::Harness(h) => entry(doc, "harnesses", h, "harness"),
-        Scope::Route(r) => entry(doc, "routes", r, "route"),
+        Scope::Route(r) | Scope::RouteHarness(r, _) => entry(doc, "routes", r, "route"),
     }
 }
 
@@ -194,6 +203,9 @@ pub fn set_thresholds(
     unset: &[String],
 ) -> Result<String> {
     let mut doc = document(text)?;
+    if let Scope::RouteHarness(_, h) = scope {
+        entry(&mut doc, "harnesses", h, "harness")?;
+    }
     let parent = scope_item(&mut doc, scope)?;
     let mut changes = Vec::new();
     for pair in set {
@@ -210,21 +222,44 @@ pub fn set_thresholds(
     let holder = parent
         .as_table_like_mut()
         .ok_or_else(|| Error::Usage("that scope is not a table in the file".to_string()))?;
-    if !holder.contains_key("thresholds") {
+    let fresh = || {
+        if inline {
+            value(InlineTable::new())
+        } else {
+            let mut t = Table::new();
+            // Its own header is enough; a parent that holds only subtables needs none.
+            t.set_implicit(true);
+            Item::Table(t)
+        }
+    };
+    let (holder, name) = match scope {
+        Scope::RouteHarness(_, h) => {
+            if !holder.contains_key("harness_thresholds") {
+                if changes.is_empty() {
+                    return Ok(text.to_string());
+                }
+                holder.insert("harness_thresholds", fresh());
+            }
+            let plans = holder
+                .get_mut("harness_thresholds")
+                .and_then(Item::as_table_like_mut)
+                .ok_or_else(|| {
+                    Error::Usage("harness_thresholds in the file is not a table".to_string())
+                })?;
+            (plans, *h)
+        }
+        _ => (holder, "thresholds"),
+    };
+    if !holder.contains_key(name) {
         if changes.is_empty() {
             return Ok(text.to_string());
         }
-        let fresh = if inline {
-            value(InlineTable::new())
-        } else {
-            table()
-        };
-        holder.insert("thresholds", fresh);
+        holder.insert(name, fresh());
     }
     let layer = holder
-        .get_mut("thresholds")
+        .get_mut(name)
         .and_then(Item::as_table_like_mut)
-        .ok_or_else(|| Error::Usage("thresholds in the file is not a table".to_string()))?;
+        .ok_or_else(|| Error::Usage(format!("{name} in the file is not a table")))?;
     for key in unset {
         layer.remove(key);
     }
@@ -232,7 +267,7 @@ pub fn set_thresholds(
         replace(layer, key, item);
     }
     if layer.is_empty() {
-        holder.remove("thresholds");
+        holder.remove(name);
     }
     Ok(doc.to_string())
 }
@@ -737,6 +772,40 @@ out = 90 # reserve for interactive work
         assert!(l.conserve_sizes.is_empty());
         let top = set_thresholds(file, &Scope::All, &["out=80".to_string()], &[]).unwrap();
         assert_eq!(check(&top).limits(None, None).weekly_out, 80.0);
+    }
+
+    #[test]
+    fn thresholds_can_set_and_unset_one_plan_on_one_route() {
+        let file =
+            "version = 1\n[harnesses.a]\n[routes.\"a.b\"]\ncandidates = [{ target = \"self\" }]\n";
+        let scope = Scope::RouteHarness("a.b", "a");
+        let text = set_thresholds(file, &scope, &["weekly_out=98".to_string()], &[]).unwrap();
+        assert!(
+            text.contains("[routes.\"a.b\".harness_thresholds.a]"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("[routes.\"a.b\".harness_thresholds]\n"),
+            "{text}"
+        );
+        let c = check(&text);
+        assert_eq!(c.limits(Some("a"), c.routes.get("a.b")).weekly_out, 98.0);
+        let cleared = set_thresholds(&text, &scope, &[], &["weekly_out".to_string()]).unwrap();
+        let c = check(&cleared);
+        assert_eq!(c.limits(Some("a"), c.routes.get("a.b")).weekly_out, 90.0);
+        assert!(
+            set_thresholds(
+                file,
+                &Scope::RouteHarness("a.b", "nope"),
+                &["out=1".to_string()],
+                &[]
+            )
+            .is_err()
+        );
+        assert_eq!(
+            set_thresholds(file, &scope, &[], &["out".to_string()]).unwrap(),
+            file
+        );
     }
 
     #[test]

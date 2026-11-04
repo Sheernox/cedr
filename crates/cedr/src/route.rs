@@ -141,8 +141,8 @@ pub enum RouteCommand {
     },
     /// Show or change plan thresholds, for every plan or for one plan or route
     Thresholds {
-        /// Only this plan
-        #[arg(long, conflicts_with = "route")]
+        /// Only this plan; with --route, only this plan on that route
+        #[arg(long)]
         harness: Option<String>,
         /// Only this route
         #[arg(long)]
@@ -612,9 +612,10 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
             format,
         } => {
             let scope = match (&harness, &route) {
-                (Some(h), _) => Scope::Harness(h),
-                (_, Some(r)) => Scope::Route(r),
-                _ => Scope::All,
+                (Some(h), Some(r)) => Scope::RouteHarness(r, h),
+                (Some(h), None) => Scope::Harness(h),
+                (None, Some(r)) => Scope::Route(r),
+                (None, None) => Scope::All,
             };
             if set.is_empty() && unset.is_empty() {
                 let loaded = Session::config_only(config, &cwd()?)?;

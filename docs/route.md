@@ -102,6 +102,9 @@ candidates = [
 weekly_conserve = 50
 ```
 
+[routes."code.impl".harness_thresholds.codex]   # optional: any [thresholds] key, for this plan on this route
+weekly_out = 98
+
 - A target is `self` (the orchestrator keeps the work) or `<harness>/<model>`, where the harness is defined and the model is a family name (`sol`) or an exact id. `self` ends the walk, so it takes no `tier`. Validation fails on anything else, on an empty candidate list, and on an unknown `version`.
 - Consecutive candidates with the same `tier` form one tier; a candidate without `tier` stands alone.
 - `judge` and `escalate` name other routes in the file. Validation fails when either names an unknown route or the route itself, when `escalate` is set without `judge`, when a council has either or either names a council, when a judge route has a `judge` of its own, or when following `escalate` from a route comes back to it.
@@ -112,9 +115,9 @@ weekly_conserve = 50
 
 ## Thresholds
 
-Each setting comes from the most specific layer that sets it: the route's `thresholds`, then the harness's, then `[thresholds]`, then the default. Within a layer `session_out` and `weekly_out` beat `out`; an `out` in a more specific layer beats either from a less specific one. Percents must be 0 to 100 and `fresh_seconds` must not be negative; anything else fails validation, except that `fresh_seconds`, `session_conserve`, `weekly_conserve` and `out` in `[thresholds]` load unchecked so older files keep working, and `cedr route thresholds` still refuses to write such a value. A conserve threshold at or above the matching out threshold means the plan goes straight from ready to out.
+Each setting comes from the most specific layer that sets it: the route's `harness_thresholds` for that harness, then the route's `thresholds`, then the harness's, then `[thresholds]`, then the default. Within a layer `session_out` and `weekly_out` beat `out`; an `out` in a more specific layer beats either from a less specific one. Percents must be 0 to 100 and `fresh_seconds` must not be negative; anything else fails validation, except that `fresh_seconds`, `session_conserve`, `weekly_conserve` and `out` in `[thresholds]` load unchecked so older files keep working, and `cedr route thresholds` still refuses to write such a value. A conserve threshold at or above the matching out threshold means the plan goes straight from ready to out.
 
-Route thresholds change only that route's picks. `pools`, the orchestrator's summary and the snapshot's `pools` use the harness layer, since they answer for a plan rather than a route.
+Route thresholds change only that route's picks. A route's `harness_thresholds` give one plan its own limits there, so a review council can use all of one plan and leave room on another; a harness it names must exist. `pools`, the orchestrator's summary and the snapshot's `pools` use the harness layer, since they answer for a plan rather than a route.
 
 ## Readings
 
@@ -142,9 +145,9 @@ Each reads through the vendor's own CLI or the data it hands to its user's scrip
 
 - `codex`: runs `codex app-server` (from `PATH`), sends `initialize`, then `account/rateLimits/read` and `model/list`, and closes it within the 10-second command deadline. Each window of `rateLimits` (`primary`, `secondary`) becomes a window with that id: `percent` from `usedPercent`, `resetsAt` from the epoch seconds, `kind` session when `windowDurationMins` is 300 or less, else weekly. Visible model ids from `model/list` become the harness's model list. Cached like `command`.
 - `muse`: runs `muse usage --json` with `MUSE_NO_AUTO_UPDATE=1` (so a probe never replaces the installed CLI). Its undocumented `schemaVersion` 1 reply gives `allowance.window` (session) and `allowance.weekly` with `usedPercent` and `resetsAtMs`; no allowance yet (before a window's first turn) or another format is an error, so the plan reads as unknown, never as unused. Cached like `command`.
-- `grok`: runs `grok agent stdio` with `GROK_DISABLE_AUTOUPDATER=1` (so a probe never replaces the installed CLI), sends ACP `initialize` and the undocumented `_x.ai/billing` method (no session and no model turn), and closes it within the 10-second command deadline. A `config.currentPeriod` of type `USAGE_PERIOD_TYPE_WEEKLY` with valid `start` and `end` and a finite, non-negative `config.creditUsagePercent` becomes the window `weekly` (kind weekly, `resetsAt` from `end`). No period yet, another period type, a refusal or an invalid value is an error, so the plan reads as unknown, never as unused. The pool is shared with the vendor's other products, so the percent can rise with no Grok Build turn. Models come from `models` in the harness config or `--models`. Cached like `command`.
-- Antigravity has no built-in reader: its plan quota is only available through its OAuth credentials, which Cedr never reads. Without a readings source its plan is unknown, which still takes small and medium work.
-- `claude-statusline`: reads the file `cedr route statusline` last wrote (`$XDG_STATE_HOME/cedr/readings/<harness>.json`). Claude Code passes `rate_limits.five_hour` and `rate_limits.seven_day` (`used_percentage`, `resets_at` in epoch seconds) to its status line command; `cedr route statusline` turns them into windows `five_hour` (session) and `seven_day` (weekly) with `fetchedAt` set to the time of capture, so the reading goes stale ten minutes after the last active Claude Code session. A missing file is no reading. Claude Code sends `rate_limits` only to Pro and Max subscribers after a session's first response.
+- `grok`: runs `grok agent stdio` with `GROK_DISABLE_AUTOUPDATER=1` (so a probe never replaces the installed CLI), sends ACP `initialize` and the undocumented `_x.ai/billing` method (no session and no model turn), and closes it within the 10-second command deadline. A `config.currentPeriod` of type `USAGE_PERIOD_TYPE_WEEKLY` with valid `start` and `end` and a finite, non-negative `config.creditUsagePercent` becomes the window `weekly` (kind weekly, `resetsAt` from `end`). No period yet, another period type, a refusal or an invalid value is an error, so the plan reads as unknown, never as unused. The pool is shared with the vendor's other products, so the percent can rise with no Grok turn. Models come from `models` in the harness config or `--models`. Cached like `command`.
+- Gemini has no built-in reader: its plan quota is only available through its OAuth credentials, which Cedr never reads. Without a readings source its plan is unknown, which still takes small and medium work.
+- `claude-statusline`: reads the file `cedr route statusline` last wrote (`$XDG_STATE_HOME/cedr/readings/<harness>.json`). Claude passes `rate_limits.five_hour` and `rate_limits.seven_day` (`used_percentage`, `resets_at` in epoch seconds) to its status line command; `cedr route statusline` turns them into windows `five_hour` (session) and `seven_day` (weekly) with `fetchedAt` set to the time of capture, so the reading goes stale ten minutes after the last active Claude session. A missing file is no reading. Claude sends `rate_limits` only to Pro and Max subscribers after a session's first response.
 
 ## Machine checks
 
@@ -239,7 +242,7 @@ All take `--config PATH`; picks also take `--readings`, `--models`, `--no-record
 | `cedr route list` | Routes with their tier chains, and `judge <route> -> <escalate route or self>` after a cascade's chain |
 | `cedr route show <route> [--readings F] [--models F] [--format text\|json]` | What the route would pick at each size right now, and each candidate's model, state, sizes taken and thresholds; records nothing |
 | `cedr route models [--readings F] [--models F] [--format text\|json]` | The model ids each harness offers, for use in targets |
-| `cedr route thresholds [--harness H \| --route R] [--set KEY=VALUE]... [--unset KEY]... [--format text\|json]` | Without `--set` or `--unset`, print the thresholds for that scope and which layer each comes from; with them, edit that layer (see Editing) |
+| `cedr route thresholds [--harness H] [--route R] [--set KEY=VALUE]... [--unset KEY]... [--format text\|json]` | Without `--set` or `--unset`, print the thresholds for that scope and which layer each comes from; with them, edit that layer (see Editing) |
 | `cedr route add <route> <target> [--effort E] [--tier N] [--sizes S,S] [--at N]` | Add a candidate, or update the one with that target (see Editing) |
 | `cedr route remove <route> <target>` | Remove a candidate |
 | `cedr route enable <route>`, `cedr route disable <route>` | Turn a route on or off |
@@ -247,7 +250,7 @@ All take `--config PATH`; picks also take `--readings`, `--models`, `--no-record
 | `cedr route stats [--route R] [--since YYYY-MM-DD] [--format text\|json]` | Picks, verdicts, time to verdict and cascade outcomes per route, model and preview status |
 | `cedr route history [--route R] [--limit N] [--format text\|json]` | The latest records, newest first (default 20, at most 500): picks with their latest verdict, and council results |
 | `cedr route import <routing.toml>` | Print a `routes.toml` converted from a T3 Code delegation `routing.toml` (see Import) |
-| `cedr route statusline [-- <command>...]` | Claude Code status line: capture `rate_limits` from stdin for the `claude-statusline` reader, then print `claude s23% w41%`, or run `<command>` with the same stdin and print its output instead |
+| `cedr route statusline [-- <command>...]` | Claude status line: capture `rate_limits` from stdin for the `claude-statusline` reader, then print `claude s23% w41%`, or run `<command>` with the same stdin and print its output instead |
 | `cedr route sync [--push-only\|--pull-only] [--quiet]` | Push history, pull the org's shared routes and send the machine snapshot (see Sync); `--quiet` prints only errors |
 | `cedr mcp` | MCP server on stdio |
 

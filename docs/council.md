@@ -10,7 +10,7 @@ The frozen contract for `cedr council` and its MCP tools. A change to any shape 
 
 A council is a route with `council = true`. It may set `quorum`, the fewest members whose reports must be merged before the council can pass: default 2, or the number of candidates when there are fewer; `block`, the least severe finding that blocks: `P0`, `P1` (default), `P2` or `P3`; and `rounds`, how many times a blocked change goes back to its author for revision before the gate stands: 0 to 3, default 1. Validation fails when `quorum` is below 1 or above the number of candidates, when `rounds` is outside 0-3, or when any of them is set on a route that is not a council.
 
-Like any route, a council may set its own `thresholds` (route.md, Thresholds), which decide which members are eligible, and a member may set `sizes`, the work sizes it reviews, so large changes can get more reviewers than small ones. `sizes` must leave at least the quorum of members for every size; validation fails otherwise, since a council with too few members could never pass that work.
+Like any route, a council may set its own `thresholds` and `harness_thresholds` (route.md, Thresholds), which decide which members are eligible, and a member may set `sizes`, the work sizes it reviews, so large changes can get more reviewers than small ones. `sizes` must leave at least the quorum of members for every size; validation fails otherwise, since a council with too few members could never pass that work.
 
 ```toml
 [routes."review.council"]

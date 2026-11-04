@@ -455,6 +455,9 @@ pub struct Route {
     /// Overrides `[thresholds]` and the harness's thresholds for this route's picks.
     #[serde(default)]
     pub thresholds: Thresholds,
+    /// Overrides `thresholds` for one plan's candidates on this route, by harness id.
+    #[serde(default)]
+    pub harness_thresholds: BTreeMap<String, Thresholds>,
     pub candidates: Vec<Candidate>,
 }
 
@@ -575,6 +578,14 @@ impl Config {
             route
                 .thresholds
                 .validate(&format!("routes.{id}.thresholds"))?;
+            for (harness, layer) in &route.harness_thresholds {
+                if !self.harnesses.contains_key(harness) {
+                    return Err(format!(
+                        "routes.{id}.harness_thresholds names unknown harness {harness:?}"
+                    ));
+                }
+                layer.validate(&format!("routes.{id}.harness_thresholds.{harness}"))?;
+            }
             for c in &route.candidates {
                 match &c.sizes {
                     Some(_) if c.target == "self" => {
@@ -709,7 +720,8 @@ impl Config {
         Ok(())
     }
 
-    /// The thresholds in force: the defaults, then `[thresholds]`, then the harness's, then the route's.
+    /// The thresholds in force: the defaults, then `[thresholds]`, then the harness's, then the
+    /// route's, then the route's for that harness.
     pub fn limits(&self, harness: Option<&str>, route: Option<&Route>) -> Limits {
         let mut limits = Limits::default();
         limits.apply(&self.thresholds, "thresholds");
@@ -718,6 +730,9 @@ impl Config {
         }
         if let Some(r) = route {
             limits.apply(&r.thresholds, "route");
+            if let Some(layer) = harness.and_then(|h| r.harness_thresholds.get(h)) {
+                limits.apply(layer, "route harness");
+            }
         }
         limits
     }
@@ -1026,6 +1041,43 @@ mod tests {
         assert!(from.contains(&("session_out", "harness")));
         assert!(from.contains(&("weekly_conserve", "thresholds")));
         assert!(from.contains(&("fresh_seconds", "default")));
+    }
+
+    #[test]
+    fn a_route_can_give_one_plan_its_own_limits() {
+        let c = parse(
+            "version = 1\n[harnesses.a.thresholds]\nweekly_out = 70\n[harnesses.b]\n[routes.r]\ncandidates = [{ target = \"self\" }]\n[routes.r.thresholds]\nweekly_out = 80\nsession_out = 75\n[routes.r.harness_thresholds.a]\nweekly_out = 98\n",
+        )
+        .unwrap();
+        let r = c.routes.get("r");
+        let a = c.limits(Some("a"), r);
+        assert_eq!((a.weekly_out, a.session_out), (98.0, 75.0));
+        assert_eq!(c.limits(Some("b"), r).weekly_out, 80.0);
+        assert_eq!(
+            c.limits(Some("a"), None).weekly_out,
+            70.0,
+            "a plan's own answer ignores the route"
+        );
+        let from: Vec<(&str, &str)> = a.rows().iter().map(|x| (x.key, x.from)).collect();
+        assert!(from.contains(&("weekly_out", "route harness")));
+        assert!(from.contains(&("session_out", "route")));
+    }
+
+    #[test]
+    fn a_route_refuses_limits_for_a_plan_it_cannot_know_or_out_of_range() {
+        let file = |h: &str, v: u32| {
+            format!(
+                "version = 1\n[harnesses.a]\n[routes.r]\ncandidates = [{{ target = \"self\" }}]\n[routes.r.harness_thresholds.{h}]\nweekly_out = {v}\n"
+            )
+        };
+        assert!(parse(&file("a", 98)).is_ok());
+        assert!(
+            parse(&file("nope", 98))
+                .unwrap_err()
+                .to_string()
+                .contains("unknown harness")
+        );
+        assert!(parse(&file("a", 101)).is_err());
     }
 
     #[test]
