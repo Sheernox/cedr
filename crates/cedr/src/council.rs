@@ -155,6 +155,17 @@ pub fn print_merged(m: &Merged, format: MergeFormat) {
         m.block,
         m.reviewers.join(", ")
     );
+    if m.scores.values().any(Option::is_some) {
+        let scores: Vec<String> = m
+            .scores
+            .iter()
+            .map(|(member, score)| match score {
+                Some(s) => format!("{member} {s}/10"),
+                None => format!("{member} no score"),
+            })
+            .collect();
+        println!("scores: {}", scores.join(", "));
+    }
     for g in &m.groups {
         println!(
             "{:?} {}:{} [{}] {}",

@@ -1,7 +1,7 @@
 //! Council: plan a multi-vendor review on a council route, then merge the members' reports into one
 //! gate (docs/council.md). Findings that point at the same place are grouped, never voted away.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -52,6 +52,10 @@ pub struct Report {
     pub member: String,
     #[serde(default)]
     pub pick: Option<String>,
+    /// The member's own score for the change, out of 10. It is shown beside the gate and never
+    /// decides it.
+    #[serde(default)]
+    pub score: Option<f64>,
     /// Required, so a report that lost its findings is an error rather than a clean review.
     pub findings: Vec<Finding>,
 }
@@ -67,19 +71,44 @@ impl Report {
         if report.member.is_empty() {
             return Err(Error::Usage("a council report needs a member".into()));
         }
+        if let Some(score) = report.score.filter(|s| !(0.0..=10.0).contains(s)) {
+            return Err(Error::Usage(format!(
+                "{} scored {score}; a score is 0 to 10",
+                report.member
+            )));
+        }
         Ok(report)
     }
 
     /// A text report: lines `<file>:<line> - <P0..P3> - <claim>[ - <scenario>]`, tolerating the
-    /// list markers, backticks and bold that review replies wrap them in. Other lines are ignored.
+    /// list markers, backticks and bold that review replies wrap them in, and a `Score: <n>/10`
+    /// line, the last one counting. Other lines are ignored.
     pub fn from_text(text: &str, member: &str) -> Report {
         let findings = text.lines().filter_map(parse_line).collect();
         Report {
             member: member.to_string(),
             pick: None,
+            score: text.lines().filter_map(parse_score).next_back(),
             findings,
         }
     }
+}
+
+/// A `Score: 8/10` line, however a reply decorates it; anything else, or a score off the scale, is
+/// not one. A finding on a file named `score...` never matches, since it does not end in `/10`.
+fn parse_score(line: &str) -> Option<f64> {
+    let line = line.trim().trim_start_matches(['-', '*', '`', '_', ' ']);
+    line.get(..5).filter(|p| p.eq_ignore_ascii_case("score"))?;
+    let rest = line[5..].trim_start_matches([':', '*', '`', '_', ' ']);
+    let (score, scale) = rest.split_once('/')?;
+    if scale.trim().trim_end_matches(['*', '`', '_', '.', ' ']) != "10" {
+        return None;
+    }
+    score
+        .trim()
+        .parse()
+        .ok()
+        .filter(|s| (0.0..=10.0).contains(s))
 }
 
 fn parse_line(line: &str) -> Option<Finding> {
@@ -178,6 +207,8 @@ pub struct Merged {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brief: Option<String>,
     pub reviewers: Vec<String>,
+    /// Each reviewer's score out of 10; null when it gave none.
+    pub scores: BTreeMap<String, Option<f64>>,
     pub groups: Vec<Group>,
 }
 
@@ -187,6 +218,7 @@ fn brief(groups: &[Group], block: Severity, round: u32, rounds: u32) -> String {
     let mut out = format!(
         "# Council revision brief (round {round} of {rounds})\n\n\
          Blocking: {block:?} and above. Fix each blocking group or rebut it with evidence; the others are advisory.\n\
+         Fix only what this change needs; anything else goes on a follow-up list, not into this revision.\n\
          Reply with one line per group: `<file>:<line> fixed|rebutted - <reason>`.\n"
     );
     for g in groups {
@@ -226,6 +258,11 @@ pub fn merge(reports: &[Report], settings: Settings) -> Merged {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
+    let mut scores: BTreeMap<String, Option<f64>> = BTreeMap::new();
+    for r in reports {
+        let score = scores.entry(r.member.clone()).or_default();
+        *score = r.score.or(*score);
+    }
     let mut all: Vec<(&str, &Finding)> = reports
         .iter()
         .flat_map(|r| r.findings.iter().map(move |f| (r.member.as_str(), f)))
@@ -291,6 +328,7 @@ pub fn merge(reports: &[Report], settings: Settings) -> Merged {
         next,
         brief: (next == Next::Revise).then(|| brief(&groups, block, round, rounds)),
         reviewers,
+        scores,
         groups,
     }
 }
@@ -394,10 +432,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_score_line_is_read_however_a_reply_decorates_it() {
+        for line in [
+            "Score: 8/10",
+            "**Score:** 8/10",
+            "- score 8 / 10.",
+            "`SCORE: 8/10`",
+        ] {
+            assert_eq!(parse_score(line), Some(8.0), "{line}");
+        }
+        for line in [
+            "Score: 11/10",
+            "score: 8/10 once the tests pass",
+            "score/a.rs:1 - P1 - it fails",
+            "score.rs:12 - P1 - 3/10 of the time",
+        ] {
+            assert_eq!(parse_score(line), None, "{line}");
+        }
+    }
+
     fn report(member: &str, findings: Vec<Finding>) -> Report {
         Report {
             member: member.into(),
             pick: None,
+            score: None,
             findings,
         }
     }
@@ -553,6 +612,7 @@ mod tests {
             Some(
                 "# Council revision brief (round 1 of 1)\n\n\
                  Blocking: P1 and above. Fix each blocking group or rebut it with evidence; the others are advisory.\n\
+                 Fix only what this change needs; anything else goes on a follow-up list, not into this revision.\n\
                  Reply with one line per group: `<file>:<line> fixed|rebutted - <reason>`.\n\n\
                  ## P1 src/a.rs:12 (codex, claude)\n\
                  - codex P1 :12 reads until EOF - a 2 GB log\n\

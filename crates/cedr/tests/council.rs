@@ -385,3 +385,32 @@ fn plan_shares_run_and_merge_records_counts_or_opts_out() {
     ]));
     assert!(text.contains("quorum 2: 2 eligible, run r-"));
 }
+
+#[test]
+fn scores_show_beside_the_gate_and_never_decide_it() {
+    let s = Scratch::new(10.0, 20.0);
+    let a = s.dir.path().join("a.txt");
+    let b = s.dir.path().join("b.txt");
+    std::fs::write(&a, "Looks fine.\n\n**Score:** 8.5/10\n").unwrap();
+    std::fs::write(&b, "src/a.rs:1 - P3 - a nit\n").unwrap();
+    let (a, b) = (format!("a={}", a.display()), format!("b={}", b.display()));
+    let both = s.cedr(&["council", "merge", "--no-record", "--quorum", "2", &a, &b]);
+    assert_eq!(both.status.code(), Some(0), "{}", stdout(&both));
+    assert!(
+        stdout(&both).contains("scores: a 8.5/10, b no score\n"),
+        "{}",
+        stdout(&both)
+    );
+
+    let low = s.dir.path().join("low.json");
+    std::fs::write(&low, r#"{"member":"c","score":0,"findings":[]}"#).unwrap();
+    let low = low.display().to_string();
+    let passes = s.cedr(&["council", "merge", "--no-record", "--quorum", "1", &low]);
+    assert_eq!(passes.status.code(), Some(0), "a low score does not block");
+
+    let high = s.dir.path().join("high.json");
+    std::fs::write(&high, r#"{"member":"d","score":11,"findings":[]}"#).unwrap();
+    let high = high.display().to_string();
+    let refused = s.cedr(&["council", "merge", "--no-record", "--quorum", "1", &high]);
+    assert_eq!(refused.status.code(), Some(2));
+}

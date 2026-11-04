@@ -355,7 +355,9 @@ impl RouteServer {
         blocking(move || Ok(json(me.session(None)?.context().pools()))).await
     }
 
-    #[tool(description = "Name the council members to start for a council route, with its quorum.")]
+    #[tool(
+        description = "Name the council members to start for a council route, with its quorum. Each member's brief must start with its tag. In T3 Code, start each member with delegate_task, passing its t3 object as the target."
+    )]
     async fn council_plan(&self, Parameters(a): Parameters<PlanArgs>) -> CallToolResult {
         let me = self.clone();
         blocking(move || {
@@ -375,7 +377,7 @@ impl RouteServer {
     }
 
     #[tool(
-        description = "Merge council members' reports into one gate: pass, block (at or above the blocking severity) or incomplete (below quorum); a blocked gate with a round left returns next=revise and the author's revision brief."
+        description = "Merge council members' reports into one gate: pass, block (at or above the blocking severity) or incomplete (below quorum); a blocked gate with a round left returns next=revise and the author's revision brief. A report may carry the member's score out of 10, which never decides the gate."
     )]
     async fn council_merge(&self, Parameters(a): Parameters<MergeArgs>) -> CallToolResult {
         let me = self.clone();

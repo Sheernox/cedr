@@ -33,10 +33,10 @@ candidates = [
 
 One report per member, in either form:
 
-- JSON: `{"member": "<harness>/<model>", "pick": "p-...", "findings": [{"file": "src/a.rs", "line": 12, "severity": "P1", "claim": "...", "scenario": "..."}]}`. `pick` and `scenario` are optional; `findings` may be empty (reviewed, nothing found).
-- Text: lines of the form `<file>:<line> - <P0|P1|P2|P3> - <claim>` with an optional ` - <scenario>`, as review briefs ask for. Other lines are ignored. The member comes from the argument (`<member>=<path>`).
+- JSON: `{"member": "<harness>/<model>", "pick": "p-...", "score": 8, "findings": [{"file": "src/a.rs", "line": 12, "severity": "P1", "claim": "...", "scenario": "..."}]}`. `pick`, `score` and `scenario` are optional; `findings` may be empty (reviewed, nothing found).
+- Text: lines of the form `<file>:<line> - <P0|P1|P2|P3> - <claim>` with an optional ` - <scenario>`, as review briefs ask for. A line `Score: <n>/10` sets the score; the last such line counts. Other lines are ignored. The member comes from the argument (`<member>=<path>`).
 
-`P0` is the most severe. A report that cannot be read or parsed is an error, not an empty review. Reports are capped at 256 KiB each.
+`P0` is the most severe. A score is the member's own view of the change, from 0 to 10, and is shown but never decides the gate; a JSON score off that scale is an error. A report that cannot be read or parsed is an error, not an empty review. Reports are capped at 256 KiB each.
 
 ## Merge
 
@@ -51,18 +51,19 @@ One report per member, in either form:
 
 Exit codes: 0 pass, 1 block, 3 incomplete, 2 error.
 
-Text output starts with `council: <gate> (<reviewers> of quorum <n> reviewed, <block> and above block: <members>)`, then one line per group, most severe first, then by file and line: `<severity> <file>:<line> [<members>] <claim of the most severe finding>`, followed by an indented `<member> <severity> :<line> <claim>` line for every finding when the group holds more than one. It ends with `next: revise (round <round> of <rounds>): give the author the revision brief (--format brief), then review again with --round <round + 1>` or `next: done`.
+Text output starts with `council: <gate> (<reviewers> of quorum <n> reviewed, <block> and above block: <members>)`, then, when any member gave a score, `scores: <member> <n>/10, <member> no score`, then one line per group, most severe first, then by file and line: `<severity> <file>:<line> [<members>] <claim of the most severe finding>`, followed by an indented `<member> <severity> :<line> <claim>` line for every finding when the group holds more than one. It ends with `next: revise (round <round> of <rounds>): give the author the revision brief (--format brief), then review again with --round <round + 1>` or `next: done`.
 
 JSON output:
 
 ```json
 {"gate": "block", "quorum": 2, "block": "P1", "round": 1, "rounds": 1, "next": "revise", "brief": "...",
  "reviewers": ["claude/claude-opus-5-5", "codex/gpt-6.1-sol"],
+ "scores": {"claude/claude-opus-5-5": 8, "codex/gpt-6.1-sol": null},
  "groups": [{"file": "src/a.rs", "line": 12, "severity": "P1", "members": ["codex/gpt-6.1-sol"],
    "findings": [{"member": "codex/gpt-6.1-sol", "severity": "P1", "line": 12, "claim": "...", "scenario": null}]}]}
 ```
 
-`brief` is present only when `next` is `revise`.
+`brief` is present only when `next` is `revise`. `scores` has every reviewer, null when it gave none.
 
 ## Record
 
@@ -78,6 +79,7 @@ When `next` is `revise`, the orchestrator gives the change's author (the delegat
 # Council revision brief (round 1 of 1)
 
 Blocking: P1 and above. Fix each blocking group or rebut it with evidence; the others are advisory.
+Fix only what this change needs; anything else goes on a follow-up list, not into this revision.
 Reply with one line per group: `<file>:<line> fixed|rebutted - <reason>`.
 
 ## P1 src/a.rs:12 (codex/gpt-6.1-sol, claude/claude-opus-5-5)
