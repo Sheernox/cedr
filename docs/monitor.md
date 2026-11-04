@@ -60,7 +60,7 @@ Every key is optional; a missing file is the defaults. An unknown key or `versio
 
 - `cedr monitor [report] [--since 7d|30d|<YYYY-MM-DD>] [--until <date>] [--by harness|model|project|day|hour|session|effort] [--harness H] [--project P] [--format text|json]` collects, then prints a totals block (cost, tokens by type, responses, sessions, cache hit rate, net cache saving, tool calls and errors, API errors, error-free share, active time) and one row per group with the same columns. Default `--since 7d --by model`. Days are local days unless `--utc`.
 - `cedr monitor sessions [--since] [--limit 15]`: the costliest sessions: harness, project, models, first and last time, responses, tokens, cost.
-- `cedr monitor limits [--format text|json]`: the latest reading of each plan window from the built-in readers (Claude Code's status line capture, Codex's app server and rollout snapshots, Muse's usage command, Grok Build's agent): used percent, reset time, elapsed share of the window, projected use at reset (`used / elapsed` once 3% has elapsed and use is above zero), the time it would run out, and an outlook: `idle`, `early`, `on track`, `tight` (projection 70% or more), `limit risk` (projection 100% or more), `at limit` (used 100%), `unknown`.
+- `cedr monitor limits [--format text|json]`: the latest reading of each plan window from the built-in readers (Claude's status line capture, Codex's app server and rollout snapshots, Muse's usage command, Grok's agent): used percent, reset time, elapsed share of the window, projected use at reset (`used / elapsed` once 3% has elapsed and use is above zero), the time it would run out, and an outlook: `idle`, `early`, `on track`, `tight` (projection 70% or more), `limit risk` (projection 100% or more), `at limit` (used 100%), `unknown`.
 - `cedr monitor sources [--format]`: per harness: found or absent, files, responses, first and last response, malformed records, and why a harness has no data.
 - `cedr monitor push [--org ID] [--config FILE] [--quiet] [--full] [--start all|now|<YYYY-MM-DD>|<RFC 3339>]`: see Push.
 - `cedr monitor schedule [--every <minutes>] [--remove]`: installs (or removes) a user-level timer running `cedr monitor push --quiet` every 60 minutes by default: a systemd user timer on Linux (`~/.config/systemd/user/cedr-monitor.{service,timer}`), a launch agent on macOS (`~/Library/LaunchAgents/dev.cedr.monitor.plist`), a scheduled task on Windows (`schtasks`, task `cedr monitor`). It prints what it wrote and how to check it. No root.
@@ -95,7 +95,7 @@ Exit 0 success, 2 usage or I/O failure. Reports never fail on findings.
 - The reply is `{"accepted": n, "skipped": n, "historyDays": 90}`: rows older than the plan's history are skipped. The push time is kept in `$XDG_STATE_HOME/cedr/monitor-push.json` per org and URL and advances only after every batch is accepted.
 - Exit 0 sent, 2 on failure (the message names the HTTP status and the API's error text, never the key).
 
-With `auto = true` and an org, `cedr route statusline` (which records the Claude Code readings) starts `cedr monitor push --quiet` in the background at most every 30 minutes, the way Route's automatic sync starts.
+With `auto = true` and an org, `cedr route statusline` (which records the Claude readings) starts `cedr monitor push --quiet` in the background at most every 30 minutes, the way Route's automatic sync starts.
 
 ## MCP tools
 

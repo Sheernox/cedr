@@ -501,7 +501,7 @@ fn servers_with_only_the_agents_target_are_reported_once() {
     );
     assert_eq!(all.matches("reach no agent").count(), 1, "{all}");
 }
-/// A repo that writes for Grok Build and for agents whose files Grok Build also reads.
+/// A repo that writes for Grok and for agents whose files Grok also reads.
 fn grok_repo(targets: &str) -> tempfile::TempDir {
     let d = tempfile::tempdir().unwrap();
     fs::create_dir_all(d.path().join(".cedr/rules")).unwrap();
@@ -560,7 +560,7 @@ fn grok_gets_each_rule_once_and_is_told_what_else_it_reads() {
     let p = cedr_sync::plan(d.path()).unwrap();
     cedr_sync::apply(d.path(), &p, false).unwrap();
     let exists = |path: &str| d.path().join(path).exists();
-    // Grok Build always reads CLAUDE.md, so a second copy under .grok/rules would load the rule twice.
+    // Grok always reads CLAUDE.md, so a second copy under .grok/rules would load the rule twice.
     assert!(
         fs::read_to_string(d.path().join("CLAUDE.md"))
             .unwrap()
@@ -573,13 +573,13 @@ fn grok_gets_each_rule_once_and_is_told_what_else_it_reads() {
             .unwrap()
             .contains("## When working in a/**, b/**\n\nScoped to grok.")
     );
-    // Grok Build reads `*.md` in `.cursor/rules/`, so Cursor's `.mdc` files must stay out of its way.
+    // Grok reads `*.md` in `.cursor/rules/`, so Cursor's `.mdc` files must stay out of its way.
     assert!(!exists(".cursor/rules/10-scoped.md") && exists(".cursor/rules/10-scoped.mdc"));
     let noted = |text: &str| p.notes.iter().any(|n| n.contains(text));
     assert!(noted(
-        "rule 10-scoped: Grok Build also loads .claude/rules/10-scoped.md"
+        "rule 10-scoped: Grok also loads .claude/rules/10-scoped.md"
     ));
-    assert!(noted("rule 20-claude: Grok Build also reads CLAUDE.md"));
+    assert!(noted("rule 20-claude: Grok also reads CLAUDE.md"));
     assert!(!noted("rule 30-both"));
     assert!(noted("grok --trust"));
     // Without a claude target there is nothing to warn about, and the rule has its own file.

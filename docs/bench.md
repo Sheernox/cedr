@@ -70,7 +70,7 @@ command = ["opencode", "run", "--model", "{model}", "--file", "{prompt_file}"]
 
 - The vendor CLIs ignore the user's own settings, so a trial depends on the repo and the variant rather than on whose machine it ran on. Credentials still come from the user's sign-in or the environment.
 - Trials leave no session history and do not appear in `cedr monitor`.
-- Other agents (Cursor, Gemini and Antigravity, Copilot, opencode, Grok Build) run through `command`. They have no built-in adapter yet.
+- Other agents (Cursor, Gemini, Copilot, opencode, Grok) run through `command`. They have no built-in adapter yet.
 - `command` requires `command`, and the others refuse it. An unpriced variant (a `command` harness, or a `codex` model missing from the price table) needs `--allow-unpriced`, because the budget cannot see what it spends.
 
 ## Budget

@@ -72,14 +72,14 @@ paths = [".agents/skills/security-audit/**"]   # globs over the finding's path, 
 | Agent | Instructions | Skills | MCP servers | Permissions |
 |---|---|---|---|---|
 | Any | `AGENTS.md` (any depth) | `.agents/skills/<name>/SKILL.md` | | |
-| Claude Code | `CLAUDE.md` | `.claude/skills/<name>/SKILL.md` | `.mcp.json` (`mcpServers`) | `.claude/settings.json` `permissions.allow` |
+| Claude | `CLAUDE.md` | `.claude/skills/<name>/SKILL.md` | `.mcp.json` (`mcpServers`) | `.claude/settings.json` `permissions.allow` |
 | Codex | | | `.codex/config.toml` (`[mcp_servers.<name>]`) | `.codex/config.toml` `sandbox_mode`, `approval_policy` |
 | Cursor | | `.cursor/skills/<name>/SKILL.md` | `.cursor/mcp.json` (`mcpServers`) | |
-| Gemini | `GEMINI.md` | `.gemini/skills/<name>/SKILL.md` | `.gemini/settings.json` (`mcpServers`; `httpUrl` is remote) | |
+| Gemini CLI | `GEMINI.md` | `.gemini/skills/<name>/SKILL.md` | `.gemini/settings.json` (`mcpServers`; `httpUrl` is remote) | |
 | Copilot | `.github/copilot-instructions.md` | `.github/skills/<name>/SKILL.md` | `.vscode/mcp.json` (`servers`), `.github/mcp.json` (`mcpServers`) | |
 | opencode | | `.opencode/skills/<name>/SKILL.md` | `opencode.json` (`mcp`: `type` `local` with a `command` array, or `remote` with `url`) | |
-| Antigravity | | | `.agents/mcp_config.json` (`mcpServers`; `serverUrl` is remote) | |
-| Grok Build | | `.grok/skills/<name>/SKILL.md` | `.grok/config.toml` (`[mcp_servers.<name>]`) | |
+| Gemini | | | `.agents/mcp_config.json` (`mcpServers`; `serverUrl` is remote) | |
+| Grok | | `.grok/skills/<name>/SKILL.md` | `.grok/config.toml` (`[mcp_servers.<name>]`) | |
 
 A server entry is stdio (`command`, `args`, `env`) or remote (`url`, `httpUrl`, `serverUrl`, or `type`/`transport` of `http`/`sse`). Clients are `claude`, `codex`, `cursor`, `gemini`, `copilot`, `opencode`, `antigravity` and `grok`. The same server name in two clients is two lock entries keyed by `client` and `name`.
 

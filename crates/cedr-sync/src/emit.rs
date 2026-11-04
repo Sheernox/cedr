@@ -168,13 +168,13 @@ fn server(s: &Server, target: &str) -> Option<Value> {
     }
     Some(v)
 }
-/// Grok Build skips the tools of a server whose name it cannot namespace as `<server>__<tool>`.
+/// Grok skips the tools of a server whose name it cannot namespace as `<server>__<tool>`.
 fn grok_server_name(name: &str) -> bool {
     name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
         && !name.ends_with('_')
         && !name.contains("__")
 }
-/// Grok Build resolves a command that is only a relative path against the hook file's folder, and a hook that cannot
+/// Grok resolves a command that is only a relative path against the hook file's folder, and a hook that cannot
 /// start is skipped without a word, so point it back at the repo root. A command with arguments runs in a shell there.
 fn grok_hook_command(command: &str) -> String {
     let relative = command.contains('/')
@@ -316,7 +316,7 @@ fn hooks(c: &Config, target: &str, notes: &mut Vec<String>) -> Value {
         let command = if target == "copilot" {
             json!({"type":"command","bash":hook.command,"powershell":hook.command,"cwd":".","timeoutSec":60})
         } else if target == "grok" {
-            // Grok Build has no `cwd` field: its hooks always run in the workspace root.
+            // Grok has no `cwd` field: its hooks always run in the workspace root.
             json!({"type":"command","command":grok_hook_command(&hook.command),"timeout":60})
         } else {
             json!({"type":"command","command":hook.command,"timeout":if target=="gemini" {60000}else{60},"cwd":"."})
@@ -337,7 +337,7 @@ fn hooks(c: &Config, target: &str, notes: &mut Vec<String>) -> Value {
     }
     v
 }
-const GROK_TRUST: &str = "grok: Grok Build holds back this repo's instructions, skills, MCP servers and hooks until the folder is trusted: run grok --trust or /hooks-trust once";
+const GROK_TRUST: &str = "grok: Grok holds back this repo's instructions, skills, MCP servers and hooks until the folder is trusted: run grok --trust or /hooks-trust once";
 pub fn emit(c: &Config, rules: &[Rule], skills: &Skills, org: &str) -> (Outputs, Vec<String>) {
     let mut out = Outputs::new();
     let mut notes = vec![];
@@ -374,11 +374,11 @@ pub fn emit(c: &Config, rules: &[Rule], skills: &Skills, org: &str) -> (Outputs,
     if both_claude {
         for r in rules.iter().filter(|r| selected(&r.meta.agents, "claude")) {
             if r.meta.paths.is_some() {
-                notes.push(format!("rule {0}: Grok Build also loads .claude/rules/{0}.md, for every file, unless [compat.claude] rules = false in ~/.grok/config.toml", r.id));
+                notes.push(format!("rule {0}: Grok also loads .claude/rules/{0}.md, for every file, unless [compat.claude] rules = false in ~/.grok/config.toml", r.id));
             }
             if r.meta.agents.is_some() && !selected(&r.meta.agents, "grok") {
                 notes.push(format!(
-                    "rule {}: Grok Build also reads CLAUDE.md, so this rule reaches grok",
+                    "rule {}: Grok also reads CLAUDE.md, so this rule reaches grok",
                     r.id
                 ));
             }
@@ -439,10 +439,10 @@ pub fn emit(c: &Config, rules: &[Rule], skills: &Skills, org: &str) -> (Outputs,
                     Some(format!(".github/instructions/{}.instructions.md", r.id))
                 }
                 "antigravity" if scoped || own => Some(format!(".agents/rules/{}.md", r.id)),
-                // Grok Build always reads `CLAUDE.md`, which holds this rule too, so a second copy would only repeat it.
+                // Grok always reads `CLAUDE.md`, which holds this rule too, so a second copy would only repeat it.
                 "grok" if own && both_claude && selected(&r.meta.agents, "claude") => continue,
                 "grok" if own => {
-                    // Grok Build loads every file in `.grok/rules/` as it is, with no front matter or path scoping.
+                    // Grok loads every file in `.grok/rules/` as it is, with no front matter or path scoping.
                     let heading = r.meta.paths.as_ref().map_or(String::new(), |paths| {
                         format!("## When working in {}\n\n", paths.join(", "))
                     });
