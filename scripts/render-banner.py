@@ -2,6 +2,7 @@
 """Render banner/banner.html to assets/banner.png (2560x800, transparent rounded corners), or
 with a version (`render-banner.py v0.5.0`) banner/releases/<version>.html to
 assets/releases/<version>.png (1664x832), the hero image of that CHANGELOG entry, shown 770 wide.
+Start a new release's page from a copy of banner/releases/v0.8.0.html and change only the words.
 
 Needs the Python playwright package and its Chromium. Commit the HTML and the PNG together.
 """

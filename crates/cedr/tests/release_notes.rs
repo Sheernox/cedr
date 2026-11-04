@@ -48,11 +48,26 @@ fn every_hero_is_embedded_at_its_reading_width_and_uses_the_version_ring() {
             html.contains(" at 1.3x"),
             "v{version} must render at 1664x832"
         );
+        let title = html
+            .split("<h1")
+            .nth(1)
+            .and_then(|h| h.split_once('>'))
+            .and_then(|(_, t)| t.split('<').next())
+            .unwrap_or_else(|| panic!("v{version} has no title"));
+        assert_eq!(
+            title,
+            title.to_lowercase(),
+            "v{version} title must be lowercase"
+        );
+        assert!(
+            html.matches("<span class=\"p\">$</span>").count() <= 3,
+            "v{version} may show at most three commands, or the last is cut off"
+        );
     }
 }
 
 #[test]
-fn the_change_count_matches_the_changes_listed() {
+fn notes_count_their_changes_and_lead_with_a_bold_highlight() {
     for (version, body) in entries() {
         if !version.starts_with("0.8.") {
             continue;
@@ -65,5 +80,13 @@ fn the_change_count_matches_the_changes_listed() {
             .unwrap_or_else(|| panic!("v{version} has no change count"));
         let listed = body.lines().filter(|l| l.starts_with("* ")).count();
         assert_eq!(said, listed, "v{version}");
+        let highlight = body
+            .split("### Highlights\n")
+            .nth(1)
+            .unwrap_or_else(|| panic!("v{version} has no Highlights"));
+        assert!(
+            highlight.starts_with("**"),
+            "v{version} must lead with a bold line"
+        );
     }
 }

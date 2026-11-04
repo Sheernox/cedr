@@ -70,7 +70,12 @@ The usual defect here is a change that works where you tested it and is missing 
 ## Releases
 
 - Versions follow SemVer, and [docs/versioning.md](docs/versioning.md) defines the public API and the 0.x rules: a minor for anything new or breaking, a patch for fixes only. When in doubt, it's a minor.
-- Each version bump ships a full `CHANGELOG.md` entry, and the release workflow publishes it as the notes (it fails when the tag has none). Format: a hero image 770 wide by absolute URL (rendered from `banner/releases/` by `scripts/render-banner.py`), a `**vX.Y.Z** · N changes from M contributors` line, Highlights, then whatever sections suit the release, in the order that serves its readers (for example Features or Fixes), and a folded Full changelog with the compare link.
+- Each version bump ships a full `CHANGELOG.md` entry, and the release workflow publishes it as the notes (it fails when the tag has none). Format, kept by `crates/cedr/tests/release_notes.rs`:
+  - **Hero:** `<img src="<absolute URL>" alt="cedr vX.Y.Z: <title>" width="770">`, never Markdown image syntax, which shows it full size. Render it with `scripts/render-banner.py` from a copy of `banner/releases/v0.8.0.html`, which sets the style: the version in its gradient ring, a short lowercase title, one sentence, at most three commands. Change only the words, and look at the PNG.
+  - **Count:** `**vX.Y.Z** · N changes from M contributors`, where N is the number of commits listed under Full changelog.
+  - **Highlights:** each one opens with a bold line saying what changes for the reader, then an `**Upgrade step:**` line when one is needed.
+  - **Sections:** then whatever suits the release, in the order that serves its readers (for example Features or Fixes). Bullets open with a bold label for what it does, and name each product, command and key exactly.
+  - **Full changelog:** folded, listing the real commit subjects, with the compare link.
 - Agents may release a patch when checks pass and every commit since the last tag was authored in-house.
 - Any outside-authored commit, and every minor or major version, needs a release pull request held open until a maintainer approves it. Post an approval only when a maintainer has approved that exact head in the current conversation, and never otherwise.
 - When work starts on a version that needs approval, prepare its release pull request without being asked, then tell a maintainer it is ready for review and approval.
