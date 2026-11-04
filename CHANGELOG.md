@@ -2,6 +2,44 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.8.3 (2026-11-03)
+
+![cedr v0.8.3: Council, your rules](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.3.png)
+
+**v0.8.3** · 8 changes from 1 contributor
+
+### Highlights
+A council now runs closer to how you want it to. Each plan can have its own limits on a route, so a review can use nearly all of Codex and stop early on Muse. A member can wait on standby as a spare, using no plan until another member can't take a review. Rounds can be unlimited, and a review stops by itself when the same blocking findings keep coming back. Members can score a change out of 10, and agents get the whole procedure from `cedr council skill`.
+
+**Upgrade step:** upgrade every machine that shares a `routes.toml` before using `harness_thresholds`, `spare`, `fixes`, `advisory`, `spares` or `rounds = "unlimited"`, because older versions refuse the file.
+
+### Features
+- **Route** adds `harness_thresholds` on a route: `[routes."review.council".harness_thresholds.codex]` takes any `thresholds` key and beats the route's own `thresholds` for that plan. `cedr route thresholds --route R --harness H` shows and edits that layer.
+- **Council** adds spares: `spare = true` on a member keeps it out of a review unless a member can't take it. `spares = "all"` fills every seat, and `spares = "quorum"` only as many as the quorum needs. The plan names each spare with `spare_for`.
+- **Council** rounds can be `"unlimited"`. `--previous` gives the merge the last round's JSON, and the same blocking findings two rounds in a row stop the review with `stalled: true`.
+- **Council** adds `fixes` and `advisory`, returned by the plan, which say who acts on blocking findings and what happens to the rest.
+- **Council** `cedr council plan --member H/M` plans exactly the members you name, and reports any that are unavailable rather than replacing them.
+- **Council** reports may carry a score out of 10, shown beside the gate and never deciding it. Scores and spares sync as numbers and member names only.
+- **Council** `cedr council skill` prints the procedure, including the steps for T3 Code, and the plan warns when one vendor alone could reach the quorum.
+
+### Changes
+- **Council** revision briefs tell the author to fix only what the change needs.
+- **Docs** and **Sync** notes say Claude, Gemini, Muse and Grok. Harness ids, targets, paths and JSON are unchanged.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* feat(route): let a route give one plan its own limits
+* docs: call agents Claude, Gemini, Muse and Grok everywhere people read
+* feat(council): let members score a change and keep revisions in scope
+* feat(council): add spares, unlimited rounds with a stall stop and agent settings
+* build(banner): render the v0.8.3 release hero
+* chore(release): cedr 0.8.3
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.8.2...v0.8.3
+</details>
+
 ## v0.8.2 (2026-11-02)
 
 ![cedr v0.8.2: Bench, shared](https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.2.png)
