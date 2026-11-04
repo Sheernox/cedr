@@ -431,6 +431,45 @@ fn default_cache_seconds() -> i64 {
     60
 }
 
+/// Configured revision budget; unlimited is represented as null in merge output.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(untagged)]
+pub enum Rounds {
+    Count(u32),
+    Unlimited(Unlimited),
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Unlimited {
+    Unlimited,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Fixes {
+    #[default]
+    Agent,
+    Ask,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Advisory {
+    #[default]
+    Apply,
+    FollowUp,
+    Ask,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Spares {
+    #[default]
+    All,
+    Quorum,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
@@ -447,7 +486,10 @@ pub struct Route {
     /// Councils only: the least severe finding that blocks; default P1.
     pub block: Option<crate::council::Severity>,
     /// Councils only: revision rounds before a blocking gate stands; default 1.
-    pub rounds: Option<u32>,
+    pub rounds: Option<Rounds>,
+    pub fixes: Option<Fixes>,
+    pub advisory: Option<Advisory>,
+    pub spares: Option<Spares>,
     /// A cascade: the route that judges this route's work (docs/route.md, Cascade).
     pub judge: Option<String>,
     /// With `judge`: where escalated work goes; none means the orchestrator takes it.
@@ -462,9 +504,11 @@ pub struct Route {
 }
 
 impl Route {
-    /// The council's quorum: as configured, else 2, never more than its candidates.
+    /// The council's quorum: as configured, else 2, never more than its regular members.
     pub fn quorum(&self) -> usize {
-        self.quorum.unwrap_or(2).min(self.candidates.len())
+        self.quorum
+            .unwrap_or(2)
+            .min(self.candidates.iter().filter(|c| !c.spare).count())
     }
 
     /// The least severe finding that blocks the council: as configured, else P1.
@@ -473,8 +517,12 @@ impl Route {
     }
 
     /// The council's revision rounds: as configured, else 1.
-    pub fn rounds(&self) -> u32 {
-        self.rounds.unwrap_or(1)
+    pub fn rounds(&self) -> Option<u32> {
+        match self.rounds {
+            None => Some(1),
+            Some(Rounds::Count(n)) => Some(n),
+            Some(Rounds::Unlimited(_)) => None,
+        }
     }
 }
 
@@ -489,6 +537,8 @@ fn default_role() -> String {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Candidate {
+    #[serde(default)]
+    pub spare: bool,
     pub target: String,
     #[serde(default)]
     pub effort: String,
@@ -541,10 +591,12 @@ impl Config {
                 _ if !route.council && route.block.is_some() => {
                     return Err(format!("route {id}: block is for councils only"));
                 }
-                (true, Some(q)) if q == 0 || q > route.candidates.len() => {
+                (true, Some(q))
+                    if q == 0 || q > route.candidates.iter().filter(|c| !c.spare).count() =>
+                {
                     return Err(format!(
                         "route {id}: quorum {q} must be between 1 and its {} candidates",
-                        route.candidates.len()
+                        route.candidates.iter().filter(|c| !c.spare).count()
                     ));
                 }
                 _ => {}
@@ -553,10 +605,28 @@ impl Config {
                 Some(_) if !route.council => {
                     return Err(format!("route {id}: rounds is for councils only"));
                 }
-                Some(r) if r > 3 => {
+                Some(Rounds::Count(r)) if r > 3 => {
                     return Err(format!("route {id}: rounds {r} must be between 0 and 3"));
                 }
                 _ => {}
+            }
+            if route.council
+                && route.candidates.iter().any(|c| c.spare)
+                && route
+                    .candidates
+                    .iter()
+                    .all(|c| c.spare || c.target == "self")
+            {
+                return Err(format!(
+                    "route {id}: a spare only stands in, so a council needs a member that is not one"
+                ));
+            }
+            if !route.council
+                && (route.fixes.is_some() || route.advisory.is_some() || route.spares.is_some())
+            {
+                return Err(format!(
+                    "route {id}: fixes, advisory and spares are for councils only"
+                ));
             }
             self.validate_cascade(id, route)?;
             if route.council {
@@ -565,6 +635,7 @@ impl Config {
                     let takes = route
                         .candidates
                         .iter()
+                        .filter(|c| !c.spare)
                         .filter(|c| c.sizes.as_ref().is_none_or(|s| s.contains(&size)))
                         .count();
                     if takes < quorum {
@@ -587,6 +658,11 @@ impl Config {
                 layer.validate(&format!("routes.{id}.harness_thresholds.{harness}"))?;
             }
             for c in &route.candidates {
+                if c.spare && (!route.council || c.target == "self") {
+                    return Err(format!(
+                        "route {id}: spare requires a council member other than self"
+                    ));
+                }
                 match &c.sizes {
                     Some(_) if c.target == "self" => {
                         return Err(format!("route {id}: self takes no sizes"));
@@ -1133,5 +1209,47 @@ mod tests {
         assert_eq!(c.harness_for("claudeAgent"), Some("claude"));
         assert_eq!(c.harness_for("claude"), Some("claude"));
         assert_eq!(c.harness_for("codex"), None);
+    }
+    #[test]
+    fn a_council_of_only_spares_is_refused() {
+        let err = parse(
+            "version = 1\n[harnesses.a]\n[routes.c]\ncouncil = true\ncandidates = [{ target = \"a/m\", spare = true }]\n",
+        );
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("a member that is not one")
+        );
+        let with_self = parse(
+            "version = 1\n[harnesses.a]\n[routes.c]\ncouncil = true\ncandidates = [{ target = \"a/m\", spare = true }, { target = \"self\" }]\n",
+        );
+        assert!(with_self.is_err(), "self cannot stand in for a member");
+    }
+
+    #[test]
+    fn council_options_validate_without_changing_old_defaults() {
+        let base = "version = 1\n[harnesses.a]\n[routes.c]\ncouncil = true\ncandidates = [{ target = \"a/m\" }, { target = \"a/n\", spare = true }]\n";
+        let c = parse(base).unwrap();
+        assert_eq!(c.routes["c"].quorum(), 1);
+        assert_eq!(c.routes["c"].rounds(), Some(1));
+        assert!(parse(&base.replace("council = true", "council = true\nrounds = \"unlimited\"\nfixes = \"ask\"\nadvisory = \"follow-up\"\nspares = \"quorum\"")).unwrap().routes["c"].rounds().is_none());
+        for text in [
+            base.replace("council = true", "council = false"),
+            base.replace("a/n", "self"),
+            base.replace("council = true", "council = true\nquorum = 2"),
+            base.replace("target = \"a/m\"", "target = \"a/m\", sizes = [\"large\"]"),
+        ] {
+            assert!(parse(&text).is_err(), "{text}");
+        }
+        for key in [
+            "fixes = \"agent\"",
+            "advisory = \"apply\"",
+            "spares = \"all\"",
+            "rounds = \"unlimited\"",
+        ] {
+            let text =
+                format!("version = 1\n[routes.c]\n{key}\ncandidates = [{{ target = \"self\" }}]\n");
+            assert!(parse(&text).is_err());
+        }
     }
 }

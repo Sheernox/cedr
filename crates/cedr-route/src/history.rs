@@ -65,6 +65,8 @@ enum Record {
         judges: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         escalates: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spare_for: Option<String>,
     },
     Council {
         id: String,
@@ -72,7 +74,13 @@ enum Record {
         route: Option<String>,
         run: Option<String>,
         round: u32,
-        rounds: u32,
+        rounds: Option<u32>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        scores: BTreeMap<String, f64>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        spares: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        stalled: bool,
         gate: Gate,
         next: Next,
         quorum: usize,
@@ -152,6 +160,7 @@ pub fn record_pick(path: &Path, pick: &Pick, size: Size, now: DateTime<Utc>) -> 
             run: pick.run.clone(),
             judges: pick.judges.clone(),
             escalates: pick.escalates.clone(),
+            spare_for: d.spare_for.clone(),
         })
         .collect();
     if records.is_empty() {
@@ -259,6 +268,26 @@ pub fn validate_run(path: &Path, run: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Recover the plan's spare assignments even when reviewers returned plain text.
+pub fn merge_spares(path: &Path, merged: &mut Merged, run: Option<&str>) -> Result<()> {
+    validate_run(path, run)?;
+    if let Some(run) = run {
+        for record in read(path)? {
+            if let Record::Pick {
+                run: Some(r),
+                target,
+                spare_for: Some(member),
+                ..
+            } = record
+                && r == run
+            {
+                merged.spares.entry(target).or_insert(member);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Records counts only; reports and claims never enter the history file.
 pub fn record_council(
     path: &Path,
@@ -267,7 +296,7 @@ pub fn record_council(
     run: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<()> {
-    validate_run(path, run)?;
+    merge_spares(path, merged, run)?;
     let id = crate::pick::new_id().replacen("p-", "c-", 1);
     let mut groups = BTreeMap::from([
         (Severity::P0, 0),
@@ -292,6 +321,13 @@ pub fn record_council(
             run: run.map(str::to_string),
             round: merged.round,
             rounds: merged.rounds,
+            scores: merged
+                .scores
+                .iter()
+                .filter_map(|(m, s)| s.map(|s| (m.clone(), s)))
+                .collect(),
+            spares: merged.spares.clone(),
+            stalled: merged.stalled,
             gate: merged.gate,
             next: merged.next,
             quorum: merged.quorum,
@@ -610,6 +646,7 @@ mod tests {
             delegates: ids
                 .iter()
                 .map(|id| Delegate {
+                    spare_for: None,
                     id: id.to_string(),
                     target: target.into(),
                     harness: "codex".into(),
@@ -708,11 +745,11 @@ mod tests {
         let mut p = pick(&["draft"], "codex/sol");
         p.run = Some("r-plan".into());
         record_pick(&path, &p, Size::Small, now()).unwrap();
-        let reports = vec![Report::from_json(serde_json::json!({"member":"a","findings":[{"file":"private.rs","line":1,"severity":"P1","claim":"private claim"},{"file":"other.rs","line":10,"severity":"P3","claim":"advisory"}]}),None).unwrap(),Report {member:"b".into(),pick:None,score:None,findings:vec![]}];
+        let reports = vec![Report::from_json(serde_json::json!({"member":"a","findings":[{"file":"private.rs","line":1,"severity":"P1","claim":"private claim"},{"file":"other.rs","line":10,"severity":"P3","claim":"advisory"}]}),None).unwrap(),Report {spare_for:None,member:"b".into(),pick:None,score:None,findings:vec![]}];
         let settings = Settings {
             quorum: 2,
             block: Severity::P1,
-            rounds: 1,
+            rounds: Some(1),
             round: 1,
         };
         let mut first = council::merge(&reports, settings);
@@ -720,12 +757,14 @@ mod tests {
         record_council(&path, &mut first, Some("review"), Some("r-plan"), now()).unwrap();
         let clean = vec![
             Report {
+                spare_for: None,
                 member: "a".into(),
                 pick: None,
                 score: None,
                 findings: vec![],
             },
             Report {
+                spare_for: None,
                 member: "b".into(),
                 pick: None,
                 score: None,

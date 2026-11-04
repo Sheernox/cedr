@@ -827,7 +827,7 @@ mod tests {
     fn council_records_pass_through_pending_without_losing_fields() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("history");
-        let record = json!({"type":"council","id":"c-0123456789ab","at":"2026-10-29T00:00:00Z","route":null,"run":null,"round":1,"rounds":1,"gate":"pass","next":"done","quorum":2,"block":"P1","reviewers":["a","b"],"groups":{"P0":0,"P1":0,"P2":0,"P3":0},"findings":{"a":0,"b":0}});
+        let record = json!({"type":"council","id":"c-0123456789ab","at":"2026-10-29T00:00:00Z","route":null,"run":null,"round":2,"rounds":null,"scores":{"a":7.5},"spares":{"b":"c"},"stalled":true,"gate":"block","next":"done","quorum":2,"block":"P1","reviewers":["a","b"],"groups":{"P0":0,"P1":0,"P2":0,"P3":0},"findings":{"a":0,"b":0}});
         let line = format!("{record}\n");
         std::fs::write(&path, &line).unwrap();
         let records = pending(&path, 0).unwrap();

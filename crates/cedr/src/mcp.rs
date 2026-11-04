@@ -44,6 +44,8 @@ pub struct PlanArgs {
     size: Option<String>,
     /// Harnesses to skip because they just failed on a limit or capacity
     avoid: Option<Vec<String>>,
+    /// Exact member targets; disables spare replacements
+    members: Option<Vec<String>>,
     /// {"<harness>": [model ids]} the orchestrator offers, replacing the configured lists
     models: Option<Value>,
 }
@@ -59,7 +61,7 @@ pub struct ManualArgs {
 #[derive(Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct MergeArgs {
-    /// One report object per member: {"member", "pick"?, "findings": [{"file", "line", "severity", "claim", "scenario"?}]}
+    /// One report object per member: {"member", "pick"?, "score"?, "spare_for"?, "findings": [{"file", "line", "severity", "claim", "scenario"?}]}
     reports: Vec<Value>,
     /// Council route whose quorum and blocking severity apply
     route: Option<String>,
@@ -72,6 +74,8 @@ pub struct MergeArgs {
     rounds: Option<u32>,
     /// The review being merged: 1 (default) for the first, 2 after one revision
     round: Option<u32>,
+    /// Previous round merge JSON, required from round 2 with unlimited rounds
+    previous: Option<Value>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -356,18 +360,19 @@ impl RouteServer {
     }
 
     #[tool(
-        description = "Name the council members to start for a council route, with its quorum. Each member's brief must start with its tag. In T3 Code, start each member with delegate_task, passing its t3 object as the target."
+        description = "Name the council members to start for a council route, with its quorum, fixes, advisory, rounds and spare assignments. Named members disable spares. Each member's brief must start with its tag. In T3 Code, start each member with delegate_task, passing its t3 object as the target."
     )]
     async fn council_plan(&self, Parameters(a): Parameters<PlanArgs>) -> CallToolResult {
         let me = self.clone();
         blocking(move || {
             let size = Size::parse(a.size.as_deref().unwrap_or("medium"))?;
             let session = me.session(a.models)?;
-            let plan = council::plan(
+            let plan = council::plan_members(
                 &session.context(),
                 &a.route,
                 size,
                 &a.avoid.unwrap_or_default(),
+                &a.members.unwrap_or_default(),
             )?;
             history::record_pick(&history::default_path(), &plan.pick, size, Utc::now())?;
             crate::route::auto_sync(me.config.as_deref());
@@ -377,7 +382,7 @@ impl RouteServer {
     }
 
     #[tool(
-        description = "Merge council members' reports into one gate: pass, block (at or above the blocking severity) or incomplete (below quorum); a blocked gate with a round left returns next=revise and the author's revision brief. A report may carry the member's score out of 10, which never decides the gate."
+        description = "Merge council members' reports into one gate: pass, block (at or above the blocking severity) or incomplete (below quorum); a blocked gate with a round left returns next=revise and the author's revision brief. Unlimited rounds require previous merge JSON from round 2; repeated blocking locations stop as stalled. Reports may name spare_for. A report may carry the member's score out of 10, which never decides the gate."
     )]
     async fn council_merge(&self, Parameters(a): Parameters<MergeArgs>) -> CallToolResult {
         let me = self.clone();
@@ -408,6 +413,7 @@ impl RouteServer {
                 .map(|r| Report::from_json(r, None))
                 .collect::<cedr_route::Result<Vec<_>>>()?;
             let mut merged = council::merge(&reports, settings);
+            council::apply_previous(&mut merged, a.previous)?;
             history::record_council(
                 &history::default_path(),
                 &mut merged,

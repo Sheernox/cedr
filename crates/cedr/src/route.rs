@@ -396,6 +396,9 @@ pub(crate) fn print_pick(p: &Pick, format: PickFormat) -> ExitCode {
                 PickFormat::T3 => println!("  delegate_task role={} target={}", p.role, t3_json(d)),
                 _ => println!("  {} role={}", d.target, p.role),
             }
+            if let Some(member) = &d.spare_for {
+                println!("  spare for {member}");
+            }
             if !d.prefix.is_empty() {
                 println!("  brief starts: {}", d.prefix);
             }
@@ -791,7 +794,10 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
                                 text("route"),
                                 text("gate"),
                                 r["round"],
-                                r["rounds"],
+                                r["rounds"]
+                                    .as_u64()
+                                    .map(|n| n.to_string())
+                                    .unwrap_or_else(|| "unlimited".into()),
                                 text("id")
                             );
                         }

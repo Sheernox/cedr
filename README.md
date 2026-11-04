@@ -169,9 +169,11 @@ Sync and Monitor need no config to try: run `cedr sync init` in a repo, or `cedr
 <details>
 <summary><b>Council</b></summary>
 
+Run `cedr council skill` for the review procedure. Councils support spare members, named reviewers, revision settings and unlimited rounds with a stall stop.
+
 | Command | What it does |
 | --- | --- |
-| `cedr council plan <route>` | Name the reviewers to start, one per vendor, and the quorum |
+| `cedr council plan <route>` | Name the eligible reviewers to start and the quorum |
 | `cedr council merge <reports>...` | Merge their reports and decide the gate |
 
 </details>

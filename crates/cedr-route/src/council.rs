@@ -6,7 +6,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config::Route;
 use crate::error::{Error, Result};
 use crate::pick::{Context, Pick, Size};
 
@@ -47,6 +46,8 @@ pub struct Finding {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Report {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spare_for: Option<String>,
     /// May be absent in a JSON report when the `<member>=<path>` argument names it.
     #[serde(default)]
     pub member: String,
@@ -77,6 +78,7 @@ impl Report {
                 report.member
             )));
         }
+        report.score = report.score.map(|s| if s == 0.0 { 0.0 } else { s });
         Ok(report)
     }
 
@@ -86,29 +88,76 @@ impl Report {
     pub fn from_text(text: &str, member: &str) -> Report {
         let findings = text.lines().filter_map(parse_line).collect();
         Report {
+            spare_for: None,
             member: member.to_string(),
             pick: None,
-            score: text.lines().filter_map(parse_score).next_back(),
+            score: {
+                let last = text
+                    .lines()
+                    .enumerate()
+                    .filter(|(_, l)| !l.trim().is_empty())
+                    .map(|(i, _)| i)
+                    .last();
+                text.lines()
+                    .enumerate()
+                    .filter(|(i, l)| {
+                        (!l.trim().starts_with("- ") && !l.trim().starts_with("* "))
+                            || Some(*i) == last
+                    })
+                    .filter_map(|(_, l)| score_candidate(l))
+                    .last()
+                    .flatten()
+            },
             findings,
         }
     }
 }
 
-/// A `Score: 8/10` line, however a reply decorates it; anything else, or a score off the scale, is
-/// not one. A finding on a file named `score...` never matches, since it does not end in `/10`.
+/// The parsed value of a single score candidate, for parser regression cases.
+#[cfg(test)]
 fn parse_score(line: &str) -> Option<f64> {
-    let line = line.trim().trim_start_matches(['-', '*', '`', '_', ' ']);
+    score_candidate(line).flatten()
+}
+
+// Keep an invalid final score candidate so it cannot fall back to an earlier score.
+fn score_candidate(line: &str) -> Option<Option<f64>> {
+    let line = line
+        .trim()
+        .trim_start_matches(['-', '*', '`', '_', '#', '>', '|', ' ']);
+    let line = if line
+        .get(..8)
+        .is_some_and(|s| s.eq_ignore_ascii_case("overall "))
+    {
+        &line[8..]
+    } else {
+        line
+    };
     line.get(..5).filter(|p| p.eq_ignore_ascii_case("score"))?;
-    let rest = line[5..].trim_start_matches([':', '*', '`', '_', ' ']);
-    let (score, scale) = rest.split_once('/')?;
-    if scale.trim().trim_end_matches(['*', '`', '_', '.', ' ']) != "10" {
+    let rest = &line[5..];
+    if !rest.starts_with(|c: char| c == ':' || c.is_whitespace() || c == '*' || c == '|') {
         return None;
     }
-    score
+    let rest = rest.trim_start_matches([':', '*', '`', '_', '|', ' ']);
+    // A sentence that merely starts with the word is not a score, and must not hide one before it.
+    let (score, scale) = rest.split_once('/')?;
+    let scale = scale
         .trim()
-        .parse()
-        .ok()
-        .filter(|s| (0.0..=10.0).contains(s))
+        .trim_end_matches(['*', '`', '_', '.', '|', ' ']);
+    let valid_scale = scale == "10"
+        || scale
+            .strip_prefix("10 ")
+            .is_some_and(|s| s.starts_with('(') && s.ends_with(')'));
+    Some(if valid_scale {
+        score
+            .trim()
+            .trim_matches(['*', '`', '_'])
+            .parse::<f64>()
+            .ok()
+            .filter(|s| (0.0..=10.0).contains(s))
+            .map(|s| if s == 0.0 { 0.0 } else { s })
+    } else {
+        None
+    })
 }
 
 fn parse_line(line: &str) -> Option<Finding> {
@@ -201,8 +250,10 @@ pub struct Merged {
     pub quorum: usize,
     pub block: Severity,
     pub round: u32,
-    pub rounds: u32,
+    pub rounds: Option<u32>,
     pub next: Next,
+    pub stalled: bool,
+    pub spares: BTreeMap<String, String>,
     /// The revision brief for the change's author; only when `next` is revise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brief: Option<String>,
@@ -214,7 +265,10 @@ pub struct Merged {
 
 /// The Markdown revision brief (docs/council.md, Critique and revise): every group in merge order
 /// with every finding, so dissent reaches the author.
-fn brief(groups: &[Group], block: Severity, round: u32, rounds: u32) -> String {
+fn brief(groups: &[Group], block: Severity, round: u32, rounds: Option<u32>) -> String {
+    let rounds = rounds
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "unlimited".into());
     let mut out = format!(
         "# Council revision brief (round {round} of {rounds})\n\n\
          Blocking: {block:?} and above. Fix each blocking group or rebut it with evidence; the others are advisory.\n\
@@ -313,7 +367,7 @@ pub fn merge(reports: &[Report], settings: Settings) -> Merged {
     } else {
         Gate::Incomplete
     };
-    let next = if gate == Gate::Block && round <= rounds {
+    let next = if gate == Gate::Block && rounds.is_none_or(|n| round <= n) {
         Next::Revise
     } else {
         Next::Done
@@ -326,11 +380,65 @@ pub fn merge(reports: &[Report], settings: Settings) -> Merged {
         round,
         rounds,
         next,
+        stalled: false,
+        spares: reports
+            .iter()
+            .filter_map(|r| r.spare_for.as_ref().map(|s| (r.member.clone(), s.clone())))
+            .collect(),
         brief: (next == Next::Revise).then(|| brief(&groups, block, round, rounds)),
         reviewers,
         scores,
         groups,
     }
+}
+
+/// Apply the previous merge only to blocking locations; no claims enter history.
+pub fn apply_previous(merged: &mut Merged, previous: Option<Value>) -> Result<()> {
+    if merged.rounds.is_none() && merged.round >= 2 && previous.is_none() {
+        return Err(Error::Usage(
+            "unlimited rounds at round 2 or later require --previous".into(),
+        ));
+    }
+    if let Some(value) = previous {
+        #[derive(Deserialize)]
+        struct Previous {
+            gate: Gate,
+            block: Severity,
+            groups: Vec<Location>,
+        }
+        #[derive(Deserialize)]
+        struct Location {
+            file: String,
+            line: u64,
+            severity: Severity,
+        }
+        let prev: Previous = serde_json::from_value(value)
+            .map_err(|e| Error::Usage(format!("not a previous council merge: {e}")))?;
+        let mut locations: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+        for p in prev.groups.into_iter().filter(|p| p.severity <= prev.block) {
+            locations.entry(p.file).or_default().push(p.line);
+        }
+        for lines in locations.values_mut() {
+            lines.sort_unstable();
+        }
+        merged.stalled = merged.gate == Gate::Block
+            && prev.gate == Gate::Block
+            && merged
+                .groups
+                .iter()
+                .filter(|g| g.severity <= merged.block)
+                .all(|g| {
+                    locations.get(&g.file).is_some_and(|lines| {
+                        let i = lines.partition_point(|line| *line < g.line.saturating_sub(10));
+                        lines.get(i).is_some_and(|line| line.abs_diff(g.line) <= 10)
+                    })
+                });
+        if merged.stalled {
+            merged.next = Next::Done;
+            merged.brief = None;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -339,6 +447,9 @@ pub struct Plan {
     pub pick: Pick,
     pub quorum: usize,
     pub quorum_reachable: bool,
+    pub fixes: crate::config::Fixes,
+    pub advisory: crate::config::Advisory,
+    pub rounds: Option<u32>,
 }
 
 /// How a merge decides: the quorum, the least severe finding that blocks, the revision rounds
@@ -347,7 +458,7 @@ pub struct Plan {
 pub struct Settings {
     pub quorum: usize,
     pub block: Severity,
-    pub rounds: u32,
+    pub rounds: Option<u32>,
     pub round: u32,
 }
 
@@ -385,23 +496,55 @@ pub fn settings(
     Ok(Settings {
         quorum: quorum.or(from_route.map(|r| r.0)).unwrap_or(2),
         block: block.or(from_route.map(|r| r.1)).unwrap_or(Severity::P1),
-        rounds: rounds.or(from_route.map(|r| r.2)).unwrap_or(1),
+        rounds: rounds
+            .map(Some)
+            .or(from_route.map(|r| r.2))
+            .unwrap_or(Some(1)),
         round: round.unwrap_or(1),
     })
 }
 
 /// The members to start for a council route.
 pub fn plan(ctx: &Context, route_id: &str, size: Size, avoid: &[String]) -> Result<Plan> {
-    let route: &Route = ctx
+    plan_members(ctx, route_id, size, avoid, &[])
+}
+
+/// Plan explicit members when given, keeping the configured quorum and revision settings.
+pub fn plan_members(
+    ctx: &Context,
+    route_id: &str,
+    size: Size,
+    avoid: &[String],
+    members: &[String],
+) -> Result<Plan> {
+    let route = ctx
         .config
         .routes
         .get(route_id)
         .filter(|r| r.council)
         .ok_or_else(|| Error::Usage(format!("{route_id:?} is not a council route")))?;
     let quorum = route.quorum();
-    let mut pick = ctx.pick(route_id, size, avoid)?;
+    let mut pick = if members.is_empty() {
+        ctx.pick(route_id, size, avoid)?
+    } else {
+        ctx.council_members(route_id, size, avoid, members)?
+    };
+    let mut vendors = BTreeMap::new();
+    for d in &pick.delegates {
+        *vendors
+            .entry(crate::pick::vendor(&d.harness))
+            .or_insert(0usize) += 1;
+    }
+    for (vendor, count) in vendors {
+        if count >= quorum {
+            pick.warnings.push(format!("quorum {quorum} can be reached by {vendor} alone; different vendors miss different things"));
+        }
+    }
     pick.run = Some(crate::pick::new_id().replacen("p-", "r-", 1));
     Ok(Plan {
+        fixes: route.fixes.unwrap_or_default(),
+        advisory: route.advisory.unwrap_or_default(),
+        rounds: route.rounds(),
         quorum_reachable: pick.delegates.len() >= quorum,
         pick,
         quorum,
@@ -427,7 +570,7 @@ mod tests {
         Settings {
             quorum,
             block: Severity::P1,
-            rounds: 1,
+            rounds: Some(1),
             round: 1,
         }
     }
@@ -454,6 +597,7 @@ mod tests {
 
     fn report(member: &str, findings: Vec<Finding>) -> Report {
         Report {
+            spare_for: None,
             member: member.into(),
             pick: None,
             score: None,
@@ -605,7 +749,7 @@ mod tests {
         let first = merge(&reports, q(2));
         assert_eq!(
             (first.next, first.round, first.rounds),
-            (Next::Revise, 1, 1)
+            (Next::Revise, 1, Some(1))
         );
         assert_eq!(
             first.brief.as_deref(),
@@ -621,7 +765,13 @@ mod tests {
         );
         let last = merge(&reports, Settings { round: 2, ..q(2) });
         assert_eq!((last.next, last.brief.is_none()), (Next::Done, true));
-        let none = merge(&reports, Settings { rounds: 0, ..q(2) });
+        let none = merge(
+            &reports,
+            Settings {
+                rounds: Some(0),
+                ..q(2)
+            },
+        );
         assert_eq!(none.next, Next::Done);
         let pass = merge(&[report("codex", vec![]), report("claude", vec![])], q(2));
         assert_eq!(pass.next, Next::Done);
@@ -638,18 +788,18 @@ mod tests {
             )
         };
         let s = settings(None, None, None, None, Some("c"), config).unwrap();
-        assert_eq!((s.rounds, s.round), (2, 1));
+        assert_eq!((s.rounds, s.round), (Some(2), 1));
         assert_eq!(
             settings(None, None, Some(0), Some(3), Some("c"), config)
                 .unwrap()
                 .rounds,
-            0
+            Some(0)
         );
         assert_eq!(
             settings(None, None, None, None, None, config)
                 .unwrap()
                 .rounds,
-            1
+            Some(1)
         );
         assert!(settings(None, None, Some(4), None, None, config).is_err());
         assert!(settings(None, None, None, Some(0), None, config).is_err());
@@ -671,5 +821,94 @@ mod tests {
             "findings are required"
         );
         assert!(Report::from_json(json!({"member": "x", "findings": [{"file": "a", "line": 1, "severity": "P7", "claim": "c"}]}), None).is_err());
+    }
+    #[test]
+    fn scores_use_only_the_last_candidate_and_normalize_zero() {
+        for line in [
+            "Score: 7/10",
+            "**Score:** 7/10",
+            "## Score: 7/10",
+            "> Score: 7/10",
+            "Score: 7/10 (solid)",
+            "Score: **7**/10",
+            "Overall score: 7/10",
+            "| Score | 7/10 |",
+            "SCORE 7 / 10.",
+        ] {
+            assert_eq!(Report::from_text(line, "a").score, Some(7.0), "{line}");
+        }
+        for line in [
+            "score: 8/10 once the tests pass",
+            "score/a.rs:1 - P1 - x",
+            "score.rs:12 - P1 - 3/10 of the time",
+            "- Score: 7/10\nexample above",
+        ] {
+            assert_eq!(Report::from_text(line, "a").score, None, "{line}");
+        }
+        assert_eq!(
+            Report::from_text("Score: 8/10\nScore is subjective, though.", "a").score,
+            Some(8.0)
+        );
+        assert_eq!(
+            Report::from_text("Score: 8/10\nScore: 11/10", "a").score,
+            None
+        );
+        assert_eq!(Report::from_text("- Score: 7/10\n\n", "a").score, Some(7.0));
+        assert_eq!(
+            Report::from_text("Score: -0/10", "a")
+                .score
+                .unwrap()
+                .to_bits(),
+            0f64.to_bits()
+        );
+        assert_eq!(
+            Report::from_json(json!({"member":"a","score":-0.0,"findings":[]}), None)
+                .unwrap()
+                .score
+                .unwrap()
+                .to_bits(),
+            0f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn unlimited_requires_previous_and_stalls_only_on_returned_blocking_locations() {
+        let previous = merge(
+            &[report("a", vec![f("a.rs", 20, Severity::P1, "old")])],
+            q(1),
+        );
+        let prev = serde_json::to_value(previous).unwrap();
+        for (line, new_group, previous_pass, stalled) in [
+            (30, false, false, true),
+            (31, false, false, false),
+            (20, true, false, false),
+            (20, false, true, false),
+        ] {
+            let mut findings = vec![f("a.rs", line, Severity::P1, "changed words")];
+            if new_group {
+                findings.push(f("b.rs", 1, Severity::P0, "new"));
+            }
+            let mut m = merge(
+                &[report("a", findings)],
+                Settings {
+                    rounds: None,
+                    round: 2,
+                    ..q(1)
+                },
+            );
+            assert_eq!(m.next, Next::Revise);
+            assert!(m.brief.as_ref().unwrap().contains("(round 2 of unlimited)"));
+            assert!(apply_previous(&mut m, None).is_err());
+            let mut p = prev.clone();
+            if previous_pass {
+                p["gate"] = json!("pass");
+            }
+            apply_previous(&mut m, Some(p)).unwrap();
+            assert_eq!(m.stalled, stalled);
+            assert_eq!(m.brief.is_none(), stalled);
+            assert_eq!(serde_json::to_value(&m).unwrap()["rounds"], Value::Null);
+        }
+        let mut numbered = merge(&[], q(1));
+        assert!(apply_previous(&mut numbered, None).is_ok());
     }
 }

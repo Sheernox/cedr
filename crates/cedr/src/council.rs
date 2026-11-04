@@ -16,6 +16,8 @@ use crate::route::{self, PickFormat, SizeArg, SourceArgs, cwd, open, print_pick,
 
 #[derive(Subcommand)]
 pub enum CouncilCommand {
+    /// Print the Council procedure as Markdown
+    Skill,
     /// Name the members to start for a council route
     Plan {
         route: String,
@@ -24,6 +26,9 @@ pub enum CouncilCommand {
         /// Harness to skip; repeatable
         #[arg(long)]
         avoid: Vec<String>,
+        /// Plan exactly these members, without spare replacements; repeatable
+        #[arg(long)]
+        member: Vec<String>,
         #[arg(long, value_enum, default_value_t = PickFormat::Text)]
         format: PickFormat,
         #[command(flatten)]
@@ -66,6 +71,9 @@ pub enum CouncilCommand {
         /// The review being merged: 1 for the first, 2 after one revision
         #[arg(long)]
         round: Option<u32>,
+        /// JSON output of the previous round
+        #[arg(long)]
+        previous: Option<PathBuf>,
         #[arg(long, value_enum, default_value_t = MergeFormat::Text)]
         format: MergeFormat,
     },
@@ -129,6 +137,17 @@ fn read_report(arg: &str) -> Result<Report> {
     Ok(Report::from_text(&text, member))
 }
 
+fn read_previous(path: &Path) -> Result<Value> {
+    let file = std::fs::File::open(path).map_err(|source| Error::Io {
+        path: path.into(),
+        source,
+    })?;
+    serde_json::from_reader(std::io::BufReader::new(file)).map_err(|e| Error::Parse {
+        path: path.into(),
+        message: format!("invalid previous merge: {e}"),
+    })
+}
+
 pub fn print_merged(m: &Merged, format: MergeFormat) {
     match format {
         MergeFormat::Json => {
@@ -185,8 +204,13 @@ pub fn print_merged(m: &Merged, format: MergeFormat) {
         Next::Revise => println!(
             "next: revise (round {} of {}): give the author the revision brief (--format brief), then review again with --round {}",
             m.round,
-            m.rounds,
-            m.round + 1
+            m.rounds
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "unlimited".into()),
+            m.round.saturating_add(1)
+        ),
+        Next::Done if m.stalled => println!(
+            "next: done (stalled: the same blocking findings returned, so this goes to a person)"
         ),
         Next::Done => println!("next: done"),
     }
@@ -203,6 +227,10 @@ pub fn gate_code(gate: Gate) -> ExitCode {
 pub fn run(command: CouncilCommand, config: &route::ConfigArg) -> Result<ExitCode> {
     let config = config.path();
     match command {
+        CouncilCommand::Skill => {
+            print!("{}", include_str!("council-skill.md"));
+            Ok(ExitCode::SUCCESS)
+        }
         CouncilCommand::Stats {
             route,
             since,
@@ -241,6 +269,7 @@ pub fn run(command: CouncilCommand, config: &route::ConfigArg) -> Result<ExitCod
             route,
             size,
             avoid,
+            member,
             format,
             sources,
         } => {
@@ -249,7 +278,8 @@ pub fn run(command: CouncilCommand, config: &route::ConfigArg) -> Result<ExitCod
                 sources.readings.as_deref(),
                 sources.models.as_deref(),
             )?;
-            let plan = council::plan(&session.context(), &route, size.into(), &avoid)?;
+            let plan =
+                council::plan_members(&session.context(), &route, size.into(), &avoid, &member)?;
             record(&plan.pick, size.into(), &sources, config)?;
             if let PickFormat::Json = format {
                 println!(
@@ -258,6 +288,9 @@ pub fn run(command: CouncilCommand, config: &route::ConfigArg) -> Result<ExitCod
                 );
             } else {
                 print_pick(&plan.pick, format);
+                for warning in plan.pick.warnings.iter().skip(session.warnings.len()) {
+                    println!("warning: {warning}");
+                }
                 println!(
                     "quorum {}: {} eligible, run {}",
                     plan.quorum,
@@ -280,6 +313,7 @@ pub fn run(command: CouncilCommand, config: &route::ConfigArg) -> Result<ExitCod
             block,
             rounds,
             round,
+            previous,
             format,
         } => {
             let block = block.as_deref().and_then(council::Severity::parse);
@@ -292,8 +326,13 @@ pub fn run(command: CouncilCommand, config: &route::ConfigArg) -> Result<ExitCod
                 .map(|a| read_report(a))
                 .collect::<Result<Vec<_>>>()?;
             let mut merged = council::merge(&reports, settings);
-            cedr_route::history::validate_run(
+            council::apply_previous(
+                &mut merged,
+                previous.as_deref().map(read_previous).transpose()?,
+            )?;
+            cedr_route::history::merge_spares(
                 &cedr_route::history::default_path(),
+                &mut merged,
                 run.as_deref(),
             )?;
             if !no_record {

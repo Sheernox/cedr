@@ -242,19 +242,22 @@ fn mcp_serves_picks_and_returns_errors_as_tool_errors() {
     );
     // Exercise the new MCP paths against one recorded council run.
     send(
-        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"council_plan","arguments":{"route":"council","models":{"codex":["gpt-6.1-sol"],"claude":["claude-opus-5-5"]}}}}),
+        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"council_plan","arguments":{"route":"council","members":["codex/sol","claude/opus"],"models":{"codex":["gpt-6.1-sol"],"claude":["claude-opus-5-5"]}}}}),
     );
     let result = recv(5);
     let plan: Value =
         serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     let run = plan["run"].as_str().unwrap();
     send(
-        json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"council_merge","arguments":{"route":"council","run":run,"reports":[{"member":"a","findings":[]},{"member":"b","findings":[]}]}}}),
+        json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"council_merge","arguments":{"route":"council","run":run,"previous":{"gate":"block","block":"P1","groups":[]},"reports":[{"member":"a","score":8,"spare_for":"c","findings":[]},{"member":"b","findings":[]}]}}}),
     );
     let result = recv(6);
     let merge: Value =
         serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(merge["gate"], "pass");
+    assert_eq!(merge["scores"]["a"], 8.0);
+    assert_eq!(merge["spares"]["a"], "c");
+    assert_eq!(merge["stalled"], false);
     assert!(merge["id"].as_str().unwrap().starts_with("c-"));
     send(
         json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"council_stats","arguments":{"route":"council"}}}),

@@ -414,3 +414,129 @@ fn scores_show_beside_the_gate_and_never_decide_it() {
     let refused = s.cedr(&["council", "merge", "--no-record", "--quorum", "1", &high]);
     assert_eq!(refused.status.code(), Some(2));
 }
+
+#[test]
+fn unlimited_merges_stop_on_previous_locations_and_record_only_metadata() {
+    let s = Scratch::new(10.0, 95.0);
+    let cfg = s.dir.path().join("unlimited.toml");
+    std::fs::write(
+        &cfg,
+        TUNED.replace(
+            "council = true",
+            "council = true\nrounds = \"unlimited\"\nfixes = \"ask\"\nadvisory = \"follow-up\"",
+        ),
+    )
+    .unwrap();
+    let report = s.dir.path().join("review.md");
+    std::fs::write(
+        &report,
+        "src/secret.rs:20 - P1 - secret claim\nScore: 7/10\n",
+    )
+    .unwrap();
+    let arg = format!("codex/sol={}", report.display());
+    let cfg = cfg.to_str().unwrap();
+    let base = [
+        "council", "merge", &arg, "--route", "tuned", "--config", cfg,
+    ];
+    let run = |extra: &[&str]| {
+        let mut args = base.to_vec();
+        args.extend_from_slice(extra);
+        s.cedr(&args)
+    };
+    assert!(stdout(&run(&[])).contains("round 1 of unlimited"));
+    assert!(stdout(&run(&["--format", "brief"])).contains("(round 1 of unlimited)"));
+    let first = run(&["--format", "json"]);
+    assert_eq!(first.status.code(), Some(1));
+    let first: Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert!(first["rounds"].is_null());
+    assert_eq!(first["next"], "revise");
+    assert_eq!(first["stalled"], false);
+    assert_eq!(run(&["--round", "2"]).status.code(), Some(2));
+    let previous = s.dir.path().join("previous.json");
+    std::fs::write(&previous, first.to_string()).unwrap();
+    let extra = ["--round", "2", "--previous", previous.to_str().unwrap()];
+    assert!(stdout(&run(&extra)).contains(
+        "next: done (stalled: the same blocking findings returned, so this goes to a person)"
+    ));
+    let mut extra = extra.to_vec();
+    extra.extend_from_slice(&["--format", "json"]);
+    let stalled: Value = serde_json::from_slice(&run(&extra).stdout).unwrap();
+    assert_eq!(stalled["stalled"], true);
+    assert!(stalled.get("brief").is_none());
+    let history =
+        std::fs::read_to_string(s.dir.path().join("state/cedr/route-history.jsonl")).unwrap();
+    assert!(
+        !history.contains("secret.rs")
+            && !history.contains("secret claim")
+            && !history.contains("\"line\"")
+    );
+    let record: Value = serde_json::from_str(history.lines().last().unwrap()).unwrap();
+    assert_eq!(record["scores"]["codex/sol"], 7.0);
+    assert_eq!(record["stalled"], true);
+    assert!(record["rounds"].is_null());
+}
+
+#[test]
+fn plans_record_spares_and_merge_recovers_them_without_report_fields() {
+    let s = Scratch::new(10.0, 95.0);
+    let cfg = s.dir.path().join("spares.toml");
+    std::fs::write(&cfg, TUNED.replace("sizes = [\"large\"]", "spare = true")).unwrap();
+    let cfg = cfg.to_str().unwrap();
+    let readings = s.readings();
+    let base = [
+        "council",
+        "plan",
+        "tuned",
+        "--config",
+        cfg,
+        "--readings",
+        &readings,
+    ];
+    let run = |extra: &[&str]| {
+        let mut args = base.to_vec();
+        args.extend_from_slice(extra);
+        s.cedr(&args)
+    };
+    for format in ["text", "t3"] {
+        let o = run(&["--format", format]);
+        assert_eq!(o.status.code(), Some(0));
+        let text = stdout(&o);
+        assert!(text.contains("  spare for claude/claude-opus-5-5"));
+        assert!(text.contains(
+            "quorum 2 can be reached by codex alone; different vendors miss different things"
+        ));
+    }
+    let plan: Value = serde_json::from_slice(&run(&["--format", "json"]).stdout).unwrap();
+    assert_eq!(plan["fixes"], "agent");
+    assert_eq!(plan["advisory"], "apply");
+    let report = s.dir.path().join("clean.json");
+    std::fs::write(
+        &report,
+        json!({"member":"codex/gpt-6-sol","findings":[]}).to_string(),
+    )
+    .unwrap();
+    let o = s.cedr(&[
+        "council",
+        "merge",
+        report.to_str().unwrap(),
+        "--run",
+        plan["run"].as_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let merged: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(
+        merged["spares"]["codex/gpt-6-sol"],
+        "claude/claude-opus-5-5"
+    );
+    assert_eq!(run(&["--member", "unknown/model"]).status.code(), Some(2));
+    assert_eq!(run(&["--member", "claude/opus"]).status.code(), Some(1));
+}
+
+#[test]
+fn council_skill_prints_the_procedure_verbatim() {
+    let s = Scratch::new(0.0, 0.0);
+    let o = s.cedr(&["council", "skill"]);
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(stdout(&o), include_str!("../src/council-skill.md"));
+}

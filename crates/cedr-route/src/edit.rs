@@ -269,6 +269,18 @@ pub fn set_thresholds(
     if layer.is_empty() {
         holder.remove(name);
     }
+    if let Scope::RouteHarness(r, _) = scope {
+        let route = entry(&mut doc, "routes", r, "route")?
+            .as_table_like_mut()
+            .expect("validated route");
+        if route
+            .get("harness_thresholds")
+            .and_then(Item::as_table_like)
+            .is_some_and(|t| t.is_empty())
+        {
+            route.remove("harness_thresholds");
+        }
+    }
     Ok(doc.to_string())
 }
 
@@ -791,6 +803,7 @@ out = 90 # reserve for interactive work
         let c = check(&text);
         assert_eq!(c.limits(Some("a"), c.routes.get("a.b")).weekly_out, 98.0);
         let cleared = set_thresholds(&text, &scope, &[], &["weekly_out".to_string()]).unwrap();
+        assert!(!cleared.contains("harness_thresholds"), "{cleared}");
         let c = check(&cleared);
         assert_eq!(c.limits(Some("a"), c.routes.get("a.b")).weekly_out, 90.0);
         assert!(

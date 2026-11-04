@@ -50,6 +50,8 @@ pub struct T3Target {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Delegate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spare_for: Option<String>,
     pub id: String,
     pub target: String,
     pub harness: String,
@@ -104,6 +106,10 @@ pub struct Context<'a> {
     pub now: DateTime<Utc>,
     /// Copied into every pick so the caller cannot drop them.
     pub warnings: &'a [String],
+}
+
+pub fn vendor(harness: &str) -> &str {
+    harness.strip_suffix("-api").unwrap_or(harness)
 }
 
 /// A fresh pick id: `p-` and 12 lowercase hex characters.
@@ -197,6 +203,7 @@ impl Context<'_> {
             options.insert(opt.clone(), Value::String(effort.to_string()));
         }
         Delegate {
+            spare_for: None,
             tag: format!(
                 "[route {route} -> {target}{effort_part} | {reason} | {}{orch_part} | rules {} | pick {id}]",
                 p.summary, self.rules
@@ -279,6 +286,9 @@ impl Context<'_> {
             result.reason = Some("disabled".into());
             return Ok(result);
         }
+        if route.council {
+            return self.council_pick(result, route, size, avoid);
+        }
         let mut size_limited = false;
         for group in tiers(&route.candidates) {
             if group[0].target == "self" {
@@ -320,14 +330,6 @@ impl Context<'_> {
                         .skipped
                         .push(format!("{harness}={}", p.state.as_str()));
                 }
-            }
-            if route.council {
-                for c in &options {
-                    result
-                        .delegates
-                        .push(self.delegate(route_id, c, "council", orch.as_deref()));
-                }
-                continue;
             }
             if options.is_empty() {
                 continue;
@@ -428,6 +430,174 @@ impl Context<'_> {
             warnings: self.warnings.to_vec(),
             council: false,
         })
+    }
+
+    /// Council vacancies preserve candidate order; spares prefer a vendor not already seated.
+    fn council_pick(
+        &self,
+        mut result: Pick,
+        route: &Route,
+        size: Size,
+        avoid: &[String],
+    ) -> Result<Pick> {
+        let mut vacancies = Vec::new();
+        for c in route
+            .candidates
+            .iter()
+            .take_while(|c| c.target != "self")
+            .filter(|c| !c.spare && c.takes_size(size))
+        {
+            match self.council_delegate(c, &result, route, size, avoid) {
+                Ok(d) => result.delegates.push(d),
+                Err(reason) => {
+                    result.skipped.push(reason);
+                    vacancies.push(c.target.clone());
+                }
+            }
+        }
+        let count = match route.spares.unwrap_or_default() {
+            crate::config::Spares::All => vacancies.len(),
+            crate::config::Spares::Quorum => vacancies
+                .len()
+                .min(route.quorum().saturating_sub(result.delegates.len())),
+        };
+        let mut spares: Vec<_> = route.candidates.iter().filter(|c| c.spare).collect();
+        for vacancy in vacancies.into_iter().take(count) {
+            while !spares.is_empty() {
+                let index = spares
+                    .iter()
+                    .position(|c| {
+                        let h = c.target.split_once('/').expect("validated").0;
+                        !result
+                            .delegates
+                            .iter()
+                            .any(|d| vendor(&d.harness) == vendor(h))
+                    })
+                    .unwrap_or(0);
+                let c = spares.remove(index);
+                if !c.takes_size(size) {
+                    continue;
+                }
+                match self.council_delegate(c, &result, route, size, avoid) {
+                    Ok(mut d) => {
+                        d.spare_for = Some(vacancy.clone());
+                        result.delegates.push(d);
+                        break;
+                    }
+                    Err(reason) => result.skipped.push(reason),
+                }
+            }
+        }
+        if result.delegates.is_empty() {
+            result.reason = Some(if route.candidates.iter().all(|c| c.target == "self") {
+                "orchestrator-only route".to_string()
+            } else {
+                format!("no eligible delegate: {}", result.skipped.join(", "))
+            });
+        }
+        Ok(result)
+    }
+
+    fn council_delegate(
+        &self,
+        c: &Candidate,
+        result: &Pick,
+        route: &Route,
+        size: Size,
+        avoid: &[String],
+    ) -> std::result::Result<Delegate, String> {
+        let (harness, name) = c.target.split_once('/').expect("validated");
+        if avoid.iter().any(|a| a == harness) {
+            return Err(format!("{harness}=avoided"));
+        }
+        let (model, preview) = self
+            .resolve_for(harness, name, size)
+            .ok_or_else(|| format!("{harness}=unresolved"))?;
+        let limits = self.config.limits(Some(harness), Some(route));
+        let p = pool_with(
+            harness,
+            &model,
+            self.readings,
+            self.config,
+            self.now,
+            &limits,
+        );
+        if !limits.takes(p.state, size) {
+            return Err(format!("{harness}={}", p.state.as_str()));
+        }
+        let choice = Choice {
+            harness,
+            model,
+            preview,
+            effort: &c.effort,
+            pool: p,
+            api: self.is_api(harness),
+        };
+        Ok(self.delegate(
+            &result.route,
+            &choice,
+            "council",
+            result.orchestrator.as_deref(),
+        ))
+    }
+
+    /// Named members retain configured effort but have no spare replacements.
+    pub fn council_members(
+        &self,
+        route_id: &str,
+        size: Size,
+        avoid: &[String],
+        members: &[String],
+    ) -> Result<Pick> {
+        let mut config = self.config.clone();
+        let route = config
+            .routes
+            .get_mut(route_id)
+            .ok_or_else(|| Error::Usage(format!("unknown route {route_id:?}")))?;
+        let mut candidates = Vec::new();
+        for target in members {
+            let (h, m) = target
+                .split_once('/')
+                .filter(|(h, m)| self.config.harnesses.contains_key(*h) && !m.is_empty())
+                .ok_or_else(|| {
+                    Error::Usage(format!("{target:?} is not <defined harness>/<model>"))
+                })?;
+            let effort = route
+                .candidates
+                .iter()
+                .find(|c| {
+                    c.target == *target
+                        || (c.target.starts_with(&format!("{h}/"))
+                            && self
+                                .resolve_for(
+                                    h,
+                                    c.target.split_once('/').expect("validated").1,
+                                    size,
+                                )
+                                .zip(self.resolve_for(h, m, size))
+                                .is_some_and(|(a, b)| a.0 == b.0))
+                })
+                .map(|c| c.effort.clone())
+                .unwrap_or_default();
+            if !candidates.iter().any(|c: &Candidate| c.target == *target) {
+                candidates.push(Candidate {
+                    target: target.clone(),
+                    effort,
+                    tier: None,
+                    sizes: None,
+                    spare: false,
+                });
+            }
+        }
+        route.candidates = candidates;
+        Context {
+            config: &config,
+            rules: self.rules,
+            readings: self.readings,
+            now: self.now,
+            warnings: self.warnings,
+        }
+        .pick(route_id, size, avoid)
     }
 
     /// What a route would do at each size right now and why, without recording anything.
@@ -1237,6 +1407,169 @@ candidates = [{ target = "a/sol" }]
             v.candidates[0].state,
             Some(State::Out),
             "state is what a medium pick sees"
+        );
+    }
+    #[test]
+    fn spares_fill_each_vacancy_reason_but_not_size_opt_outs() {
+        for reason in [
+            "avoided",
+            "unresolved",
+            "absent",
+            "not installed",
+            "conserve",
+            "out",
+            "unknown",
+            "size",
+        ] {
+            let (mut c, mut r) = setup(10.0, 20.0, true);
+            let route = c.routes.get_mut("council").unwrap();
+            route.quorum = Some(1);
+            route.candidates[2].spare = true;
+            let mut avoid = vec![];
+            match reason {
+                "avoided" => avoid.push("claude"),
+                "unresolved" => route.candidates[1].target = "claude/missing".into(),
+                "absent" | "not installed" => {
+                    r.absent.insert("claude".into(), reason.into());
+                }
+                "conserve" => {
+                    let (_, new) = setup(10.0, 87.0, true);
+                    r = new;
+                }
+                "out" => {
+                    let (_, new) = setup(10.0, 95.0, true);
+                    r = new;
+                }
+                "unknown" => {
+                    r.entries.remove("claude");
+                    route.thresholds.unknown_sizes = Some(vec![]);
+                }
+                "size" => route.candidates[1].sizes = Some(vec![Size::Large]),
+                _ => unreachable!(),
+            }
+            let p = pick(&c, &r, "council", Size::Medium, &avoid);
+            assert_eq!(
+                p.delegates.len(),
+                if reason == "size" { 1 } else { 2 },
+                "{reason}"
+            );
+            if reason != "size" {
+                assert_eq!(p.delegates[1].harness, "antigravity");
+                assert_eq!(
+                    p.delegates[1].spare_for.as_deref(),
+                    Some(if reason == "unresolved" {
+                        "claude/missing"
+                    } else {
+                        "claude/opus"
+                    })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn spare_fill_policy_vendor_preference_and_size_limits() {
+        let (mut c, r) = setup(10.0, 95.0, true);
+        let route = c.routes.get_mut("council").unwrap();
+        route.quorum = Some(1);
+        route.candidates[2].spare = true;
+        let mut same = route.candidates[0].clone();
+        same.target = "codex/gpt-6-sol".into();
+        same.spare = true;
+        route.candidates.insert(2, same);
+        let p = pick(&c, &r, "council", Size::Medium, &[]);
+        assert_eq!(
+            p.delegates[1].harness, "antigravity",
+            "prefer a new vendor over listed order"
+        );
+        c.routes.get_mut("council").unwrap().spares = Some(crate::config::Spares::Quorum);
+        assert_eq!(
+            pick(&c, &r, "council", Size::Medium, &[]).delegates.len(),
+            1
+        );
+        let route = c.routes.get_mut("council").unwrap();
+        route.spares = Some(crate::config::Spares::All);
+        route.candidates[3].sizes = Some(vec![Size::Small]);
+        assert_eq!(
+            pick(&c, &r, "council", Size::Medium, &[]).delegates[1].harness,
+            "codex"
+        );
+    }
+
+    #[test]
+    fn named_members_keep_effort_and_never_run_spares() {
+        let (mut c, r) = setup(10.0, 95.0, true);
+        c.routes.get_mut("council").unwrap().candidates[2].spare = true;
+        let ctx = Context {
+            config: &c,
+            rules: "x",
+            readings: &r,
+            now: now(),
+            warnings: &[],
+        };
+        let plan = crate::council::plan_members(
+            &ctx,
+            "council",
+            Size::Medium,
+            &[],
+            &[
+                "codex/sol".into(),
+                "claude/opus".into(),
+                "codex/gpt-6-sol".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(plan.pick.delegates.len(), 2);
+        assert_eq!(plan.pick.delegates[0].effort, "high");
+        assert_eq!(plan.pick.delegates[1].effort, "");
+        assert!(plan.pick.delegates.iter().all(|d| d.spare_for.is_none()));
+        assert_eq!(plan.pick.skipped, ["claude=out"]);
+        assert!(
+            ctx.council_members("council", Size::Medium, &[], &["unknown/model".into()])
+                .is_err()
+        );
+        assert_eq!(plan.quorum, 2);
+        assert!(plan.pick.warnings.iter().any(|w| w
+            == "quorum 2 can be reached by codex alone; different vendors miss different things"));
+    }
+    #[test]
+    fn api_and_plan_members_share_a_vendor_and_spares_pair_in_vacancy_order() {
+        let (mut c, r) = setup(10.0, 20.0, true);
+        c.harnesses
+            .insert("codex-api".into(), c.harnesses["codex"].clone());
+        let mut r = r;
+        r.models
+            .insert("codex-api".into(), r.models["codex"].clone());
+        let route = c.routes.get_mut("council").unwrap();
+        let mut spare = route.candidates[0].clone();
+        spare.spare = true;
+        spare.target = "codex-api/sol".into();
+        route.candidates.push(spare);
+        route.candidates[2].spare = true;
+        let p = pick(&c, &r, "council", Size::Medium, &["codex", "claude"]);
+        assert_eq!(p.delegates.len(), 2);
+        assert_eq!(p.delegates[0].spare_for.as_deref(), Some("codex/sol"));
+        assert_eq!(p.delegates[1].spare_for.as_deref(), Some("claude/opus"));
+        let ctx = Context {
+            config: &c,
+            rules: "x",
+            readings: &r,
+            now: now(),
+            warnings: &[],
+        };
+        let plan = crate::council::plan_members(
+            &ctx,
+            "council",
+            Size::Medium,
+            &[],
+            &["codex/sol".into(), "codex-api/sol".into()],
+        )
+        .unwrap();
+        assert!(
+            plan.pick
+                .warnings
+                .iter()
+                .any(|w| w.contains("quorum 2 can be reached by codex alone"))
         );
     }
 }
