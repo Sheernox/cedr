@@ -2,6 +2,41 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.9.0 (2026-11-05)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.9.0.png" alt="cedr v0.9.0: boundaries" width="770">
+
+**v0.9.0** · 4 changes from 1 contributor
+
+### Highlights
+**Machine settings stay under your control.** Repository routes can override routing, while executable readings, sync destinations and machine identity come from your user configuration or a file you explicitly trust. Guard and Sync also validate repository inputs before using them.
+
+**Upgrade step:** move repository `[[readings]]`, `[sync]` and `[machine]` sections into `~/.config/cedr/routes.toml`. Run `cedr doctor` to find ignored settings. Only use `--config` or `CEDR_ROUTES` for files you trust to execute commands and receive your API key.
+
+### Breaking
+- **Repository config:** automatically discovered machine sections are ignored with a warning. Absolute harness command paths are refused in repository routes.
+- **Symlink pins:** skills containing symlinks report CV001 until re-locked with `cedr guard lock`. Regular-file pins remain valid. This also affects Actions downloading the latest CLI; pin a release when coordinating an upgrade.
+- **Redacted locks:** newly written Guard locks omit URL user info, queries and fragments. Older clients may report CV004 on these locks. Re-lock old files and rotate any credentials that reached Git history. URL paths remain visible; keep secrets in headers or environment variables.
+- **Sync ownership:** invalid lock versions, paths, targets or owned keys are refused, even with `--force`. Remove invalid entries or regenerate the lock. A lock entry cannot silently authorize replacing handwritten instructions.
+- **Skill frontmatter:** YAML nesting, including alias expansion, is limited to 128 levels. Recursive aliases are refused with a lint finding.
+
+### Fixes
+- **Guard:** distinguish files from symlinks, validate live remote configuration against its pinned launch, and invalidate cached remote results when that configuration changes.
+- **Route:** sanitize failed readings requests and run built-in account probes outside the current checkout. Doctor reports ignored repository machine settings.
+- **Sync:** validate ownership before writing or deleting files, while preserving unrelated merged settings and legitimate stale outputs.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* docs(agents): spell out the release notes format and check it in a test
+* docs(changelog): restore the release hero style and redo the 0.8.x notes
+* fix: enforce repository input boundaries
+* chore(release): prepare cedr 0.9.0
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.8.3...v0.9.0
+</details>
+
 ## v0.8.3 (2026-11-03)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.3.png" alt="cedr v0.8.3: council, your way" width="770">
