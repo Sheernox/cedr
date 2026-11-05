@@ -82,7 +82,7 @@ A recorded event starts `cedr telemetry flush` (hidden) in the background when t
 
 `CEDR_TELEMETRY_URL` replaces the endpoint for tests; it must be https or loopback http. Builds run from the source tree (`cargo test`, `cargo run`) set `CEDR_TELEMETRY=0` and `CEDR_NO_AUTO_UPDATE=1` in `.cargo/config.toml`.
 
-Replies: `200 {"accepted": n, "skipped": m}` (events outside the window below are skipped), `400 {"error": "bad_request", ...}` for anything off-contract (the whole batch is refused), `413` over 256 KiB, `429` when the install sent more than 60 batches in an hour.
+Replies: `200 {"accepted": n, "skipped": m}` (events outside the window below are skipped), `400 {"error": "bad_request", ...}` for anything off-contract (the whole batch is refused), `413` over 256 KiB, `429` when an install or service limit is reached; unsent events stay queued for a later flush.
 
 ## The app
 

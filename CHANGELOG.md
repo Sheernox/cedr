@@ -2,11 +2,11 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
-## v0.9.0 (2026-11-05)
+## v0.8.4 (2026-11-05)
 
-<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.9.0.png" alt="cedr v0.9.0: boundaries" width="770">
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.4.png" alt="cedr v0.8.4: boundaries" width="770">
 
-**v0.9.0** · 4 changes from 1 contributor
+**v0.8.4** · 5 changes from 1 contributor
 
 ### Highlights
 **Machine settings stay under your control.** Repository routes can override routing, while executable readings, sync destinations and machine identity come from your user configuration or a file you explicitly trust. Guard and Sync also validate repository inputs before using them.
@@ -33,8 +33,9 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 * docs(changelog): restore the release hero style and redo the 0.8.x notes
 * fix: enforce repository input boundaries
 * chore(release): prepare cedr 0.9.0
+* chore(release): ship security fixes as cedr 0.8.4
 
-**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.8.3...v0.9.0
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.8.3...v0.8.4
 </details>
 
 ## v0.8.3 (2026-11-03)
