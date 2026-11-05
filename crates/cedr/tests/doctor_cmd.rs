@@ -26,6 +26,7 @@ fn doctor_json_is_read_only_and_has_stable_checks() {
         "org.member",
         "route.config",
         "route.readers",
+        "route.orchestrator",
         "route.statusline",
         "route.sync",
         "mcp.claude",
@@ -188,4 +189,69 @@ fn doctor_warns_for_new_release_and_org_rules_using_only_local_mocks() {
                 .any(|c| c["id"] == id && c["state"] == "warn")
         );
     }
+}
+#[cfg(unix)]
+#[test]
+fn doctor_says_why_claude_has_no_reading_and_when_no_orchestrator_is_set() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let bin = home.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    fs::write(bin.join("claude"), "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(bin.join("claude"), fs::Permissions::from_mode(0o755)).unwrap();
+    let cfg = home.path().join(".config/cedr");
+    fs::create_dir_all(&cfg).unwrap();
+    let routes = "version = 1\n[harnesses.claude]\nexpect = [\"five_hour\", \"seven_day\"]\n";
+    fs::write(cfg.join("routes.toml"), routes).unwrap();
+    let check = |id: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_cedr"))
+            .args(["doctor", "--format", "json"])
+            .arg(root.path())
+            .env_clear()
+            .env("CEDR_TELEMETRY", "0")
+            .env("CEDR_NO_AUTO_UPDATE", "1")
+            .env("HOME", home.path())
+            .env("PATH", &bin)
+            .output()
+            .unwrap();
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let c = v["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id)
+            .cloned()
+            .unwrap();
+        (
+            c["state"].as_str().unwrap().to_string(),
+            c["message"].as_str().unwrap().to_string(),
+        )
+    };
+    let (state, message) = check("route.statusline");
+    assert_eq!(state, "warn");
+    assert!(
+        message.contains("has not cached its plan usage"),
+        "{message}"
+    );
+    assert_eq!(check("route.orchestrator").0, "warn");
+
+    fs::write(
+        home.path().join(".claude.json"),
+        r#"{"cachedUsageUtilization": {"fetchedAtMs": 1793750400000, "utilization": {
+            "five_hour": {"utilization": 1, "resets_at": "2026-11-06T01:00:00+00:00"}}}}"#,
+    )
+    .unwrap();
+    let (state, message) = check("route.statusline");
+    assert_eq!(state, "ok");
+    assert!(message.contains("usage cache"), "{message}");
+    fs::write(
+        cfg.join("routes.toml"),
+        format!("{routes}[orchestrator]\nharness = \"claude\"\nmodel = \"opus\"\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        check("route.orchestrator"),
+        ("ok".to_string(), "claude/opus".to_string())
+    );
 }

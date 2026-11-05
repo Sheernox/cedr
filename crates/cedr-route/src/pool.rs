@@ -96,6 +96,20 @@ pub fn versions(harness: &str, name: &str, readings: &Readings) -> Option<Vec<St
     Some(matches.into_iter().map(|(_, _, m)| m.clone()).collect())
 }
 
+/// The family of a window the config does not name: the one word of its id that some, but not
+/// all, of the harness's models carry (`seven_day_fable` with `claude-opus-5-5` and
+/// `claude-fable-5-1` is `fable`). Feeds name model-only windows this way, and without it such a
+/// window would count against every model and read as a second weekly window.
+fn inferred_family<'a>(id: &'a str, offered: &[String]) -> Option<&'a str> {
+    let words: Vec<Vec<&str>> = offered.iter().map(|m| parts(m).0).collect();
+    let mut found = id.split(['_', '-']).filter(|word| {
+        let carry = words.iter().filter(|w| w.contains(word)).count();
+        carry > 0 && carry < words.len()
+    });
+    let family = found.next()?;
+    found.all(|other| other == family).then_some(family)
+}
+
 /// A plan's pool under its own thresholds, for answers about the plan rather than one route.
 pub fn pool(
     harness: &str,
@@ -142,15 +156,33 @@ pub fn pool_with(
         summary,
         usage: None,
     };
-    let families: Vec<(&str, &str)> = config
+    let Some(entry) = readings.entries.get(harness) else {
+        return unknown(format!("{harness} no reading"));
+    };
+    let mut expect: BTreeSet<&str> = config
+        .harnesses
+        .get(harness)
+        .map(|h| h.expect.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+    let mut families: Vec<(&str, &str)> = config
         .model_windows
         .iter()
         .filter(|(_, w)| w.harness == harness)
         .map(|(id, w)| (id.as_str(), w.model.as_str()))
         .collect();
-    let Some(entry) = readings.entries.get(harness) else {
-        return unknown(format!("{harness} no reading"));
-    };
+    let offered = readings
+        .models
+        .get(harness)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    for w in &entry.windows {
+        if !expect.contains(w.id.as_str())
+            && !families.iter().any(|(id, _)| *id == w.id)
+            && let Some(f) = inferred_family(&w.id, offered)
+        {
+            families.push((w.id.as_str(), f));
+        }
+    }
     if entry.error {
         return unknown(format!("{harness} probe error"));
     }
@@ -158,11 +190,6 @@ pub fn pool_with(
         Some(at) if (now - at).num_milliseconds() as f64 / 1000.0 <= t.fresh_seconds as f64 => {}
         _ => return unknown(format!("{harness} stale")),
     }
-    let mut expect: BTreeSet<&str> = config
-        .harnesses
-        .get(harness)
-        .map(|h| h.expect.iter().map(String::as_str).collect())
-        .unwrap_or_default();
     expect.extend(
         families
             .iter()
@@ -285,6 +312,34 @@ model = "fable"
         assert_eq!(
             (fable.state, fable.summary.as_str()),
             (State::Out, "claude s10% w20% fable95%")
+        );
+    }
+
+    #[test]
+    fn a_model_window_the_config_does_not_name_is_labelled_and_applied_by_its_family() {
+        let config = Config::parse(
+            "version = 1\n[harnesses.claude]\nexpect = [\"five_hour\", \"seven_day\"]\n",
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        let mut r = Readings::default();
+        r.merge(
+            &config,
+            &json!({"harnesses": [{"harness": "claude", "fetchedAt": "2026-10-29T01:59:00Z", "windows": [
+                {"id": "five_hour", "kind": "session", "percent": 39, "resetsAt": "2026-10-29T05:00:00Z"},
+                {"id": "seven_day", "kind": "weekly", "percent": 45, "resetsAt": "2026-11-02T00:00:00Z"},
+                {"id": "seven_day_fable", "kind": "weekly", "percent": 95, "resetsAt": "2026-11-02T00:00:00Z"}
+            ]}], "models": {"claude": ["claude-opus-5-5", "claude-fable-5-1"]}}),
+        );
+        let opus = pool("claude", "claude-opus-5-5", &r, &config, now());
+        assert_eq!(
+            (opus.state, opus.summary.as_str()),
+            (State::Ready, "claude s39% w45%")
+        );
+        let fable = pool("claude", "claude-fable-5-1", &r, &config, now());
+        assert_eq!(
+            (fable.state, fable.summary.as_str()),
+            (State::Out, "claude s39% w45% fable95%")
         );
     }
 

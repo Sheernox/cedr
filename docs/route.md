@@ -41,7 +41,7 @@ out = 90                  # sets session_out and weekly_out, which can also be s
 conserve_sizes = ["small"]            # work sizes a plan in conserve still takes
 unknown_sizes = ["small", "medium"]   # work sizes a plan with an unknown state still takes
 
-[orchestrator]            # optional: the agent that delegates; its pool is shown in every tag
+[orchestrator]            # optional: the agent that delegates; its pool is shown in every tag (see Route tag)
 harness = "claude"
 model = "opus"
 
@@ -139,7 +139,7 @@ A JSON document from each source:
 
 - `providers` is accepted for `harnesses` and `provider` for `harness`, so feeds that name the plan's provider work unchanged. A name matches a harness by id or alias.
 - A window id may carry an `@account` suffix; matching uses the part before `@`. `kind` is `session` or `weekly`.
-- Sources merge in order: the first entry for a harness wins; model lists append without duplicates.
+- Sources merge in order: the first entry for a harness wins; model lists append without duplicates. A built-in reader for a harness an earlier source already gave a reading is not run (for `codex`, which also lists models, only once an earlier source listed its models too), so it neither costs a probe nor warns.
 - `http` and `command` replies are cached in `$XDG_CACHE_HOME/cedr/readings-<hash>.json` for `cache_seconds`. A failed fetch prints a warning to stderr and uses the last cache, whose readings then age into `unknown`; with no cache the harness has no reading. Replies over 256 KiB are refused. A command has 10 seconds to exit and close its output (a descendant holding stdout open counts against it). HTTP is HTTPS only, redirects included, with certificate checks and a 5-second timeout. Failure messages name a URL by scheme and host and a command by its program name only, since paths, queries and arguments may carry tokens.
 - `--readings FILE` (or `-` for stdin) replaces the configured sources and must be a readings object within the 256 KiB cap; `--models FILE` replaces the model lists with a `{"<harness>": ["<id>", ...]}` object (an orchestrator's own list).
 
@@ -150,7 +150,10 @@ Each reads through the vendor's own CLI or the data it hands to its user's scrip
 - `codex`: runs `codex app-server` (from `PATH`), sends `initialize`, then `account/rateLimits/read` and `model/list`, and closes it within the 10-second command deadline. Each window of `rateLimits` (`primary`, `secondary`) becomes a window with that id: `percent` from `usedPercent`, `resetsAt` from the epoch seconds, `kind` session when `windowDurationMins` is 300 or less, else weekly. Visible model ids from `model/list` become the harness's model list. Cached like `command`.
 - `muse`: runs `muse usage --json` with `MUSE_NO_AUTO_UPDATE=1` (so a probe never replaces the installed CLI). Its undocumented `schemaVersion` 1 reply gives `allowance.window` (session) and `allowance.weekly` with `usedPercent` and `resetsAtMs`; no allowance yet (before a window's first turn) or another format is an error, so the plan reads as unknown, never as unused. Cached like `command`.
 - `grok`: runs `grok agent stdio` with `GROK_DISABLE_AUTOUPDATER=1` (so a probe never replaces the installed CLI), sends ACP `initialize` and the undocumented `_x.ai/billing` method (no session and no model turn), and closes it within the 10-second command deadline. A `config.currentPeriod` of type `USAGE_PERIOD_TYPE_WEEKLY` with valid `start` and `end` and a finite, non-negative `config.creditUsagePercent` becomes the window `weekly` (kind weekly, `resetsAt` from `end`). No period yet, another period type, a refusal or an invalid value is an error, so the plan reads as unknown, never as unused. The pool is shared with the vendor's other products, so the percent can rise with no Grok turn. Models come from `models` in the harness config or `--models`. Cached like `command`.
-- `claude-statusline`: reads the file `cedr route statusline` last wrote (`$XDG_STATE_HOME/cedr/readings/<harness>.json`). Claude passes `rate_limits.five_hour` and `rate_limits.seven_day` (`used_percentage`, `resets_at` in epoch seconds) to its status line command; `cedr route statusline` turns them into windows `five_hour` (session) and `seven_day` (weekly) with `fetchedAt` set to the time of capture, so the reading goes stale ten minutes after the last active Claude session. A missing file is no reading. Claude sends `rate_limits` only to Pro and Max subscribers after a session's first response.
+- `claude-statusline`: the newer (by `fetchedAt`) of two readings, each with windows `five_hour` (session) and `seven_day` (weekly). Both go stale ten minutes after Claude Code last refreshed them, and neither exists before a Pro or Max subscriber's first response.
+  - The file `cedr route statusline` last wrote (`$XDG_STATE_HOME/cedr/readings/<harness>.json`). Claude passes `rate_limits.five_hour` and `rate_limits.seven_day` (`used_percentage`, `resets_at` in epoch seconds) to its status line command; `fetchedAt` is the time of capture. Only an interactive Claude Code renders a status line: hosts that run it through its SDK (T3 Code and other orchestrators) never call it.
+  - The plan usage Claude Code caches in its own config file, `$CLAUDE_CONFIG_DIR/.claude.json` (default `~/.claude.json`), which it refreshes itself, with or without a status line. Only `cachedUsageUtilization` is read, never credentials, and nothing is sent anywhere. Its undocumented format: `fetchedAtMs` becomes `fetchedAt`; `utilization.five_hour` and `utilization.seven_day` give `utilization` (percent) and `resets_at` (RFC 3339); each `utilization.limits` entry of `kind` `weekly_scoped` with a `scope.model.display_name` becomes the weekly window `seven_day_<name>` (lowercased, other characters `_`) from its `percent` and `resets_at`. A cache whose `accountUuid` differs from the signed-in `oauthAccount.accountUuid` is ignored. A file over 16 MiB, or a cache in another format, is an error, which only shows when there is no status line capture either.
+  - Neither one is no reading; `cedr doctor` (`route.statusline`) says why.
 - Antigravity (Gemini) has no built-in reader: its plan quota is only available through its OAuth credentials, which Cedr never reads. Without a readings source its plan is unknown, which still takes small and medium work. A tool the user trusts with those credentials can feed it through an `http`, `command` or `file` source instead (see Antigravity readings).
 
 ### Antigravity readings
@@ -175,7 +178,7 @@ harness = "antigravity"
 model = "argon"
 ```
 
-The window ids are whatever the source and the routes agree on; these are the conventional ones. A window the routes do not declare as a model window applies to every model. A source that cannot read the quota reports `"error"` (the plan reads as unknown), never a 0% window.
+The window ids are whatever the source and the routes agree on; these are the conventional ones. A window the routes do not declare as a model window applies to every model, unless its id names a family that only some of the offered models carry (see Pool state). A source that cannot read the quota reports `"error"` (the plan reads as unknown), never a 0% window.
 
 ## Machine checks
 
@@ -199,7 +202,12 @@ For a harness and model, over every window that applies to the model (shared win
 
 A harness with `billing = "api"` has no windows: it is always ready, with the summary `<harness> api key` and no use.
 
-The worst state wins in the order ready < unknown < conserve < out; absent overrides all of them. A pool's use is the highest percent across its usable windows, and none when the state is unknown. The summary is `<harness> s5% w33%` (`s` session, `w` weekly, the `model_windows` model name for model windows, `?` for an unusable window), plus `missing <ids>`, or `<harness> no reading`, `probe error`, `stale`.
+The worst state wins in the order ready < unknown < conserve < out; absent overrides all of them. A pool's use is the highest percent across its usable windows, and none when the state is unknown. The summary is `<harness> s5% w33%` (`s` session, `w` weekly, the family name for model windows, `?` for an unusable window), plus `missing <ids>`, or `<harness> no reading`, `probe error`, `stale`. For example `claude s39% w45% fable2%` for a Fable model, and `claude s39% w45%` for the others.
+
+A model window is one that applies only to some of the harness's models, and its family is the name those models share:
+
+- A window named in `[model_windows]` applies to models whose id contains its `model`, which is its family.
+- A window the config does not name and `expect` does not list is a model window when exactly one word of its id (split on `_` and `-`) is a family word (see Model resolution) of some, but not all, of the harness's offered models: `seven_day_fable` with `claude-opus-5-5` and `claude-fable-5-1` is family `fable`. It applies to models whose id contains that word. Any other window applies to every model.
 
 ## Model resolution
 
@@ -257,7 +265,9 @@ A judge route is an ordinary route (role `review` is usual); it may not be a cas
 [route review.code -> codex/gpt-6.1-sol high | primary | codex w4%; claude s5% w33% | rules 8ff065e | pick p-1a2b3c4d5e6f]
 ```
 
-Route, target and effort, reason, the delegate's pool summary, the orchestrator's pool summary (omitted with its `; ` when no orchestrator is set), the rules hash, and the pick id. Each delegate gets its own pick id: `p-` and 12 lowercase hex characters.
+Route, target and effort, reason, the delegate's pool summary, the orchestrator's pool summary (omitted with its `; ` when no orchestrator is set), the rules hash, and the pick id.
+
+Who delegates is a fact of each machine, not of the routes, so a machine's own `[orchestrator]` applies over shared routes (`[sync] routes = "org"`), and over a repository routes file that sets none. One naming a harness those routes do not define is a warning, and theirs is used. With no orchestrator anywhere, picks still work and say so only through `"orchestrator": null`; `cedr doctor` (`route.orchestrator`) warns instead, since a warning on every pick would repeat what is a one-time setup step. `route import` always sets one. Each delegate gets its own pick id: `p-` and 12 lowercase hex characters.
 
 ## Commands
 
@@ -346,7 +356,7 @@ Sync destinations and machine settings come from `--config`, `$CEDR_ROUTES`, or 
 
   `machine` is `m-` and 12 lowercase hex characters, made once and kept in `$XDG_STATE_HOME/cedr/machine-id`; `name` is `[machine] name` or the host name up to its first dot, at most 64 characters. `routes` is the `[sync] routes` mode. `pools` are the rows of `cedr route pools --format json`, absent harnesses included. `next` has one entry per route, sorted by route id: the delegates a `medium` pick would choose now (every eligible member for a council route), or none with the reason the work is kept. `stale` lists the machine check's stale harnesses. Strings are cut to the app's limits (names and route ids 64 characters, targets 128, summaries 256, reasons 512) and lists to 64 entries (16 targets, 16 stale), so a large local file never gets the snapshot refused. The reply is `{"ok": true}`. The snapshot is the app's view of the machine, not the sync: when it cannot be built or sent, the sync still exits 0 and prints `history synced, but the plan state was not sent: <reason>` as a warning (a background run logs it). With `routes = "org"` and no shared routes pulled there is nothing to report, so none is sent. The snapshot holds no history, briefs, code, paths or credentials, and the app keeps only the latest one per machine.
 - **Automatic sync**: with `[sync]` set and `auto` not false, recording a pick or verdict and a `cedr route statusline` capture start `cedr route sync --quiet --config <the trusted machine file>` in the background (detached, stdin and stdout closed, not waited for) when the last automatic start on this machine was more than 10 minutes ago (or its time is in the future, after a clock change), kept as the modification time of `$XDG_STATE_HOME/cedr/route-sync-auto`. That time is checked first and touched as soon as a start is due, so a status line render costs one file check until then, and the config is read at most once a window; callers racing past the check are kept apart by the lock. The background run writes its last error, if any, to `$XDG_STATE_HOME/cedr/route-sync.log` (replaced each run, removed after a clean run), and `cedr route sync` prints that error as a warning on its next manual run. Two syncs never overlap: `cedr route sync` takes `$XDG_STATE_HOME/cedr/route-sync.lock` (created exclusively with a random nonce; a lock older than 2 minutes is taken over by renaming it away, so of two syncs taking over one stale lock only one succeeds, and a holder removes the file on exit only while it still holds its own nonce) and, when it is held, exits 0 at once under `--quiet` and 2 with `another sync is running` otherwise. A missing key or org only fails that background run; it never delays or fails the pick.
-- **Using shared routes**: with `[sync] routes = "org"`, a pick reads the pulled file for everything but `[[readings]]`, `[sync]` and `[machine]`, which stay local. Without a pulled file the pick fails with an error naming `cedr route sync`. The rules hash is the org file's.
+- **Using shared routes**: with `[sync] routes = "org"`, a pick reads the pulled file for everything but `[[readings]]`, `[sync]` and `[machine]`, which stay local, and `[orchestrator]`, where the local one wins (see Route tag). Without a pulled file the pick fails with an error naming `cedr route sync`. The rules hash is the org file's.
 - Exit codes: 0 synced, 2 any failure (the message names the step, the HTTP status and the API's error text; never the URL's query or the key).
 
 ## MCP tools

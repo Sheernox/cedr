@@ -650,3 +650,119 @@ fn models_lists_what_each_harness_offers() {
         "{rows}"
     );
 }
+
+/// A routes file in the scratch directory, for tests that need their own readings sources.
+fn routes_file(s: &Scratch, text: &str) -> String {
+    let path = s.dir.path().join("own-routes.toml");
+    std::fs::write(&path, text).unwrap();
+    path.display().to_string()
+}
+
+#[test]
+fn claude_reads_claude_codes_usage_cache_without_a_status_line() {
+    let s = Scratch::new(10.0, 20.0);
+    let cfg = routes_file(
+        &s,
+        "version = 1\n[harnesses.claude]\nexpect = [\"five_hour\", \"seven_day\"]\n[[readings]]\nkind = \"claude-statusline\"\n",
+    );
+    let now = chrono::Utc::now();
+    let later = (now + chrono::Duration::hours(3)).to_rfc3339();
+    let claude = s.dir.path().join("claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    let cache = json!({"cachedUsageUtilization": {"fetchedAtMs": now.timestamp_millis(), "utilization": {
+        "five_hour": {"utilization": 39, "resets_at": later},
+        "seven_day": {"utilization": 45, "resets_at": later}}}});
+    std::fs::write(claude.join(".claude.json"), cache.to_string()).unwrap();
+    let o = s.cedr(&["route", "pools", "--config", &cfg, "--format", "json"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let pools: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(
+        pools
+            .to_string()
+            .contains(r#""summary":"claude s39% w45%""#),
+        "{pools}"
+    );
+}
+
+#[test]
+fn a_built_in_reader_for_a_harness_an_earlier_source_read_stays_quiet() {
+    let s = Scratch::new(10.0, 20.0);
+    let at = chrono::Utc::now().to_rfc3339();
+    std::fs::write(
+        s.dir.path().join("muse.json"),
+        json!({"harnesses": [{"harness": "muse", "fetchedAt": at, "windows": [
+            {"id": "weekly", "kind": "weekly", "percent": 52}]}]})
+        .to_string(),
+    )
+    .unwrap();
+    let cfg = routes_file(
+        &s,
+        "version = 1\n[harnesses.muse]\nexpect = [\"weekly\"]\n[[readings]]\nkind = \"file\"\npath = \"muse.json\"\n[[readings]]\nkind = \"muse\"\n",
+    );
+    // No muse on PATH: the built-in reader would fail if it ran.
+    let o = s
+        .command(&["route", "pools", "--config", &cfg])
+        .env("PATH", s.dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0));
+    assert!(stdout(&o).contains("muse w52%"), "{}", stdout(&o));
+    assert_eq!(String::from_utf8_lossy(&o.stderr), "");
+}
+
+#[test]
+fn a_machine_orchestrator_applies_over_shared_routes_without_one() {
+    let s = Scratch::new(10.0, 20.0);
+    let shared = std::fs::read_to_string(config()).unwrap().replace(
+        "[orchestrator]\nharness = \"claude\"\nmodel = \"opus\"\n",
+        "",
+    );
+    let org = s.dir.path().join("config/cedr/org-routes");
+    std::fs::create_dir_all(&org).unwrap();
+    std::fs::write(org.join("acme.toml"), shared).unwrap();
+    let local = "version = 1\n[orchestrator]\nharness = \"claude\"\nmodel = \"opus\"\n[sync]\norg = \"acme\"\nroutes = \"org\"\nauto = false\n";
+    let cfg = routes_file(&s, local);
+    let readings = s.readings();
+    let pick = |cfg: &str| {
+        s.cedr(&[
+            "route",
+            "pick",
+            "review.code",
+            "--config",
+            cfg,
+            "--readings",
+            &readings,
+            "--format",
+            "json",
+        ])
+    };
+    let o = pick(&cfg);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["orchestrator"], "claude s5% w20%");
+
+    let dropped = routes_file(
+        &s,
+        &local.replace("harness = \"claude\"", "harness = \"gone\""),
+    );
+    let o = pick(&dropped);
+    assert_eq!(o.status.code(), Some(0));
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(v["orchestrator"].is_null());
+    assert!(
+        String::from_utf8_lossy(&o.stderr)
+            .contains("orchestrator harness \"gone\" is not in the shared routes"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+}

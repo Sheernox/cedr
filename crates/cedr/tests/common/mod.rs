@@ -48,6 +48,8 @@ impl Scratch {
             .env("XDG_STATE_HOME", self.dir.path().join("state"))
             .env("XDG_CACHE_HOME", self.dir.path().join("cache"))
             .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
+            // The Claude reader also reads Claude Code's own config, never the real one in tests.
+            .env("CLAUDE_CONFIG_DIR", self.dir.path().join("claude"))
             .env_remove("CEDR_ROUTES")
             .env_remove("CEDR_API_KEY");
         c

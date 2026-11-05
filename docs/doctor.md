@@ -12,7 +12,8 @@ Each check is `{"id", "area", "state": "ok" | "warn" | "fail" | "skip", "message
 | `org.member` | account | The configured org (monitor config, then `[sync] org`) is one the key's owner belongs to (`GET /me` lists them) |
 | `route.config` | route | A routes config is found and parses; names its path |
 | `route.readers` | route | Route's machine checks: harnesses skipped or whose program is missing (and T3 Code does not run), and stale usage readers |
-| `route.statusline` | route | Claude's `~/.claude/settings.json` status line runs `cedr route statusline` (warn when Claude is installed and it does not) |
+| `route.orchestrator` | route | The routes in use set an `[orchestrator]` (names it; warn when none is set, since route tags then leave out the delegating plan's use) |
+| `route.statusline` | route | Claude's plan reading: `~/.claude/settings.json` has a status line running `cedr route statusline`, or Claude Code has cached its plan usage (docs/route.md, Built-in readers); warn when Claude is installed and neither holds, or the cache cannot be read |
 | `route.sync` | route | The last background sync error, if any |
 | `mcp.claude`, `mcp.codex`, `mcp.grok` | mcp | `cedr` is registered as an MCP server for that agent (`claude mcp list`, `codex mcp list`, `grok mcp list`; skip when the agent is absent) |
 | `monitor.config` | monitor | The monitor config parses |

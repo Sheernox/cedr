@@ -101,6 +101,21 @@ pub fn checks(root: &Path) -> Vec<Check> {
                 ),
                 "Install missing harnesses and configure their usage readers",
             );
+            add(
+                &mut out,
+                "route.orchestrator",
+                if c.orchestrator.is_some() {
+                    "ok"
+                } else {
+                    "warn"
+                },
+                match &c.orchestrator {
+                    Some(o) => format!("{}/{}", o.harness, o.model),
+                    None => "no orchestrator set: route tags leave out the delegating plan's use"
+                        .to_string(),
+                },
+                "Add [orchestrator] with the harness and model that delegate to this machine's routes.toml",
+            );
         }
         Err(_) => {
             add(
@@ -113,6 +128,13 @@ pub fn checks(root: &Path) -> Vec<Check> {
             add(
                 &mut out,
                 "route.readers",
+                "skip",
+                "no routes config",
+                "Configure Route first",
+            );
+            add(
+                &mut out,
+                "route.orchestrator",
                 "skip",
                 "no routes config",
                 "Configure Route first",
@@ -306,22 +328,31 @@ pub fn checks(root: &Path) -> Vec<Check> {
                 .as_str()
                 .is_some_and(|s| s.contains("cedr route statusline"))
         });
+    // Claude Code run through its SDK (T3 Code and other orchestrators) renders no status line,
+    // so its own usage cache is the reading there.
+    let cache = cedr_route::readers::claude_usage("claude");
+    let (state, message) = match (installed("claude"), statusline, &cache) {
+        (false, _, _) => ("skip", "harness absent".to_string()),
+        (true, _, Err(e)) => (
+            "warn",
+            format!("Claude Code's usage cache cannot be read ({e})"),
+        ),
+        (true, true, Ok(_)) => ("ok", "status line configured".to_string()),
+        (true, false, Ok(Some(_))) => (
+            "ok",
+            "no status line; readings come from Claude Code's usage cache".to_string(),
+        ),
+        (true, false, Ok(None)) => (
+            "warn",
+            "Claude has no plan reading: no status line runs cedr route statusline (hosts that run Claude Code through its SDK show none), and Claude Code has not cached its plan usage yet".to_string(),
+        ),
+    };
     add(
         &mut out,
         "route.statusline",
-        if !installed("claude") {
-            "skip"
-        } else if statusline {
-            "ok"
-        } else {
-            "warn"
-        },
-        if statusline {
-            "status line configured"
-        } else {
-            "Claude status line not configured or harness absent"
-        },
-        "Configure Claude statusLine.command to run cedr route statusline",
+        state,
+        message,
+        "Configure Claude statusLine.command to run cedr route statusline, or run Claude Code signed in to a Pro or Max plan",
     );
     let sync_error = std::fs::metadata(cedr_route::sync::log_path()).is_ok_and(|m| m.len() > 0);
     add(
@@ -590,6 +621,7 @@ pub fn checks(root: &Path) -> Vec<Check> {
         "org.member",
         "route.config",
         "route.readers",
+        "route.orchestrator",
         "route.statusline",
         "route.sync",
         "mcp.claude",

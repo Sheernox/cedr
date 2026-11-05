@@ -568,7 +568,7 @@ impl Config {
     pub fn parse(text: &str, path: &Path) -> Result<Config> {
         let config: Config = toml::from_str(text).map_err(|e| toml_err(path, text, &e))?;
         // A file that takes its harnesses from the org's shared routes names them in its readers
-        // before they are loaded; `load` checks those readers again against the merged config.
+        // and orchestrator before they are loaded; `load` checks those against the merged config.
         let overlay = config
             .sync
             .as_ref()
@@ -737,6 +737,7 @@ impl Config {
             ));
         }
         if let Some(o) = &self.orchestrator
+            && check_readers
             && !self.harnesses.contains_key(&o.harness)
         {
             return Err(format!("orchestrator: unknown harness {:?}", o.harness));
@@ -931,13 +932,25 @@ pub fn load(path: &Path) -> Result<Loaded> {
     merged.readings = config.readings;
     merged.sync = config.sync;
     merged.machine = config.machine;
+    // Who delegates is a fact of this machine, so its own [orchestrator] wins; one naming a harness
+    // the org dropped falls back to the shared one rather than breaking every pick.
+    let mut warnings = Vec::new();
+    match config.orchestrator {
+        Some(o) if merged.harnesses.contains_key(&o.harness) => merged.orchestrator = Some(o),
+        Some(o) => warnings.push(format!(
+            "{}: orchestrator harness {:?} is not in the shared routes; using theirs",
+            path.display(),
+            o.harness
+        )),
+        None => {}
+    }
     merged.validate(true).map_err(|m| parse_err(path, m))?;
     Ok(Loaded {
         config: merged,
         path: path.to_path_buf(),
         rules: rules_hash(&org_bytes),
         readings_dir: path.parent().unwrap_or(Path::new(".")).to_path_buf(),
-        warnings: Vec::new(),
+        warnings,
     })
 }
 
@@ -1037,6 +1050,11 @@ pub fn load_selected(selected: Located) -> Result<Loaded> {
             .collect();
         config.sync = local.sync;
         config.machine = local.machine;
+        if config.orchestrator.is_none() {
+            config.orchestrator = local
+                .orchestrator
+                .filter(|o| config.harnesses.contains_key(&o.harness));
+        }
     }
     config.validate(true).map_err(|m| parse_err(&path, m))?;
     let warnings = if ignored {

@@ -130,7 +130,7 @@ candidates = [
 ]
 ```
 
-**2. Let cedr see your Claude plan usage** by making it your status line in `~/.claude/settings.json`. Add `-- <your command>` to keep an existing status line.
+**2. Let cedr see your Claude plan usage.** It reads what Claude Code caches on its own, and an interactive Claude Code status line keeps it fresher between refreshes: make cedr your status line in `~/.claude/settings.json`, adding `-- <your command>` to keep an existing one.
 
 ```json
 { "statusLine": { "type": "command", "command": "cedr route statusline" } }

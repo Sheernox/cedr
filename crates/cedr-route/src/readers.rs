@@ -318,6 +318,116 @@ pub fn from_statusline(input: &Value, harness: &str, now: DateTime<Utc>) -> Opti
     )
 }
 
+/// Claude Code's own config file, where it caches the plan usage its `/usage` view shows. None
+/// without a home directory.
+pub fn claude_config_path() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir).join(".claude.json"));
+    }
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|h| !h.is_empty())
+        .map(|h| PathBuf::from(h).join(".claude.json"))
+}
+
+/// The file also holds Claude Code's projects and settings, so it may be far larger than a
+/// readings document; this only bounds a runaway file.
+const CLAUDE_CONFIG_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// The plan usage Claude Code last cached, as a readings document. Ok(None) when there is no
+/// config file or no cache in it yet; an error when either is unreadable.
+pub fn claude_usage(harness: &str) -> Result<Option<Value>, String> {
+    let Some(path) = claude_config_path() else {
+        return Ok(None);
+    };
+    let file = match std::fs::File::open(&path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let bytes = crate::readings::read_limited(file, CLAUDE_CONFIG_MAX_BYTES)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if bytes.len() > CLAUDE_CONFIG_MAX_BYTES {
+        return Err(format!(
+            "{} is larger than {CLAUDE_CONFIG_MAX_BYTES} bytes",
+            path.display()
+        ));
+    }
+    let config: Value =
+        serde_json::from_slice(&bytes).map_err(|_| format!("{} is not JSON", path.display()))?;
+    from_usage_cache(&config, harness)
+}
+
+/// Turns `cachedUsageUtilization` from Claude Code's config into a readings document. Its format
+/// is undocumented (read from Claude Code 2.1.318): `utilization.five_hour` and
+/// `utilization.seven_day` carry `utilization` (percent) and `resets_at` (RFC 3339), and
+/// `utilization.limits` lists model-scoped weekly limits (`kind` `weekly_scoped`, named by
+/// `scope.model.display_name`). A cache for another account than the one signed in is ignored.
+pub fn from_usage_cache(config: &Value, harness: &str) -> Result<Option<Value>, String> {
+    let Some(cache) = config
+        .get("cachedUsageUtilization")
+        .filter(|c| !c.is_null())
+    else {
+        return Ok(None);
+    };
+    if let (Some(signed_in), Some(cached)) = (
+        config["oauthAccount"]["accountUuid"].as_str(),
+        cache["accountUuid"].as_str(),
+    ) && signed_in != cached
+    {
+        return Ok(None);
+    }
+    let changed = || "Claude Code changed its usage cache format".to_string();
+    let fetched = cache["fetchedAtMs"]
+        .as_i64()
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .ok_or_else(changed)?;
+    let usage = cache
+        .get("utilization")
+        .filter(|u| u.is_object())
+        .ok_or_else(changed)?;
+    let window = |id: String, kind: &str, w: &Value, percent: &str| {
+        json!({
+            "id": id,
+            "kind": kind,
+            "percent": w[percent].as_f64(),
+            "resetsAt": crate::readings::parse_ts(&w["resets_at"]).map(stamp),
+        })
+    };
+    let mut windows = Vec::new();
+    for (id, kind) in [("five_hour", "session"), ("seven_day", "weekly")] {
+        if let Some(w) = usage.get(id).filter(|w| w.is_object()) {
+            windows.push(window(id.to_string(), kind, w, "utilization"));
+        }
+    }
+    for l in usage["limits"].as_array().into_iter().flatten() {
+        let Some(model) = l["scope"]["model"]["display_name"].as_str() else {
+            continue;
+        };
+        if l["kind"] != "weekly_scoped" {
+            continue;
+        }
+        // Named like the status line's windows, so a model name becomes a window id word.
+        let name: String = model
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        windows.push(window(format!("seven_day_{name}"), "weekly", l, "percent"));
+    }
+    if windows.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(
+        json!({"harnesses": [{"harness": harness, "fetchedAt": stamp(fetched), "error": null, "windows": windows}]}),
+    ))
+}
+
 /// Writes a capture atomically, so a pick never reads half a file.
 pub fn save_capture(path: &Path, doc: &Value) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
@@ -378,6 +488,52 @@ mod tests {
     fn statusline_without_rate_limits_captures_nothing() {
         assert!(from_statusline(&json!({"model": {}}), "claude", now()).is_none());
         assert_eq!(statusline_text("claude", None), "claude no limits yet");
+    }
+
+    fn usage_cache(account: &str) -> Value {
+        json!({"oauthAccount": {"accountUuid": "acct-a"}, "cachedUsageUtilization": {
+            "fetchedAtMs": 1793750400000i64, "accountUuid": account, "utilization": {
+                "five_hour": {"utilization": 39, "resets_at": "2026-11-06T01:00:00.098390+00:00"},
+                "seven_day": {"utilization": 45.5, "resets_at": "2026-11-09T04:00:00+00:00"},
+                "seven_day_opus": null,
+                "limits": [
+                    {"kind": "session", "percent": 39, "scope": null},
+                    {"kind": "weekly_scoped", "percent": 2, "resets_at": "2026-11-09T04:00:00+00:00",
+                     "scope": {"model": {"id": null, "display_name": "Fable"}}}]}}})
+    }
+
+    #[test]
+    fn claude_codes_usage_cache_becomes_session_weekly_and_model_windows() {
+        let doc = from_usage_cache(&usage_cache("acct-a"), "claude")
+            .unwrap()
+            .unwrap();
+        let e = &doc["harnesses"][0];
+        assert_eq!(e["fetchedAt"], "2026-11-04T00:00:00Z");
+        assert_eq!(
+            e["windows"],
+            json!([
+                {"id": "five_hour", "kind": "session", "percent": 39.0, "resetsAt": "2026-11-06T01:00:00Z"},
+                {"id": "seven_day", "kind": "weekly", "percent": 45.5, "resetsAt": "2026-11-09T04:00:00Z"},
+                {"id": "seven_day_fable", "kind": "weekly", "percent": 2.0, "resetsAt": "2026-11-09T04:00:00Z"}
+            ])
+        );
+    }
+
+    #[test]
+    fn a_usage_cache_for_another_account_or_none_is_no_reading_and_a_new_format_is_an_error() {
+        assert!(
+            from_usage_cache(&usage_cache("acct-b"), "claude")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            from_usage_cache(&json!({"projects": {}}), "claude")
+                .unwrap()
+                .is_none()
+        );
+        let err = from_usage_cache(&json!({"cachedUsageUtilization": {"usage": {}}}), "claude")
+            .unwrap_err();
+        assert!(err.contains("changed its usage cache format"), "{err}");
     }
 
     /// A stand-in `codex` that answers like `codex app-server` does.

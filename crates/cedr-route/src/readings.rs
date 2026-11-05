@@ -16,7 +16,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::config::{Config, ReadingsSource, xdg_dir};
+use crate::config::{Config, ReaderKind, ReadingsSource, xdg_dir};
 
 pub const MAX_BYTES: usize = 262_144;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -167,6 +167,9 @@ pub fn collect(config: &Config, config_dir: &Path, now: DateTime<Utc>) -> (Readi
     let mut readings = Readings::default();
     let mut warnings = Vec::new();
     for source in &config.readings {
+        if covered(config, &readings, source) {
+            continue;
+        }
         match fetch(source, config_dir, now) {
             Ok(Fetched { doc, warning }) => {
                 readings.merge(config, &doc);
@@ -176,6 +179,20 @@ pub fn collect(config: &Config, config_dir: &Path, now: DateTime<Utc>) -> (Readi
         }
     }
     (readings, warnings)
+}
+
+/// A built-in reader whose harness an earlier source already read would only repeat the work and
+/// warn about a plan that has a reading, since the first entry wins. Codex's reader also lists
+/// models, so it still runs while no source has listed them.
+fn covered(config: &Config, readings: &Readings, source: &ReadingsSource) -> bool {
+    let Some((kind, harness)) = source.built_in() else {
+        return false;
+    };
+    let Some(id) = config.harness_for(harness) else {
+        return false;
+    };
+    readings.entries.contains_key(id)
+        && (kind != ReaderKind::Codex || readings.models.get(id).is_some_and(|m| !m.is_empty()))
 }
 
 /// A source's document, and a warning when it came from an old cache after a failed fetch.
@@ -285,17 +302,29 @@ fn fetch(
             crate::readers::grok(harness, COMMAND_TIMEOUT)
                 .map_err(|e| format!("grok readings unavailable ({e})"))
         }),
-        ReadingsSource::ClaudeStatusline { harness } => {
-            let path = crate::readers::statusline_path(harness);
-            match read_file(&path, MAX_BYTES) {
-                Ok(bytes) => parse_doc(&bytes)
-                    .map(Fetched::from)
-                    .map_err(|e| format!("readings {}: {e}", path.display())),
-                // No Claude Code session has run `cedr route statusline` yet: no reading.
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(json!({}).into()),
-                Err(e) => Err(format!("readings {}: {e}", path.display())),
-            }
+        ReadingsSource::ClaudeStatusline { harness } => claude(harness),
+    }
+}
+
+/// The newer of the status line capture and Claude Code's own usage cache. Hosts that run Claude
+/// Code through its SDK (no status line) only have the cache; a cache that cannot be read only
+/// matters when there is no capture either.
+fn claude(harness: &str) -> Result<Fetched, String> {
+    let path = crate::readers::statusline_path(harness);
+    let capture = match read_file(&path, MAX_BYTES) {
+        Ok(bytes) => {
+            Some(parse_doc(&bytes).map_err(|e| format!("readings {}: {e}", path.display()))?)
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("readings {}: {e}", path.display())),
+    };
+    let fetched = |d: &Value| parse_ts(&d["harnesses"][0]["fetchedAt"]);
+    match (capture, crate::readers::claude_usage(harness)) {
+        (Some(c), Ok(Some(u))) if fetched(&u) > fetched(&c) => Ok(u.into()),
+        (Some(c), _) => Ok(c.into()),
+        // Neither a capture nor a cache yet: no reading (`cedr doctor` says why).
+        (None, Ok(u)) => Ok(u.unwrap_or_else(|| json!({})).into()),
+        (None, Err(e)) => Err(format!("claude readings unavailable ({e})")),
     }
 }
 
