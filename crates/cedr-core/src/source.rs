@@ -43,6 +43,14 @@ pub enum Source {
 }
 
 impl Source {
+    /// Lock-safe identity; the launch digest still detects changes to the full URL.
+    pub fn locked(&self) -> String {
+        match self {
+            Self::Url(url) => format!("url:{}", redact_url(url)),
+            _ => self.to_string(),
+        }
+    }
+
     /// False only where the design calls a source unpinned: npm without an
     /// exact version, PyPI without `==<ver>`, OCI without a digest. Local
     /// commands and remote URLs have no version to pin.
@@ -298,6 +306,21 @@ impl fmt::Display for Source {
 /// A URL without its user info, query or fragment, which can carry tokens: what output and
 /// pushes may show of a remote server.
 pub fn redact_url(url: &str) -> String {
+    if let Ok(mut parsed) = reqwest::Url::parse(url) {
+        if parsed.username().is_empty()
+            && parsed.password().is_none()
+            && parsed.query().is_none()
+            && parsed.fragment().is_none()
+        {
+            return url.to_string();
+        }
+        let _ = parsed.set_username("");
+        let _ = parsed.set_password(None);
+        parsed.set_query(None);
+        parsed.set_fragment(None);
+        return parsed.to_string();
+    }
+
     let url = url.split(['?', '#']).next().unwrap_or_default();
     let (scheme, rest) = match url.split_once("://") {
         Some((scheme, rest)) => (format!("{scheme}://"), rest),

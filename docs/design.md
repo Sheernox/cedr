@@ -83,17 +83,19 @@ paths = [".agents/skills/security-audit/**"]   # globs over the finding's path, 
 
 A server entry is stdio (`command`, `args`, `env`) or remote (`url`, `httpUrl`, `serverUrl`, or `type`/`transport` of `http`/`sse`). Clients are `claude`, `codex`, `cursor`, `gemini`, `copilot`, `opencode`, `antigravity` and `grok`. The same server name in two clients is two lock entries keyed by `client` and `name`.
 
-Skill directories and the files in them are read only when their canonical path stays inside the canonical root (a `.claude/skills` link into `.agents/skills` is fine). A file symlink inside a skill is never followed: the hash and the lint rules both see its target text. A skill directory whose canonical path escapes the root is skipped, never read: `cedr guard lint` reports it as CG010, and `cedr guard lock` and `cedr guard verify` print `skipped <path>: links outside the repo` on stderr and carry on with the rest.
+Skill directories and the files in them are read only when their canonical path stays inside the canonical root (a `.claude/skills` link into `.agents/skills` is fine). A file symlink inside a skill is never followed: lint sees its target text; hashing uses its raw target bytes with a symlink type tag. A skill directory whose canonical path escapes the root is skipped, never read: `cedr guard lint` reports it as CG010, and `cedr guard lock` and `cedr guard verify` print `skipped <path>: links outside the repo` on stderr and carry on with the rest.
 
 **Source resolution** for stdio servers:
 - `npx [-y] <pkg>[@<ver>]`, `pnpm dlx`, `bunx` give `npm:<pkg>@<ver>`; no version or a dist-tag (`latest`, `next`) is unpinned.
 - `uvx <pkg>[==<ver>]` gives `pypi:<pkg>==<ver>`.
 - `docker run ... <image>[@sha256:<digest>]` gives `oci:<image>@<digest>`; a tag alone is unpinned.
 - Anything else gives `command:<command>`.
-- Remote servers give `url:<url>`.
+- Remote servers give `url:<url>`; locks strip user info, query and fragment. The launch digest still detects changes to the full configured URL. URL paths are retained: use headers or environment variables rather than embedding secrets in paths.
 - `command:` and `url:` sources count as pinned: there is no version to pin, so CG006 stays quiet and the surface diff is the only change signal.
 
 ## Lint rules
+
+Skill frontmatter is limited to 128 levels of YAML nesting. Deeper input produces CG004 before recursive YAML values are built.
 
 Findings never show a URL's user info, query or fragment, and show a `command:` source by its program name, without its directory.
 
@@ -183,7 +185,7 @@ version = 1
 [[skill]]
 name = "deploy"
 path = ".agents/skills/deploy"
-content = "sha256-<hex>"            # over `<path>\0<len>\0<bytes>` per file in path order; a symlink contributes its target text
+content = "sha256-<hex>"            # over `<path>\0<len>\0<bytes>` per file in path order; a symlink uses `<path>\0l<len>\0<raw target bytes>`
 allowed_tools = ["Bash(npm run *)"] # from SKILL.md frontmatter `allowed-tools`, empty when absent
 
 [[mcp]]
@@ -193,7 +195,7 @@ transport = "stdio"                 # or "http"
 source = "npm:@acme/mcp-github@1.4.2"
 pinned = true
 integrity = "sha512-..."            # npm dist.integrity; omitted when not resolved
-launch = "sha256-<hex>"             # canonical JSON of {command, args, env keys sorted, url}: catches changed arguments and env
+launch = "sha256-<hex>"             # canonical JSON of {command, args, env keys sorted, url}: catches changed arguments, environment names and the full URL
 surface = "sha256-<hex>"            # hash of .cedr/surfaces/claude.github.json; omitted with method "none"
 method = "static"
 tools = ["create_issue", "search_code"]
@@ -209,7 +211,7 @@ egress = ["api.github.com"]
 
 ## Remote servers
 
-A remote server has no version, so a pin cannot notice its tools changing. `cedr guard lock --remote` records what each remote server lists, without running anything, and `cedr guard remote [PATH] [--force] [--last] [--format text|json]` compares the server with that record. A later `cedr guard lock` without `--remote` records `method = "none"` again. `cedr guard verify` never uses the network, so it does not read these servers.
+A remote check requires the current server configuration to match the pinned launch hash; a changed or missing configuration reports `failed` and requires re-locking. A remote server has no version, so a pin cannot notice its tools changing. `cedr guard lock --remote` records what each remote server lists, without running anything, and `cedr guard remote [PATH] [--force] [--last] [--format text|json]` compares the server with that record. A later `cedr guard lock` without `--remote` records `method = "none"` again. `cedr guard verify` never uses the network, so it does not read these servers.
 
 - **The read.** Streamable HTTP: `initialize`, `notifications/initialized` and `tools/list` with its pages, 20 seconds per request; a server whose `initialize` declares no `tools` lists none. An invalid page cursor is `failed`. It uses `method = "introspect"`. `egress` is the URL's host and `capabilities` holds `mcp_prompts`, `mcp_resources` and `mcp_tools` for what `initialize` declares, so a new host or an expanded capability shows as a surface change. The legacy SSE transport reads as `failed`.
 - **What is never sent.** No credentials: no configured header, token or cookie, and a URL with user info or a query is `unsupported` and not contacted. A server that needs a login therefore reports `auth_required`.
@@ -229,9 +231,11 @@ A remote server has no version, so a pin cannot notice its tools changing. `cedr
 
 Other sources (`pypi:`, `oci:`, `command:`, `url:`) are listed as `not checked` in text output and left out of JSON. A registry or network failure for one server is a warning naming the server, never a failure of the run. JSON output is `{"version": 1, "updates": [...]}`; `--format github` prints one `::warning` per update (`::error` for high). Exit 0, or 1 when an update reaches `--fail-on` (default `never`), 2 on usage or I/O failure.
 
+Existing locks with URL credentials verify after normalization but warn to re-lock and rotate those credentials, which may remain in Git history. Older clients may report CV004 on a newly redacted URL source. Skills containing symlinks must be re-locked once to adopt the type tag; regular-file-only skill pins remain valid.
+
 ## Push
 
-`cedr guard push [PATH] [--repo NAME] [--org SLUG] [--config FILE]` sends the repo's pinned inventory and its current findings to the cedr.dev app, so an organization sees every repo's agent setup in one place. It uses Route's credentials ([route.md](route.md), Sync), the key from `$CEDR_API_KEY` or `$XDG_CONFIG_HOME/cedr/api-key`. With `--org` and no `--config` it sends to the default API URL and reads no routes config at all: a CI checkout is untrusted, and a `.cedr/routes.toml` in it must never redirect the key. Otherwise `[sync] url` and `org` come from the routes config found as Route finds it (`--config` first), with `--org` overriding `[sync] org`.
+`cedr guard push [PATH] [--repo NAME] [--org SLUG] [--config FILE]` sends the repo's pinned inventory and its current findings to the cedr.dev app, so an organization sees every repo's agent setup in one place. It uses Route's credentials ([route.md](route.md), Sync), the key from `$CEDR_API_KEY` or `$XDG_CONFIG_HOME/cedr/api-key`. With `--org` and no `--config` it sends to the default API URL and reads no routes config at all: a CI checkout is untrusted, and a `.cedr/routes.toml` in it must never redirect the key. Otherwise `[sync] url` and `org` come only from `--config`, `$CEDR_ROUTES`, or the user routes file, with `--org` overriding `[sync] org`. Automatically discovered repository files never supply machine settings.
 
 It reads the lock (exit 2 with `no lock: run cedr guard lock first` when there is none), runs lint and verify in process, and sends `PUT /guard/repo`:
 

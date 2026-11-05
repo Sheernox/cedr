@@ -59,6 +59,13 @@ impl Repo {
         path
     }
 
+    fn machine_routes(&self, text: &str) -> PathBuf {
+        let path = self.dir.path().join("config/cedr/routes.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, text).unwrap();
+        path
+    }
+
     /// A program on the fake PATH. Its body is a shell script.
     fn program(&self, name: &str, body: &str) {
         let bin = self.dir.path().join("bin");
@@ -443,21 +450,18 @@ fn doctor_reports_the_cap_in_force_and_any_suite_that_would_not_plan() {
         )
     };
     assert_eq!(check("bench.push").0, "skip");
-    repo.write(".cedr/routes.toml", "version=1\n[sync]\norg='acme'\n");
+    repo.machine_routes("version=1\n[sync]\norg='acme'\n");
     assert_eq!(
         check("bench.push"),
         ("ok".into(), "results sent automatically to acme".into())
     );
-    repo.write(
-        ".cedr/routes.toml",
-        "version=1\n[sync]\norg='acme'\nauto=false\n",
-    );
+    repo.machine_routes("version=1\n[sync]\norg='acme'\nauto=false\n");
     let disabled = check("bench.push");
     assert_eq!(disabled.0, "skip");
     assert!(disabled.1.contains("auto = false") && disabled.1.contains("acme"));
-    repo.write(".cedr/routes.toml", "invalid = [");
+    repo.machine_routes("invalid = [");
     assert_eq!(check("bench.push").0, "warn");
-    repo.write(".cedr/routes.toml", "version=1\n");
+    repo.machine_routes("version=1\n");
     assert_eq!(check("bench.suite").0, "skip");
     assert_eq!(
         check("bench.budget"),
@@ -1128,13 +1132,10 @@ impl BenchApi {
     }
 
     fn config(&self, repo: &Repo, extra: &str) -> String {
-        repo.write(
-            ".cedr/routes.toml",
-            &format!(
-                "version=1\n[sync]\norg='acme'\nurl={:?}\n{extra}\n",
-                self.url
-            ),
-        )
+        repo.machine_routes(&format!(
+            "version=1\n[sync]\norg='acme'\nurl={:?}\n{extra}\n",
+            self.url
+        ))
         .display()
         .to_string()
     }
@@ -1389,7 +1390,8 @@ fn automatic_sending_respects_opt_outs_and_silent_unconfigured_states() {
     repo.program("agent", AGENT);
     let suite = repo.suite(&command_suite(1));
     let api = BenchApi::new();
-    let config = repo.root().join(".cedr/routes.toml");
+    let config = repo.dir.path().join("config/cedr/routes.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
     let cases = [
         (None, None, false),
         (Some("version=1\n".to_string()), None, false),
@@ -1930,13 +1932,13 @@ fn uploads_clean_paths_controls_empty_values_and_lengths_without_changing_saved_
 }
 
 #[test]
-fn automatic_sending_finds_the_config_from_the_suites_repo_outside_the_working_directory() {
+fn automatic_sending_uses_machine_config_regardless_of_the_working_directory() {
     let repo = Repo::new();
     repo.program("agent", AGENT);
     let suite = repo.suite(&command_suite(1));
     let api = BenchApi::new();
     api.config(&repo, "");
-    // A different valid config in cwd must not hide the suite's automatic upload destination.
+    // A repository override cannot change or suppress the user's automatic upload destination.
     let outside = repo.dir.path().join("outside");
     fs::create_dir_all(outside.join(".cedr")).unwrap();
     fs::write(

@@ -265,7 +265,7 @@ fn server_entry(
         client: server.client,
         name: server.name.clone(),
         transport: server.transport(),
-        source: configured.to_string(),
+        source: configured.locked(),
         pinned: configured.pinned(),
         launch: server.launch_hash(),
         integrity: None,
@@ -439,7 +439,18 @@ pub fn read_lock(root: &Path) -> Result<(Lock, &'static str)> {
     for rel in [LOCK_FILE, LEGACY_LOCK_FILE] {
         let path = root.join(rel);
         if path.exists() {
-            return Ok((Lock::read(&path)?, rel));
+            let lock = Lock::read(&path)?;
+            if lock.mcp.iter().any(|entry| {
+                entry
+                    .source
+                    .parse::<Source>()
+                    .is_ok_and(|source| source.locked() != entry.source)
+            }) {
+                eprintln!(
+                    "cedr: a Guard lock contains URL credentials; run cedr guard lock and rotate them; they may be in git history"
+                );
+            }
+            return Ok((lock, rel));
         }
     }
     Err(parse_err(

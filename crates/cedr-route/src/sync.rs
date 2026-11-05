@@ -86,7 +86,7 @@ fn client(url: &str) -> Result<reqwest::blocking::Client> {
 }
 
 /// A failed request with its causes (a refused redirect says why), never its URL, which may carry the org.
-fn request_error(e: reqwest::Error) -> String {
+pub(crate) fn request_error(e: reqwest::Error) -> String {
     let e = e.without_url();
     let mut parts = vec![e.to_string()];
     let mut source = std::error::Error::source(&e);

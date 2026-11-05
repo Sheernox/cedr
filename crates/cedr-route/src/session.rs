@@ -34,13 +34,13 @@ pub struct Overrides {
 impl Session {
     /// Loads the config (explicit path or the usual search from `cwd`) without reading any source.
     pub fn config_only(config: Option<&Path>, cwd: &Path) -> Result<Loaded> {
-        config::load(&config::locate(config, cwd)?)
+        config::load_selected(config::locate(config, cwd)?)
     }
 
     pub fn open(config: Option<&Path>, cwd: &Path, overrides: Overrides) -> Result<Session> {
         let loaded = Self::config_only(config, cwd)?;
         let now = Utc::now();
-        let mut warnings = Vec::new();
+        let mut warnings = loaded.warnings.clone();
         let mut readings = match &overrides.readings {
             Some(doc) => {
                 let mut r = Readings::default();
@@ -48,7 +48,7 @@ impl Session {
                 r
             }
             None => {
-                let dir = loaded.path.parent().unwrap_or(Path::new("."));
+                let dir = &loaded.readings_dir;
                 let (r, w) = readings::collect(&loaded.config, dir, now);
                 warnings.extend(w);
                 r

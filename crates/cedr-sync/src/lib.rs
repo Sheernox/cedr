@@ -95,14 +95,31 @@ pub fn load_config(root: &Path) -> Result<config::Config> {
     )
 }
 fn read_lock(root: &Path) -> Result<Lock> {
-    let lock: Lock = io::read(root, ".cedr/sync.lock")?
-        .map(|b| {
-            serde_json::from_slice(&b).map_err(|_| ".cedr/sync.lock: invalid lock".to_string())
-        })
-        .transpose()?
-        .unwrap_or_default();
-    for path in lock.files.keys() {
+    let Some(bytes) = io::read(root, ".cedr/sync.lock")? else {
+        return Ok(Lock::default());
+    };
+    let lock: Lock =
+        serde_json::from_slice(&bytes).map_err(|_| ".cedr/sync.lock: invalid lock".to_string())?;
+    if lock.version != 1 {
+        return Err(
+            ".cedr/sync.lock: unsupported version; remove the lock and regenerate it".into(),
+        );
+    }
+    for (path, entry) in &lock.files {
         io::path(root, path)?;
+        let valid = emit::owned_entry(path).is_some_and(|owned| {
+            entry.target == owned.target
+                && entry.keys.is_empty() == owned.keys.is_empty()
+                && entry
+                    .keys
+                    .iter()
+                    .all(|key| owned.keys.contains(&key.as_str()))
+        });
+        if !valid {
+            return Err(format!(
+                ".cedr/sync.lock: invalid ownership for {path:?}; remove the entry or delete .cedr/sync.lock and regenerate it"
+            ));
+        }
     }
     Ok(lock)
 }
@@ -174,7 +191,9 @@ pub fn plan(root: &Path) -> Result<Plan> {
                 "generated file is missing",
             ));
         } else if let (Some(entry), Some(b)) = (previous, current.as_ref())
-            && hash(&merge::owned(&path, b, old_keys)?) != entry.hash
+            && (hash(&merge::owned(&path, b, old_keys)?) != entry.hash
+                || (emit::owned_entry(&path).is_some_and(|owned| owned.generated)
+                    && !is_generated(b)))
         {
             state = "edited";
             findings.push(Finding::new(
@@ -281,20 +300,19 @@ pub fn check(root: &Path) -> Report {
     }
 }
 pub fn apply(root: &Path, p: &Plan, force: bool) -> Result<bool> {
-    let previous = read_lock(root)?;
+    read_lock(root)?;
     for f in &p.files {
         if !force && f.state == "edited" {
             return Ok(false);
         }
         if !force
-            && (f.path.ends_with(".md") || f.path.ends_with(".mdc"))
+            && emit::owned_entry(&f.path).is_some_and(|owned| owned.generated)
             && !p
                 .lock
                 .files
                 .get(&f.path)
                 .is_some_and(|e| !e.keys.is_empty())
             && io::read(root, &f.path)?.is_some_and(|b| !is_generated(&b))
-            && !previous.files.contains_key(&f.path)
             && !imported(root, &f.path, &p.config.targets)?
         {
             return Ok(false);

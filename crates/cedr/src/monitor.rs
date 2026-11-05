@@ -188,11 +188,9 @@ fn execute(a: MonitorArgs) -> Result<()> {
                     let machine_config = if org.is_some() && config.is_none() {
                         None
                     } else {
-                        config.clone().or_else(|| {
-                            std::env::current_dir()
-                                .ok()
-                                .and_then(|cwd| cedr_route::config::locate(None, &cwd).ok())
-                        })
+                        config
+                            .clone()
+                            .or_else(|| cedr_route::config::machine_path(None).ok())
                     };
                     let v = monitor::push::send(
                         &db,

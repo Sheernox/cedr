@@ -59,10 +59,25 @@ pub fn checks(root: &Path) -> Vec<Check> {
         ),
         "Compare cedr --version with the latest release",
     );
-    let routes = config::locate(None, root).and_then(|p| config::load_local(&p).map(|c| (p, c)));
+    let routes = cedr_route::session::Session::config_only(None, root);
+    let machine = config::machine_path(None).and_then(|p| config::load_local(&p));
     match &routes {
-        Ok((p, c)) => {
-            add(&mut out, "route.config", "ok", p.display().to_string(), "");
+        Ok(loaded) => {
+            let c = &loaded.config;
+            add(
+                &mut out,
+                "route.config",
+                if loaded.warnings.is_empty() {
+                    "ok"
+                } else {
+                    "warn"
+                },
+                std::iter::once(loaded.path.display().to_string())
+                    .chain(loaded.warnings.iter().cloned())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+                "Move machine settings to the user routes.toml or explicitly select a trusted file with --config",
+            );
             let (absent, _) = cedr_route::machine::absent(c);
             let stale = cedr_route::machine::stale(c, &Default::default());
             let mut missing = absent.keys().cloned().collect::<Vec<_>>();
@@ -142,10 +157,10 @@ pub fn checks(root: &Path) -> Vec<Check> {
         .ok()
         .and_then(|c| c.org.clone())
         .or_else(|| {
-            routes
+            machine
                 .as_ref()
                 .ok()
-                .and_then(|(_, c)| c.sync.as_ref().map(|s| s.org.clone()))
+                .and_then(|c| c.sync.as_ref().map(|s| s.org.clone()))
         });
     let settings = Sync {
         org: org.clone().unwrap_or_default(),
@@ -155,10 +170,10 @@ pub fn checks(root: &Path) -> Vec<Check> {
             .ok()
             .and_then(|c| c.url.clone())
             .or_else(|| {
-                routes
+                machine
                     .as_ref()
                     .ok()
-                    .and_then(|(_, c)| c.sync.as_ref().and_then(|s| s.url.clone()))
+                    .and_then(|c| c.sync.as_ref().and_then(|s| s.url.clone()))
             }),
         auto: false,
     };

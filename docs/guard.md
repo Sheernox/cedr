@@ -10,6 +10,10 @@ Guard is in beta, like every cedr product. Its files live in `.cedr/`, the GitHu
 
 ## Known gaps
 
+- Skill hashes do not include executable permission bits. A chmod alone does not change verification, and file modes differ across platforms.
+- Pre-upgrade symlink pins lack a type tag. Re-lock skills containing symlinks; until then, replacing a link with a regular file containing exactly its target text can still match the old pin.
+- URL paths remain in source identities. Put credentials in headers or environment variables, not URL paths. Re-lock and rotate any credentials previously written into lockfiles or their Git history.
+
 - `cedr guard latest` follows the registry's `latest` dist-tag. For `server-filesystem` that is 2.1.0, even though later calendar versions (2026.x) exist under other tags.
 - PyPI (`uvx`), OCI digests and git-sourced skills have no upstream version check yet.
 - `description_changed` reports only the new text. Showing the old text alongside needs a contract change to the diff shape.

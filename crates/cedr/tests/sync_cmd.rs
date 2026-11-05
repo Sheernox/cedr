@@ -37,6 +37,17 @@ fn every_target_matches_golden_and_is_deterministic() {
     assert!(cedr_sync::apply(d.path(), &p, false).unwrap());
     let expected = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/sync/expected");
     for f in &p.files {
+        let owned = cedr_sync::emit::owned_entry(&f.path)
+            .expect("emitter output must be an allowed lock path");
+        let entry = &p.lock.files[&f.path];
+        assert_eq!(owned.target, entry.target);
+        assert_eq!(owned.keys.is_empty(), entry.keys.is_empty());
+        assert!(
+            entry
+                .keys
+                .iter()
+                .all(|key| owned.keys.contains(&key.as_str()))
+        );
         let b = fs::read(d.path().join(&f.path)).unwrap();
         assert_eq!(b, fs::read(expected.join(&f.path)).unwrap(), "{}", f.path);
     }

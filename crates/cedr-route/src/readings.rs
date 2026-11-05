@@ -371,8 +371,9 @@ fn http_get(url: &str) -> Result<Value, String> {
         .get(url)
         .send()
         .and_then(|r| r.error_for_status())
-        .map_err(|e| e.to_string())?;
-    let body = read_limited(response, MAX_BYTES).map_err(|e| e.to_string())?;
+        .map_err(crate::sync::request_error)?;
+    let body = read_limited(response, MAX_BYTES)
+        .map_err(|_| "readings response could not be read within the size limit".to_string())?;
     parse_doc(&body)
 }
 
@@ -390,8 +391,22 @@ pub(crate) fn run_capture(
     env: &[(&str, &str)],
     timeout: Duration,
 ) -> Result<Vec<u8>, String> {
+    run_capture_at(argv, env, timeout, None)
+}
+
+/// Built-in account probes choose a directory outside the current repository.
+pub(crate) fn run_capture_at(
+    argv: &[String],
+    env: &[(&str, &str)],
+    timeout: Duration,
+    cwd: Option<&Path>,
+) -> Result<Vec<u8>, String> {
     let (program, args) = argv.split_first().ok_or("empty command")?;
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let mut child = command
         .args(args)
         .envs(env.iter().copied())
         .stdin(Stdio::null())
@@ -429,6 +444,20 @@ pub(crate) fn run_capture(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failed_http_readings_never_disclose_url_credentials() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let error = super::http_get(&format!(
+            "https://{address}/private-path?token=SYNTHETIC_SECRET#fragment"
+        ))
+        .unwrap_err();
+        for private in ["SYNTHETIC_SECRET", "private-path", "token=", "fragment"] {
+            assert!(!error.contains(private), "{error}");
+        }
+        assert!(!error.is_empty());
+    }
     use super::*;
 
     fn config() -> Config {

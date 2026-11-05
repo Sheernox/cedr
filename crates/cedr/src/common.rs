@@ -6,7 +6,7 @@ use std::{
 };
 /// Where to push. `--org` without `--config` goes to the default API URL and reads no config at
 /// all: in CI the checkout is untrusted, and a `.cedr/routes.toml` in it must never redirect the
-/// API key. Otherwise the config found as Route finds it supplies `[sync]`, with `--org` applied.
+/// API key. Otherwise only explicit or user machine configuration supplies `[sync]`, with `--org` applied.
 pub(crate) fn settings(org: Option<&str>, config: Option<&Path>) -> Result<Sync, String> {
     let mut sync = match (org, config) {
         (Some(org), None) => Sync {
@@ -16,9 +16,7 @@ pub(crate) fn settings(org: Option<&str>, config: Option<&Path>) -> Result<Sync,
             auto: false,
         },
         _ => {
-            let cwd =
-                std::env::current_dir().map_err(|e| format!("push: current directory: {e}"))?;
-            let path = config::locate(config, &cwd).map_err(|e| e.to_string())?;
+            let path = config::machine_path(config).map_err(|e| e.to_string())?;
             config::load_local(&path)
                 .map_err(|e| e.to_string())?
                 .sync

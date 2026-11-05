@@ -294,3 +294,47 @@ fn a_state_directory_that_cannot_be_written_fails_instead_of_repeating_old_resul
         assert_eq!(out.status.code(), Some(2));
     }
 }
+
+#[test]
+fn changed_remote_launch_requires_relocking_without_contacting_either_endpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = serve();
+    let repo = repo_with(server.port, dir.path());
+    assert!(
+        cedr(dir.path(), &repo, &["guard", "lock", "--remote"])
+            .status
+            .success()
+    );
+    let initial = cedr(dir.path(), &repo, &["guard", "remote", "--format", "json"]);
+    assert_eq!(only_server(&initial)["status"], "unchanged");
+    let before = server.requests.lock().unwrap().len();
+    std::fs::write(
+        repo.join(".mcp.json"),
+        json!({"mcpServers": {"docs": {
+            "url": format!("http://127.0.0.1:{}/mcp?tenant=SYNTHETIC", server.port)
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+    let out = cedr(dir.path(), &repo, &["guard", "remote", "--format", "json"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(only_server(&out)["status"], "failed");
+    assert!(
+        only_server(&out)["error"]
+            .as_str()
+            .unwrap()
+            .contains("configuration changed")
+    );
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("SYNTHETIC"));
+    assert_eq!(server.requests.lock().unwrap().len(), before);
+
+    // Queries were never eligible for remote pinning: redaction must not enable a new contact.
+    assert!(
+        cedr(dir.path(), &repo, &["guard", "lock", "--remote"])
+            .status
+            .success()
+    );
+    let out = cedr(dir.path(), &repo, &["guard", "remote", "--format", "json"]);
+    assert_eq!(only_server(&out)["status"], "not_pinned");
+    assert_eq!(server.requests.lock().unwrap().len(), before);
+}

@@ -17,6 +17,14 @@ use crate::readings::MAX_BYTES;
 /// Windows at most this long are session windows; longer ones are weekly.
 const SESSION_MAX_MINUTES: i64 = 300;
 
+// Account probes must not load configuration from an untrusted checkout.
+fn probe_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|p| !p.is_empty())
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+}
+
 fn stamp(t: DateTime<Utc>) -> String {
     t.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
@@ -35,6 +43,7 @@ pub fn codex(harness: &str, timeout: Duration) -> Result<Value, String> {
 fn codex_with(program: &str, harness: &str, timeout: Duration) -> Result<Value, String> {
     let mut child = Command::new(program)
         .arg("app-server")
+        .current_dir(probe_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -147,7 +156,12 @@ pub fn muse(harness: &str, timeout: Duration) -> Result<Value, String> {
 fn muse_with(program: &str, harness: &str, timeout: Duration) -> Result<Value, String> {
     let argv = [program.to_string(), "usage".into(), "--json".into()];
     // Never let a probe replace the installed Muse Code.
-    let out = crate::readings::run_capture(&argv, &[("MUSE_NO_AUTO_UPDATE", "1")], timeout)?;
+    let out = crate::readings::run_capture_at(
+        &argv,
+        &[("MUSE_NO_AUTO_UPDATE", "1")],
+        timeout,
+        Some(&probe_dir()),
+    )?;
     let reply: Value = serde_json::from_slice(&out).map_err(|_| {
         "muse usage printed no JSON (no usage data yet, or a newer format)".to_string()
     })?;
@@ -185,15 +199,11 @@ pub fn grok(harness: &str, timeout: Duration) -> Result<Value, String> {
 }
 
 fn grok_with(program: &str, harness: &str, timeout: Duration) -> Result<Value, String> {
-    // A repo's `.grok/` must not configure the probe, so it never starts in the working directory.
-    let cwd = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map_or_else(std::env::temp_dir, PathBuf::from);
     let mut child = Command::new(program)
         .args(["agent", "stdio"])
         // Never let a probe replace the installed Grok Build.
         .env("GROK_DISABLE_AUTOUPDATER", "1")
-        .current_dir(cwd)
+        .current_dir(probe_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -385,7 +395,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let program = fake_codex(
             dir.path(),
-            r#"read l; echo '{"id":1,"result":{}}'
+            r#"[ "$PWD" = "${HOME:-$USERPROFILE}" ] || exit 9
+read l; echo '{"id":1,"result":{}}'
 read l; read l; read l
 echo '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":9,"windowDurationMins":10080,"resetsAt":1793804404},"secondary":{"usedPercent":40,"windowDurationMins":300,"resetsAt":null}}}}'
 echo '{"id":3,"result":{"data":[{"id":"gpt-6.1-sol"},{"id":"gpt-old","hidden":true}]}}'
@@ -410,7 +421,8 @@ sleep 5"#,
         let dir = tempfile::tempdir().unwrap();
         let program = fake_codex(
             dir.path(),
-            r#"[ "$MUSE_NO_AUTO_UPDATE" = 1 ] || exit 9
+            r#"[ "$PWD" = "${HOME:-$USERPROFILE}" ] || exit 9
+[ "$MUSE_NO_AUTO_UPDATE" = 1 ] || exit 9
 echo '{"schemaVersion":1,"allowance":{"window":{"usedPercent":47,"resetsAtMs":1793800000000},"weekly":{"usedPercent":53.5,"resetsAtMs":1794300000000}}}'"#,
         );
         let doc = muse_with(&program, "muse", Duration::from_secs(5)).unwrap();

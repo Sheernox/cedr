@@ -11,6 +11,87 @@ pub struct Output {
     pub bytes: Vec<u8>,
     pub keys: Vec<String>,
 }
+/// The output ownership contract, also used to validate untrusted historical lock entries.
+pub struct OwnedEntry {
+    pub target: &'static str,
+    pub keys: &'static [&'static str],
+    pub generated: bool,
+}
+
+pub fn owned_entry(path: &str) -> Option<OwnedEntry> {
+    let (target, keys): (&str, &[&str]) = match path {
+        "AGENTS.md" => ("agents", &[]),
+        "CLAUDE.md" => ("claude", &[]),
+        "GEMINI.md" => ("gemini", &[]),
+        ".github/copilot-instructions.md" => ("copilot", &[]),
+        ".codex/rules/cedr.rules" => ("codex", &[]),
+        ".mcp.json" => ("claude", &["mcpServers"]),
+        ".claude/settings.json" => ("claude", &["permissions", "hooks"]),
+        ".codex/config.toml" => ("codex", &["mcp_servers"]),
+        ".codex/hooks.json" => ("codex", &["hooks"]),
+        ".cursor/mcp.json" => ("cursor", &["mcpServers"]),
+        ".cursor/cli.json" => ("cursor", &["permissions"]),
+        ".cursor/hooks.json" => ("cursor", &["version", "hooks"]),
+        ".gemini/settings.json" => (
+            "gemini",
+            &["context.fileName", "mcpServers", "tools.allowed", "hooks"],
+        ),
+        ".vscode/mcp.json" => ("copilot", &["servers"]),
+        ".vscode/settings.json" => ("copilot", &["chat.tools.terminal.autoApprove"]),
+        ".github/hooks/cedr.json" => ("copilot", &["version", "hooks"]),
+        "opencode.json" => ("opencode", &["mcp", "permission.bash"]),
+        ".grok/config.toml" => ("grok", &["mcp_servers", "permission"]),
+        ".grok/hooks/cedr.json" => ("grok", &["hooks"]),
+        ".agents/mcp_config.json" => ("antigravity", &["mcpServers"]),
+        ".agents/hooks.json" => ("antigravity", &["cedr"]),
+        _ => {
+            for (prefix, target) in [
+                (".agents/skills/", "agents"),
+                (".claude/skills/", "claude"),
+                (".grok/skills/", "grok"),
+            ] {
+                if let Some((name, rest)) =
+                    path.strip_prefix(prefix).and_then(|p| p.split_once('/'))
+                    && crate::config::name(name)
+                    && !rest.is_empty()
+                {
+                    return Some(OwnedEntry {
+                        target,
+                        keys: &[],
+                        generated: false,
+                    });
+                }
+            }
+            for (prefix, suffix, target) in [
+                (".claude/rules/", ".md", "claude"),
+                (".github/instructions/", ".instructions.md", "copilot"),
+                (".cursor/rules/", ".mdc", "cursor"),
+                (".agents/rules/", ".md", "antigravity"),
+                (".grok/rules/", ".md", "grok"),
+            ] {
+                if let Some(id) = path
+                    .strip_prefix(prefix)
+                    .and_then(|p| p.strip_suffix(suffix))
+                    && !id.is_empty()
+                    && !id.contains('/')
+                {
+                    return Some(OwnedEntry {
+                        target,
+                        keys: &[],
+                        generated: true,
+                    });
+                }
+            }
+            return None;
+        }
+    };
+    Some(OwnedEntry {
+        target,
+        keys,
+        generated: keys.is_empty() && (path.ends_with(".md") || path.ends_with(".mdc")),
+    })
+}
+
 pub type Outputs = BTreeMap<String, Output>;
 fn raw(out: &mut Outputs, path: &str, target: &str, text: String) {
     out.insert(

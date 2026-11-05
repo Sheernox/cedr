@@ -206,7 +206,7 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             // The measurement is on stdout by now, and it cost money: report the failure, keep the output.
             saved?;
             if !no_record && !no_push {
-                auto_push(&result, &loaded.root);
+                auto_push(&result);
             }
             Ok(ExitCode::from(result.exit_code(fail_on.into())))
         }
@@ -426,8 +426,8 @@ fn github_ci() -> Option<Ci> {
 }
 
 /// Missing configuration is the sole silent lookup failure; a selected but broken file warns.
-fn local_config(root: &Path) -> Result<Option<config::Config>, String> {
-    let path = match config::locate(None, root) {
+fn local_config() -> Result<Option<config::Config>, String> {
+    let path = match config::machine_path(None) {
         Ok(path) => path,
         Err(_) => return Ok(None),
     };
@@ -605,8 +605,7 @@ fn push(
     let config = if org.is_some() && config.is_none() {
         None
     } else {
-        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-        let path = config::locate(config, &cwd).map_err(|e| e.to_string())?;
+        let path = config::machine_path(config).map_err(|e| e.to_string())?;
         Some(config::load_local(&path).map_err(|e| e.to_string())?)
     };
     let machine = push_machine(config.as_ref())?;
@@ -736,9 +735,9 @@ fn push(
 }
 
 /// Upload failures cannot replace an expensive measurement's report or gate.
-fn auto_push(result: &BenchResult, root: &Path) {
+fn auto_push(result: &BenchResult) {
     let outcome: Result<Option<String>, String> = (|| {
-        let Some(config) = local_config(root)? else {
+        let Some(config) = local_config()? else {
             return Ok(None);
         };
         let Some(sync) = config.sync.as_ref().filter(|s| s.auto) else {
@@ -918,7 +917,7 @@ pub(crate) fn doctor_checks(root: &Path, mut add: impl FnMut(&str, &str, String,
             "Fix or remove the settings file it names; cedr bench budget --unset clears a broken value",
         ),
     }
-    match local_config(root) {
+    match local_config() {
         Ok(Some(config)) => match config.sync {
             Some(sync) if sync.auto => add(
                 "bench.push",

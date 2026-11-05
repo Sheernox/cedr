@@ -559,6 +559,8 @@ pub struct Loaded {
     pub config: Config,
     pub path: PathBuf,
     pub rules: String,
+    pub readings_dir: PathBuf,
+    pub warnings: Vec<String>,
 }
 
 impl Config {
@@ -911,6 +913,8 @@ pub fn load(path: &Path) -> Result<Loaded> {
             config,
             path: path.to_path_buf(),
             rules: rules_hash(&bytes),
+            readings_dir: path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+            warnings: Vec::new(),
         });
     };
     let org_path = org_routes_path(&sync.org);
@@ -932,35 +936,125 @@ pub fn load(path: &Path) -> Result<Loaded> {
         config: merged,
         path: path.to_path_buf(),
         rules: rules_hash(&org_bytes),
+        readings_dir: path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+        warnings: Vec::new(),
     })
 }
 
-/// The config file to use: the explicit path, `$CEDR_ROUTES`, the nearest `.cedr/routes.toml`
-/// from `cwd` upwards, then the user config.
-pub fn locate(explicit: Option<&Path>, cwd: &Path) -> Result<PathBuf> {
+/// Why a routes file was selected determines whether it may supply executable machine settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    Explicit,
+    Env,
+    Repo,
+    User,
+}
+
+pub struct Located {
+    pub path: PathBuf,
+    pub origin: Origin,
+}
+
+fn user_path() -> PathBuf {
+    xdg_dir("XDG_CONFIG_HOME", ".config").join("cedr/routes.toml")
+}
+
+/// Machine configuration never comes from the current checkout. Flags and environment are explicit trust choices.
+pub fn machine_path(explicit: Option<&Path>) -> Result<PathBuf> {
     if let Some(p) = explicit {
         return Ok(p.to_path_buf());
     }
     if let Some(p) = std::env::var_os("CEDR_ROUTES").filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(p));
     }
-    for dir in cwd.ancestors() {
-        let candidate = dir.join(".cedr").join("routes.toml");
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-    let user = xdg_dir("XDG_CONFIG_HOME", ".config")
-        .join("cedr")
-        .join("routes.toml");
+    let user = user_path();
     if user.is_file() {
         return Ok(user);
     }
     Err(Error::Config(format!(
-        "no routes.toml found: pass --config, set CEDR_ROUTES, add .cedr/routes.toml, or create {} \
-         (a starter file and the app's generator: https://cedr.dev/docs/route)",
+        "no routes.toml found for machine configuration: pass --config, set CEDR_ROUTES, or create {}; a starter file and the app's generator: https://cedr.dev/docs/route",
         user.display()
     )))
+}
+
+/// Routing preference: explicit path, environment, nearest repo override, then the user file.
+pub fn locate(explicit: Option<&Path>, cwd: &Path) -> Result<Located> {
+    if let Some(p) = explicit {
+        return Ok(Located {
+            path: p.to_path_buf(),
+            origin: Origin::Explicit,
+        });
+    }
+    if let Some(p) = std::env::var_os("CEDR_ROUTES").filter(|v| !v.is_empty()) {
+        return Ok(Located {
+            path: PathBuf::from(p),
+            origin: Origin::Env,
+        });
+    }
+    for dir in cwd.ancestors() {
+        let candidate = dir.join(".cedr/routes.toml");
+        if candidate.is_file() {
+            return Ok(Located {
+                path: candidate,
+                origin: Origin::Repo,
+            });
+        }
+    }
+    Ok(Located {
+        path: machine_path(None)?,
+        origin: Origin::User,
+    })
+}
+
+/// A discovered repository may override routing, but cannot choose commands, files, or credential destinations.
+pub fn load_selected(selected: Located) -> Result<Loaded> {
+    if selected.origin != Origin::Repo {
+        return load(&selected.path);
+    }
+    let path = selected.path;
+    let bytes = std::fs::read(&path).map_err(io_err(&path))?;
+    let text = std::str::from_utf8(&bytes).map_err(|e| parse_err(&path, e))?;
+    let mut document: toml::Table = toml::from_str(text).map_err(|e| toml_err(&path, text, &e))?;
+    let mut ignored = false;
+    for section in ["readings", "sync", "machine"] {
+        ignored |= document.remove(section).is_some();
+    }
+    let routing = toml::to_string(&document).map_err(|e| parse_err(&path, e))?;
+    let mut config = parse_shared(&routing, &path)?;
+    let user = user_path();
+    if user.is_file() {
+        let local = load_local(&user)?;
+        config.readings = local
+            .readings
+            .into_iter()
+            .filter(|source| match source {
+                ReadingsSource::Codex { harness, .. }
+                | ReadingsSource::ClaudeStatusline { harness }
+                | ReadingsSource::Muse { harness, .. }
+                | ReadingsSource::Grok { harness, .. } => config.harness_for(harness).is_some(),
+                _ => true,
+            })
+            .collect();
+        config.sync = local.sync;
+        config.machine = local.machine;
+    }
+    config.validate(true).map_err(|m| parse_err(&path, m))?;
+    let warnings = if ignored {
+        vec![format!(
+            "{}: ignored repository [[readings]], [sync] and [machine]; move machine settings to {} or explicitly select a trusted file with --config or CEDR_ROUTES",
+            path.display(),
+            user.display()
+        )]
+    } else {
+        Vec::new()
+    };
+    Ok(Loaded {
+        config,
+        path,
+        rules: rules_hash(&bytes),
+        readings_dir: user.parent().unwrap_or(Path::new(".")).to_path_buf(),
+        warnings,
+    })
 }
 
 /// `$VAR` when set to an absolute path, else `~/<fallback>` (the XDG base directory rule).

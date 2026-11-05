@@ -24,6 +24,8 @@ Out of scope: user-level (home directory) configuration, which stays each person
 
 Commit all of them, and the generated files too: agents read the generated files from the checkout, and CI compares them.
 
+The lock is untrusted input. Its version, paths, target names and owned keys must match the emitter's output contract, including stale outputs. Unknown paths, mismatched targets or keys, and empty ownership on merged settings are refused before any file changes, even with `--force`. Remove the invalid entry or regenerate the lock. A matching lock hash never authorizes replacing or deleting handwritten instruction files: generated Markdown must still carry its generated header, or Sync reports CS002 and requires `--force`. Managed skill folders retain stale-file cleanup; review lock changes there as carefully as source changes.
+
 ### `.cedr/sync.toml`
 
 ```toml
@@ -109,7 +111,7 @@ JSON and TOML files are merged, not replaced: `cedr sync` owns only the keys in 
 
 - Output is deterministic: the same sources and org rules give byte-identical files on every machine and OS (LF line endings, keys sorted where the format allows, a trailing newline).
 - `.cedr/sync.lock` records each generated path, its target and the SHA-256 of what was written (of the owned keys only, for merged JSON and TOML). A path in the old lock that the new run no longer generates is removed (a merged file only loses its owned keys).
-- `cedr sync` refuses to overwrite a Markdown file it did not generate (no header line and not in the lock) unless `--force`: run `cedr sync init` first so its content is imported, not lost. It refuses to overwrite a generated file someone edited by hand (its hash differs from the lock) unless `--force`, and names the file.
+- `cedr sync` refuses to overwrite a Markdown file it did not generate (no generated header line, even when listed in the lock) unless `--force`: run `cedr sync init` first so its content is imported, not lost. It refuses to overwrite a generated file someone edited by hand (its hash differs from the lock) unless `--force`, and names the file.
 - `--dry-run` writes nothing and prints what would change as a unified diff.
 - Exit 0 written (or nothing to change), 1 refused (with the files named), 2 usage or I/O failure (including invalid sources).
 

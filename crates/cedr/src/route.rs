@@ -246,7 +246,7 @@ fn apply_edit(
     f: impl FnOnce(&str) -> Result<String>,
 ) -> Result<ExitCode> {
     let path = cedr_route::config::locate(config, &cwd()?)?;
-    let applied = edit::apply(&path, f)?;
+    let applied = edit::apply(&path.path, f)?;
     println!(
         "{}: {change} (rules {} -> {})",
         applied.path.display(),
@@ -449,7 +449,7 @@ pub(crate) fn auto_sync(config: Option<&Path>) {
         }
         // No routes.toml (a status line outside any setup) means nothing to sync, and a broken one
         // is reported by the command that reads it, not once per status line render here.
-        let Ok(path) = cedr_route::config::locate(config, &cwd()?) else {
+        let Ok(path) = cedr_route::config::machine_path(config) else {
             return Ok(());
         };
         let Ok(local) = cedr_route::config::load_local(&path) else {
@@ -907,7 +907,7 @@ fn statusline(harness: &str, command: &[String]) -> ExitCode {
 /// Push, pull, then the machine snapshot. The snapshot is the app's view of this machine, not the
 /// sync itself: its failure comes back as a warning and never fails the sync.
 fn sync(config: Option<&Path>, push: bool, pull: bool, quiet: bool) -> Result<Option<String>> {
-    let local = cedr_route::config::load_local(&cedr_route::config::locate(config, &cwd()?)?)?;
+    let local = cedr_route::config::load_local(&cedr_route::config::machine_path(config)?)?;
     let settings = local.sync.ok_or_else(|| {
         Error::Config("routes.toml has no [sync] section naming the organization".into())
     })?;

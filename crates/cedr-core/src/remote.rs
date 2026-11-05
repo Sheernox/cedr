@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::diff::{self, Change};
-use crate::discovery::{Client as AgentClient, Transport};
+use crate::discovery::{self, Client as AgentClient, Launch, Transport};
 use crate::lock;
 use crate::source::redact_url;
 use crate::surface::{Capability, Method, Surface, Tool};
@@ -131,13 +131,24 @@ pub fn state_key(root: &Path) -> Result<String> {
     Ok(digest[..12].to_string())
 }
 
-/// A digest of the lock and its remote surfaces. Saved results stand only while it matches, so
-/// switching branches or relocking inside the interval can't repeat an old `unchanged`.
+/// A digest of pins, surfaces and current remote launches. Cached results become stale when
+/// configuration changes, even inside the polling interval.
 pub fn baseline(root: &Path) -> Result<String> {
     use sha2::{Digest, Sha256};
     let (found, _) = lock::read_lock(root)?;
     let mut hash = Sha256::new();
     hash.update(found.to_toml());
+    let mut launches = discovery::discover(root)?
+        .servers
+        .into_iter()
+        .filter(|server| server.transport() == Transport::Http)
+        .map(|server| (server.client, server.name.clone(), server.launch_hash()))
+        .collect::<Vec<_>>();
+    launches.sort();
+    for (client, name, launch) in launches {
+        hash.update(canonical::to_string(&json!([client, name, launch])));
+        hash.update([0]);
+    }
     for entry in found.mcp.iter().filter(|e| e.transport == Transport::Http) {
         let file = root
             .join(lock::SURFACE_DIR)
@@ -153,6 +164,7 @@ pub fn baseline(root: &Path) -> Result<String> {
 pub fn check(root: &Path, at: String) -> Result<Report> {
     let (found, _) = lock::read_lock(root)?;
     let baseline = baseline(root)?;
+    let live = discovery::discover(root)?;
     let mut servers = Vec::new();
     for entry in found.mcp.iter().filter(|e| e.transport == Transport::Http) {
         let raw = entry.source.strip_prefix("url:").unwrap_or(&entry.source);
@@ -171,7 +183,18 @@ pub fn check(root: &Path, at: String) -> Result<Report> {
             let file = root
                 .join(lock::SURFACE_DIR)
                 .join(lock::surface_file_name(entry.client, &entry.name));
-            match compare(raw, &entry.source, &file) {
+            // A redacted lock is a public identity, not an endpoint. Only the pinned launch
+            // may supply the actual URL; a changed or removed config needs a new pin.
+            let current = live.servers.iter().find(|s| {
+                s.client == entry.client && s.name == entry.name && s.launch_hash() == entry.launch
+            });
+            let compared = match current.map(|s| &s.launch) {
+                Some(Launch::Remote { url }) => compare(url, &entry.source, &file),
+                _ => Err(failed(
+                    "remote configuration changed or is missing; run cedr guard lock --remote",
+                )),
+            };
+            match compared {
                 Ok(changes) if changes.is_empty() => result.status = Status::Unchanged,
                 Ok(changes) => {
                     result.status = Status::Changed;

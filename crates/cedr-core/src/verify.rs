@@ -94,7 +94,8 @@ pub fn verify(root: &Path) -> Result<Verification> {
             Ok(pinned) if !entry.pinned && !current.pinned() => {
                 pinned.identity() == current.identity()
             }
-            _ => entry.source == current.to_string(),
+            Ok(pinned) => pinned.locked() == current.locked(),
+            Err(_) => false,
         };
         if !unchanged {
             findings.push(error(

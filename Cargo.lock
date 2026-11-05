@@ -227,6 +227,7 @@ dependencies = [
  "reqwest",
  "rmcp",
  "saphyr",
+ "saphyr-parser",
  "semver",
  "serde",
  "serde_json",

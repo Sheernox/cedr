@@ -53,6 +53,9 @@ pub fn frontmatter(text: &str) -> ParsedFrontmatter {
     if !closed {
         return ParsedFrontmatter::Invalid("frontmatter has no closing --- line".into());
     }
+    if let Err(e) = crate::yaml::check_depth(&yaml) {
+        return ParsedFrontmatter::Invalid(format!("frontmatter is not valid YAML: {e}"));
+    }
     let docs = match Yaml::load_from_str(&yaml) {
         Ok(docs) => docs,
         Err(e) => return ParsedFrontmatter::Invalid(format!("frontmatter is not valid YAML: {e}")),
@@ -121,8 +124,8 @@ fn split_tool_list(list: &str) -> Vec<String> {
 
 /// `sha256-<hex>` over every file in the skill directory, in sorted relative
 /// path order, each fed as `<path>\0<byte length>\0<bytes>`. Symlinks are not
-/// followed: their target text is hashed in place of content, so a link that
-/// is repointed changes the hash.
+/// followed: their raw target text is hashed with an `l` before the length,
+/// distinguishing links from regular files while preserving existing regular-file pins.
 pub fn content_hash(dir: &Path) -> Result<String> {
     let mut files = Vec::new();
     collect_files(dir, "", &mut files)?;
@@ -130,9 +133,24 @@ pub fn content_hash(dir: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     for rel in files {
         let path = dir.join(&rel);
-        let bytes = file_bytes(&path)?;
+        let is_link = fs::symlink_metadata(&path)
+            .map_err(io_err(&path))?
+            .file_type()
+            .is_symlink();
+        let bytes = if is_link {
+            fs::read_link(&path)
+                .map_err(io_err(&path))?
+                .as_os_str()
+                .as_encoded_bytes()
+                .to_vec()
+        } else {
+            fs::read(&path).map_err(io_err(&path))?
+        };
         hasher.update(rel.as_bytes());
         hasher.update([0]);
+        if is_link {
+            hasher.update(b"l");
+        }
         hasher.update(bytes.len().to_string().as_bytes());
         hasher.update([0]);
         hasher.update(&bytes);
@@ -231,6 +249,10 @@ mod tests {
         fs::write(dir.path().join("sub/x.sh"), "b").unwrap();
         let first = content_hash(dir.path()).unwrap();
         assert!(first.starts_with("sha256-") && first.len() == 71);
+        assert_eq!(
+            first, "sha256-2e42795845b6e793f8aea3f35b1fbc17e10927bf49f2f18d86a30e9096322de5",
+            "regular-file pins remain compatible"
+        );
         fs::write(dir.path().join("sub/x.sh"), "c").unwrap();
         let changed = content_hash(dir.path()).unwrap();
         assert_ne!(first, changed);

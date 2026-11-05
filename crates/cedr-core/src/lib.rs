@@ -22,5 +22,6 @@ pub mod skill;
 pub mod source;
 pub mod surface;
 pub mod verify;
+mod yaml;
 
 pub use error::{Error, Result};
