@@ -710,19 +710,17 @@ impl Context<'_> {
             .collect();
         let mut rows = Vec::new();
         for harness in self.config.harnesses.keys() {
-            let mut families: Vec<&str> = self
-                .config
-                .model_windows
-                .values()
-                .filter(|w| &w.harness == harness)
-                .map(|w| w.model.as_str())
-                .filter(|f| {
-                    routed.iter().any(|t| {
-                        t.split_once('/')
-                            .is_some_and(|(h, m)| h == harness && m.contains(f))
+            let mut families: Vec<&str> =
+                crate::pool::model_windows(harness, self.readings, self.config)
+                    .into_iter()
+                    .map(|(_, f)| f)
+                    .filter(|f| {
+                        routed.iter().any(|t| {
+                            t.split_once('/')
+                                .is_some_and(|(h, m)| h == harness && m.contains(f))
+                        })
                     })
-                })
-                .collect();
+                    .collect();
             families.sort_unstable();
             families.dedup();
             for family in std::iter::once("").chain(families) {

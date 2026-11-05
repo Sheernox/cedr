@@ -353,16 +353,30 @@ pub fn claude_usage(harness: &str) -> Result<Option<Value>, String> {
             path.display()
         ));
     }
-    let config: Value =
+    // Only the two fields are kept: the rest of the file (projects, MCP server settings with their
+    // tokens) is skipped while parsing, never held.
+    #[derive(serde::Deserialize)]
+    struct Fields {
+        #[serde(rename = "oauthAccount", default)]
+        account: Value,
+        #[serde(rename = "cachedUsageUtilization", default)]
+        cache: Value,
+    }
+    let fields: Fields =
         serde_json::from_slice(&bytes).map_err(|_| format!("{} is not JSON", path.display()))?;
-    from_usage_cache(&config, harness)
+    let account = fields.account["accountUuid"].clone();
+    from_usage_cache(
+        &json!({"oauthAccount": {"accountUuid": account}, "cachedUsageUtilization": fields.cache}),
+        harness,
+    )
 }
 
 /// Turns `cachedUsageUtilization` from Claude Code's config into a readings document. Its format
 /// is undocumented (read from Claude Code 2.1.318): `utilization.five_hour` and
 /// `utilization.seven_day` carry `utilization` (percent) and `resets_at` (RFC 3339), and
 /// `utilization.limits` lists model-scoped weekly limits (`kind` `weekly_scoped`, named by
-/// `scope.model.display_name`). A cache for another account than the one signed in is ignored.
+/// `scope.model.display_name`). A cache is used only when it names the account signed in
+/// (`oauthAccount.accountUuid`), so it never passes off another account's, or a signed-out, plan.
 pub fn from_usage_cache(config: &Value, harness: &str) -> Result<Option<Value>, String> {
     let Some(cache) = config
         .get("cachedUsageUtilization")
@@ -370,11 +384,8 @@ pub fn from_usage_cache(config: &Value, harness: &str) -> Result<Option<Value>, 
     else {
         return Ok(None);
     };
-    if let (Some(signed_in), Some(cached)) = (
-        config["oauthAccount"]["accountUuid"].as_str(),
-        cache["accountUuid"].as_str(),
-    ) && signed_in != cached
-    {
+    let signed_in = config["oauthAccount"]["accountUuid"].as_str();
+    if signed_in.is_none() || signed_in != cache["accountUuid"].as_str() {
         return Ok(None);
     }
     let changed = || "Claude Code changed its usage cache format".to_string();
@@ -418,7 +429,9 @@ pub fn from_usage_cache(config: &Value, harness: &str) -> Result<Option<Value>, 
                 }
             })
             .collect();
-        windows.push(window(format!("seven_day_{name}"), "weekly", l, "percent"));
+        let mut w = window(format!("seven_day_{name}"), "weekly", l, "percent");
+        w["model"] = Value::String(name);
+        windows.push(w);
     }
     if windows.is_empty() {
         return Ok(None);
@@ -514,7 +527,7 @@ mod tests {
             json!([
                 {"id": "five_hour", "kind": "session", "percent": 39.0, "resetsAt": "2026-11-06T01:00:00Z"},
                 {"id": "seven_day", "kind": "weekly", "percent": 45.5, "resetsAt": "2026-11-09T04:00:00Z"},
-                {"id": "seven_day_fable", "kind": "weekly", "percent": 2.0, "resetsAt": "2026-11-09T04:00:00Z"}
+                {"id": "seven_day_fable", "kind": "weekly", "percent": 2.0, "resetsAt": "2026-11-09T04:00:00Z", "model": "fable"}
             ])
         );
     }
@@ -531,8 +544,15 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        let err = from_usage_cache(&json!({"cachedUsageUtilization": {"usage": {}}}), "claude")
-            .unwrap_err();
+        let mut signed_out = usage_cache("acct-a");
+        signed_out["oauthAccount"] = Value::Null;
+        assert!(from_usage_cache(&signed_out, "claude").unwrap().is_none());
+        let err = from_usage_cache(
+            &json!({"oauthAccount": {"accountUuid": "acct-a"},
+                    "cachedUsageUtilization": {"accountUuid": "acct-a", "usage": {}}}),
+            "claude",
+        )
+        .unwrap_err();
         assert!(err.contains("changed its usage cache format"), "{err}");
     }
 

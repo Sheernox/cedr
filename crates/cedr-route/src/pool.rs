@@ -110,6 +110,47 @@ fn inferred_family<'a>(id: &'a str, offered: &[String]) -> Option<&'a str> {
     found.all(|other| other == family).then_some(family)
 }
 
+/// A harness's model windows as `(window id, family)`: those `[model_windows]` names, then those
+/// its reading limits to a `model` itself, then those `inferred_family` places.
+pub fn model_windows<'a>(
+    harness: &str,
+    readings: &'a Readings,
+    config: &'a Config,
+) -> Vec<(&'a str, &'a str)> {
+    let mut families: Vec<(&str, &str)> = config
+        .model_windows
+        .iter()
+        .filter(|(_, w)| w.harness == harness)
+        .map(|(id, w)| (id.as_str(), w.model.as_str()))
+        .collect();
+    let Some(entry) = readings.entries.get(harness) else {
+        return families;
+    };
+    let expect = config
+        .harnesses
+        .get(harness)
+        .map(|h| h.expect.as_slice())
+        .unwrap_or_default();
+    let offered = readings
+        .models
+        .get(harness)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    for w in &entry.windows {
+        if expect.contains(&w.id) || families.iter().any(|(id, _)| *id == w.id) {
+            continue;
+        }
+        if let Some(f) = w
+            .model
+            .as_deref()
+            .or_else(|| inferred_family(&w.id, offered))
+        {
+            families.push((w.id.as_str(), f));
+        }
+    }
+    families
+}
+
 /// A plan's pool under its own thresholds, for answers about the plan rather than one route.
 pub fn pool(
     harness: &str,
@@ -164,25 +205,7 @@ pub fn pool_with(
         .get(harness)
         .map(|h| h.expect.iter().map(String::as_str).collect())
         .unwrap_or_default();
-    let mut families: Vec<(&str, &str)> = config
-        .model_windows
-        .iter()
-        .filter(|(_, w)| w.harness == harness)
-        .map(|(id, w)| (id.as_str(), w.model.as_str()))
-        .collect();
-    let offered = readings
-        .models
-        .get(harness)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    for w in &entry.windows {
-        if !expect.contains(w.id.as_str())
-            && !families.iter().any(|(id, _)| *id == w.id)
-            && let Some(f) = inferred_family(&w.id, offered)
-        {
-            families.push((w.id.as_str(), f));
-        }
-    }
+    let families = model_windows(harness, readings, config);
     if entry.error {
         return unknown(format!("{harness} probe error"));
     }
@@ -340,6 +363,33 @@ model = "fable"
         assert_eq!(
             (fable.state, fable.summary.as_str()),
             (State::Out, "claude s39% w45% fable95%")
+        );
+    }
+
+    #[test]
+    fn a_window_its_source_limits_to_a_model_applies_only_to_that_family_without_a_model_list() {
+        let config = Config::parse(
+            "version = 1\n[harnesses.claude]\nexpect = [\"five_hour\", \"seven_day\"]\n",
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        let mut r = Readings::default();
+        r.merge(
+            &config,
+            &json!({"harnesses": [{"harness": "claude", "fetchedAt": "2026-10-29T01:59:00Z", "windows": [
+                {"id": "five_hour", "kind": "session", "percent": 39, "resetsAt": "2026-10-29T05:00:00Z"},
+                {"id": "seven_day", "kind": "weekly", "percent": 45, "resetsAt": "2026-11-02T00:00:00Z"},
+                {"id": "seven_day_fable", "kind": "weekly", "percent": 95, "resetsAt": "2026-11-02T00:00:00Z", "model": "fable"}
+            ]}]}),
+        );
+        let opus = pool("claude", "claude-opus-5-5", &r, &config, now());
+        assert_eq!(
+            (opus.state, opus.summary.as_str()),
+            (State::Ready, "claude s39% w45%")
+        );
+        assert_eq!(
+            pool("claude", "claude-fable-5-1", &r, &config, now()).summary,
+            "claude s39% w45% fable95%"
         );
     }
 

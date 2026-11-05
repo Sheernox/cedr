@@ -76,7 +76,7 @@ pub fn checks(root: &Path) -> Vec<Check> {
                     .chain(loaded.warnings.iter().cloned())
                     .collect::<Vec<_>>()
                     .join("; "),
-                "Move machine settings to the user routes.toml or explicitly select a trusted file with --config",
+                "Move repository machine settings to the user routes.toml or explicitly select a trusted file with --config; point [orchestrator] at a harness the routes define",
             );
             let (absent, _) = cedr_route::machine::absent(c);
             let stale = cedr_route::machine::stale(c, &Default::default());
@@ -319,8 +319,17 @@ pub fn checks(root: &Path) -> Vec<Check> {
         );
         check.fix = Some("Run cedr update".into());
     }
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-    let statusline = std::fs::read(home.join(".claude/settings.json"))
+    let home = PathBuf::from(
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .unwrap_or_default(),
+    );
+    // Claude Code reads its settings from CLAUDE_CONFIG_DIR when set.
+    let claude_settings = match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        Some(dir) => PathBuf::from(dir).join("settings.json"),
+        None => home.join(".claude/settings.json"),
+    };
+    let statusline = std::fs::read(claude_settings)
         .ok()
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
         .is_some_and(|v| {
@@ -333,11 +342,11 @@ pub fn checks(root: &Path) -> Vec<Check> {
     let cache = cedr_route::readers::claude_usage("claude");
     let (state, message) = match (installed("claude"), statusline, &cache) {
         (false, _, _) => ("skip", "harness absent".to_string()),
-        (true, _, Err(e)) => (
+        (true, true, _) => ("ok", "status line configured".to_string()),
+        (true, false, Err(e)) => (
             "warn",
             format!("Claude Code's usage cache cannot be read ({e})"),
         ),
-        (true, true, Ok(_)) => ("ok", "status line configured".to_string()),
         (true, false, Ok(Some(_))) => (
             "ok",
             "no status line; readings come from Claude Code's usage cache".to_string(),

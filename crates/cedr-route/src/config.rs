@@ -1035,6 +1035,7 @@ pub fn load_selected(selected: Located) -> Result<Loaded> {
     let routing = toml::to_string(&document).map_err(|e| parse_err(&path, e))?;
     let mut config = parse_shared(&routing, &path)?;
     let user = user_path();
+    let mut orchestrator_warning = None;
     if user.is_file() {
         let local = load_local(&user)?;
         config.readings = local
@@ -1050,14 +1051,24 @@ pub fn load_selected(selected: Located) -> Result<Loaded> {
             .collect();
         config.sync = local.sync;
         config.machine = local.machine;
-        if config.orchestrator.is_none() {
-            config.orchestrator = local
-                .orchestrator
-                .filter(|o| config.harnesses.contains_key(&o.harness));
+        match local.orchestrator {
+            Some(o) if config.orchestrator.is_none() => {
+                if config.harnesses.contains_key(&o.harness) {
+                    config.orchestrator = Some(o);
+                } else {
+                    orchestrator_warning = Some(format!(
+                        "{}: orchestrator harness {:?} is not in {}; none is used",
+                        user.display(),
+                        o.harness,
+                        path.display()
+                    ));
+                }
+            }
+            _ => {}
         }
     }
     config.validate(true).map_err(|m| parse_err(&path, m))?;
-    let warnings = if ignored {
+    let mut warnings = if ignored {
         vec![format!(
             "{}: ignored repository [[readings]], [sync] and [machine]; move machine settings to {} or explicitly select a trusted file with --config or CEDR_ROUTES",
             path.display(),
@@ -1066,6 +1077,7 @@ pub fn load_selected(selected: Located) -> Result<Loaded> {
     } else {
         Vec::new()
     };
+    warnings.extend(orchestrator_warning);
     Ok(Loaded {
         config,
         path,

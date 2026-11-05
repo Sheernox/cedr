@@ -35,6 +35,8 @@ pub struct Window {
     pub kind: WindowKind,
     pub percent: Option<f64>,
     pub resets_at: Option<DateTime<Utc>>,
+    /// The family the source says this window is limited to (docs/route.md, Pool state).
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +108,11 @@ impl Readings {
                     },
                     percent: w.get("percent").and_then(Value::as_f64),
                     resets_at: w.get("resetsAt").and_then(parse_ts),
+                    model: w
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .filter(|m| !m.is_empty())
+                        .map(str::to_string),
                 })
                 .collect();
             self.entries.insert(
@@ -166,11 +173,19 @@ impl Readings {
 pub fn collect(config: &Config, config_dir: &Path, now: DateTime<Utc>) -> (Readings, Vec<String>) {
     let mut readings = Readings::default();
     let mut warnings = Vec::new();
+    // Claude Code's usage cache belongs to the one account this process sees, so it cannot tell
+    // several Claude harnesses apart; those read only their status line captures.
+    let claude_cache = config
+        .readings
+        .iter()
+        .filter(|s| matches!(s, ReadingsSource::ClaudeStatusline { .. }))
+        .count()
+        == 1;
     for source in &config.readings {
         if covered(config, &readings, source) {
             continue;
         }
-        match fetch(source, config_dir, now) {
+        match fetch(source, config_dir, now, claude_cache) {
             Ok(Fetched { doc, warning }) => {
                 readings.merge(config, &doc);
                 warnings.extend(warning);
@@ -250,6 +265,7 @@ fn fetch(
     source: &ReadingsSource,
     config_dir: &Path,
     now: DateTime<Utc>,
+    claude_cache: bool,
 ) -> Result<Fetched, String> {
     match source {
         ReadingsSource::File { path } => {
@@ -302,29 +318,58 @@ fn fetch(
             crate::readers::grok(harness, COMMAND_TIMEOUT)
                 .map_err(|e| format!("grok readings unavailable ({e})"))
         }),
-        ReadingsSource::ClaudeStatusline { harness } => claude(harness),
+        ReadingsSource::ClaudeStatusline { harness } => claude(harness, claude_cache),
     }
 }
 
 /// The newer of the status line capture and Claude Code's own usage cache. Hosts that run Claude
-/// Code through its SDK (no status line) only have the cache; a cache that cannot be read only
-/// matters when there is no capture either.
-fn claude(harness: &str) -> Result<Fetched, String> {
+/// Code through its SDK (no status line) only have the cache. Either one failing is an error only
+/// when the other has no reading.
+fn claude(harness: &str, use_cache: bool) -> Result<Fetched, String> {
     let path = crate::readers::statusline_path(harness);
     let capture = match read_file(&path, MAX_BYTES) {
-        Ok(bytes) => {
-            Some(parse_doc(&bytes).map_err(|e| format!("readings {}: {e}", path.display()))?)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(format!("readings {}: {e}", path.display())),
+        Ok(bytes) => parse_doc(&bytes)
+            .map(Some)
+            .map_err(|e| format!("readings {}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("readings {}: {e}", path.display())),
+    };
+    let cache = if use_cache {
+        crate::readers::claude_usage(harness)
+            .map_err(|e| format!("claude readings unavailable ({e})"))
+    } else {
+        Ok(None)
     };
     let fetched = |d: &Value| parse_ts(&d["harnesses"][0]["fetchedAt"]);
-    match (capture, crate::readers::claude_usage(harness)) {
-        (Some(c), Ok(Some(u))) if fetched(&u) > fetched(&c) => Ok(u.into()),
-        (Some(c), _) => Ok(c.into()),
+    match (capture, cache) {
+        (Ok(Some(c)), Ok(Some(u))) => {
+            let (mut newer, older) = if fetched(&u) > fetched(&c) {
+                (u, c)
+            } else {
+                (c, u)
+            };
+            // The capture has no model windows, so the newer document keeps the other's windows
+            // it lacks rather than dropping a limit.
+            let extra: Vec<Value> = older["harnesses"][0]["windows"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|w| {
+                    !newer["harnesses"][0]["windows"]
+                        .as_array()
+                        .is_some_and(|ws| ws.iter().any(|n| n["id"] == w["id"]))
+                })
+                .cloned()
+                .collect();
+            if let Some(ws) = newer["harnesses"][0]["windows"].as_array_mut() {
+                ws.extend(extra);
+            }
+            Ok(newer.into())
+        }
+        (Ok(Some(d)), _) | (_, Ok(Some(d))) => Ok(d.into()),
         // Neither a capture nor a cache yet: no reading (`cedr doctor` says why).
-        (None, Ok(u)) => Ok(u.unwrap_or_else(|| json!({})).into()),
-        (None, Err(e)) => Err(format!("claude readings unavailable ({e})")),
+        (Ok(None), Ok(None)) => Ok(json!({}).into()),
+        (Err(e), _) | (_, Err(e)) => Err(e),
     }
 }
 

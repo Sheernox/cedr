@@ -663,15 +663,22 @@ fn claude_reads_claude_codes_usage_cache_without_a_status_line() {
     let s = Scratch::new(10.0, 20.0);
     let cfg = routes_file(
         &s,
-        "version = 1\n[harnesses.claude]\nexpect = [\"five_hour\", \"seven_day\"]\n[[readings]]\nkind = \"claude-statusline\"\n",
+        "version = 1\n[harnesses.claude]\nexpect = [\"five_hour\", \"seven_day\"]\nmodels = [\"claude-opus-5-5\", \"claude-fable-5-1\"]\n[routes.r]\ncandidates = [{ target = \"claude/fable\" }]\n[[readings]]\nkind = \"claude-statusline\"\n",
     );
+    // A broken status line capture must not hide a healthy cache.
+    let captures = s.dir.path().join("state/cedr/readings");
+    std::fs::create_dir_all(&captures).unwrap();
+    std::fs::write(captures.join("claude.json"), "{cut").unwrap();
     let now = chrono::Utc::now();
     let later = (now + chrono::Duration::hours(3)).to_rfc3339();
     let claude = s.dir.path().join("claude");
     std::fs::create_dir_all(&claude).unwrap();
-    let cache = json!({"cachedUsageUtilization": {"fetchedAtMs": now.timestamp_millis(), "utilization": {
+    let cache = json!({"oauthAccount": {"accountUuid": "acct-a"}, "cachedUsageUtilization": {
+        "accountUuid": "acct-a", "fetchedAtMs": now.timestamp_millis(), "utilization": {
         "five_hour": {"utilization": 39, "resets_at": later},
-        "seven_day": {"utilization": 45, "resets_at": later}}}});
+        "seven_day": {"utilization": 45, "resets_at": later},
+        "limits": [{"kind": "weekly_scoped", "percent": 2, "resets_at": later,
+                    "scope": {"model": {"display_name": "Fable"}}}]}}});
     std::fs::write(claude.join(".claude.json"), cache.to_string()).unwrap();
     let o = s.cedr(&["route", "pools", "--config", &cfg, "--format", "json"]);
     assert_eq!(
@@ -681,12 +688,84 @@ fn claude_reads_claude_codes_usage_cache_without_a_status_line() {
         String::from_utf8_lossy(&o.stderr)
     );
     let pools: Value = serde_json::from_slice(&o.stdout).unwrap();
-    assert!(
-        pools
-            .to_string()
-            .contains(r#""summary":"claude s39% w45%""#),
-        "{pools}"
+    let rows: Vec<(&str, &str)> = pools
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["family"].as_str().unwrap(),
+                r["summary"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("", "claude s39% w45%"),
+            ("fable", "claude s39% w45% fable2%")
+        ]
     );
+}
+
+#[test]
+fn several_claude_harnesses_never_share_one_usage_cache() {
+    let s = Scratch::new(10.0, 20.0);
+    let cfg = routes_file(
+        &s,
+        "version = 1\n[harnesses.claude]\n[harnesses.work]\n[[readings]]\nkind = \"claude-statusline\"\n[[readings]]\nkind = \"claude-statusline\"\nharness = \"work\"\n",
+    );
+    let now = chrono::Utc::now();
+    let claude = s.dir.path().join("claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    let cache = json!({"oauthAccount": {"accountUuid": "acct-a"}, "cachedUsageUtilization": {
+        "accountUuid": "acct-a", "fetchedAtMs": now.timestamp_millis(), "utilization": {
+        "five_hour": {"utilization": 39, "resets_at": (now + chrono::Duration::hours(3)).to_rfc3339()}}}});
+    std::fs::write(claude.join(".claude.json"), cache.to_string()).unwrap();
+    let out = stdout(&s.cedr(&["route", "pools", "--config", &cfg]));
+    assert!(
+        out.contains("claude no reading") && out.contains("work no reading"),
+        "{out}"
+    );
+}
+
+#[test]
+fn the_newer_of_the_status_line_capture_and_the_usage_cache_wins() {
+    let s = Scratch::new(10.0, 20.0);
+    let cfg = routes_file(
+        &s,
+        "version = 1\n[harnesses.claude]\nexpect = [\"five_hour\", \"seven_day\"]\n[routes.r]\ncandidates = [{ target = \"claude/fable\" }]\n[[readings]]\nkind = \"claude-statusline\"\n",
+    );
+    let now = chrono::Utc::now();
+    let later = (now + chrono::Duration::hours(3)).to_rfc3339();
+    let earlier = now - chrono::Duration::minutes(5);
+    let captures = s.dir.path().join("state/cedr/readings");
+    let claude = s.dir.path().join("claude");
+    std::fs::create_dir_all(&captures).unwrap();
+    std::fs::create_dir_all(&claude).unwrap();
+    let write = |capture_at: chrono::DateTime<chrono::Utc>,
+                 cache_at: chrono::DateTime<chrono::Utc>| {
+        let capture = json!({"harnesses": [{"harness": "claude", "fetchedAt": capture_at.to_rfc3339(), "windows": [
+            {"id": "five_hour", "kind": "session", "percent": 10, "resetsAt": later},
+            {"id": "seven_day", "kind": "weekly", "percent": 11, "resetsAt": later}]}]});
+        std::fs::write(captures.join("claude.json"), capture.to_string()).unwrap();
+        let cache = json!({"oauthAccount": {"accountUuid": "acct-a"}, "cachedUsageUtilization": {
+            "accountUuid": "acct-a", "fetchedAtMs": cache_at.timestamp_millis(), "utilization": {
+            "five_hour": {"utilization": 39, "resets_at": later},
+            "seven_day": {"utilization": 45, "resets_at": later},
+            "limits": [{"kind": "weekly_scoped", "percent": 2, "resets_at": later,
+                        "scope": {"model": {"display_name": "Fable"}}}]}}});
+        std::fs::write(claude.join(".claude.json"), cache.to_string()).unwrap();
+        stdout(&s.cedr(&["route", "pools", "--config", &cfg, "--format", "json"]))
+    };
+    // The capture wins its own windows and keeps the cache's model window.
+    let out = write(now, earlier);
+    assert!(out.contains(r#""summary": "claude s10% w11%""#), "{out}");
+    assert!(
+        out.contains(r#""summary": "claude s10% w11% fable2%""#),
+        "{out}"
+    );
+    assert!(write(earlier, now).contains(r#""summary": "claude s39% w45%""#));
 }
 
 #[test]
@@ -762,6 +841,56 @@ fn a_machine_orchestrator_applies_over_shared_routes_without_one() {
     assert!(
         String::from_utf8_lossy(&o.stderr)
             .contains("orchestrator harness \"gone\" is not in the shared routes"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
+
+#[test]
+fn a_repository_routes_file_takes_the_user_orchestrator_or_says_why_not() {
+    let s = Scratch::new(10.0, 20.0);
+    let repo = s.dir.path().join("repo");
+    std::fs::create_dir_all(repo.join(".cedr")).unwrap();
+    let routing = std::fs::read_to_string(config()).unwrap().replace(
+        "[orchestrator]\nharness = \"claude\"\nmodel = \"opus\"\n",
+        "",
+    );
+    std::fs::write(repo.join(".cedr/routes.toml"), routing).unwrap();
+    let user = s.dir.path().join("config/cedr");
+    std::fs::create_dir_all(&user).unwrap();
+    let readings = s.readings();
+    let pick = |orchestrator: &str| {
+        std::fs::write(
+            user.join("routes.toml"),
+            format!("version = 1\n[harnesses.{orchestrator}]\n[orchestrator]\nharness = \"{orchestrator}\"\nmodel = \"opus\"\n"),
+        )
+        .unwrap();
+        s.command(&[
+            "route",
+            "pick",
+            "review.code",
+            "--readings",
+            &readings,
+            "--format",
+            "json",
+        ])
+        .current_dir(&repo)
+        .output()
+        .unwrap()
+    };
+    let o = pick("claude");
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(
+        v["orchestrator"],
+        "claude s5% w20%",
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let o = pick("gone");
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(v["orchestrator"].is_null());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("orchestrator harness \"gone\" is not in"),
         "{}",
         String::from_utf8_lossy(&o.stderr)
     );

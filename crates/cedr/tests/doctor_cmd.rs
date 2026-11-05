@@ -238,7 +238,7 @@ fn doctor_says_why_claude_has_no_reading_and_when_no_orchestrator_is_set() {
 
     fs::write(
         home.path().join(".claude.json"),
-        r#"{"cachedUsageUtilization": {"fetchedAtMs": 1793750400000, "utilization": {
+        r#"{"oauthAccount": {"accountUuid": "acct-a"}, "cachedUsageUtilization": {"accountUuid": "acct-a", "fetchedAtMs": 1793750400000, "utilization": {
             "five_hour": {"utilization": 1, "resets_at": "2026-11-06T01:00:00+00:00"}}}}"#,
     )
     .unwrap();
