@@ -150,14 +150,39 @@ Each reads through the vendor's own CLI or the data it hands to its user's scrip
 - `codex`: runs `codex app-server` (from `PATH`), sends `initialize`, then `account/rateLimits/read` and `model/list`, and closes it within the 10-second command deadline. Each window of `rateLimits` (`primary`, `secondary`) becomes a window with that id: `percent` from `usedPercent`, `resetsAt` from the epoch seconds, `kind` session when `windowDurationMins` is 300 or less, else weekly. Visible model ids from `model/list` become the harness's model list. Cached like `command`.
 - `muse`: runs `muse usage --json` with `MUSE_NO_AUTO_UPDATE=1` (so a probe never replaces the installed CLI). Its undocumented `schemaVersion` 1 reply gives `allowance.window` (session) and `allowance.weekly` with `usedPercent` and `resetsAtMs`; no allowance yet (before a window's first turn) or another format is an error, so the plan reads as unknown, never as unused. Cached like `command`.
 - `grok`: runs `grok agent stdio` with `GROK_DISABLE_AUTOUPDATER=1` (so a probe never replaces the installed CLI), sends ACP `initialize` and the undocumented `_x.ai/billing` method (no session and no model turn), and closes it within the 10-second command deadline. A `config.currentPeriod` of type `USAGE_PERIOD_TYPE_WEEKLY` with valid `start` and `end` and a finite, non-negative `config.creditUsagePercent` becomes the window `weekly` (kind weekly, `resetsAt` from `end`). No period yet, another period type, a refusal or an invalid value is an error, so the plan reads as unknown, never as unused. The pool is shared with the vendor's other products, so the percent can rise with no Grok turn. Models come from `models` in the harness config or `--models`. Cached like `command`.
-- Gemini has no built-in reader: its plan quota is only available through its OAuth credentials, which Cedr never reads. Without a readings source its plan is unknown, which still takes small and medium work.
 - `claude-statusline`: reads the file `cedr route statusline` last wrote (`$XDG_STATE_HOME/cedr/readings/<harness>.json`). Claude passes `rate_limits.five_hour` and `rate_limits.seven_day` (`used_percentage`, `resets_at` in epoch seconds) to its status line command; `cedr route statusline` turns them into windows `five_hour` (session) and `seven_day` (weekly) with `fetchedAt` set to the time of capture, so the reading goes stale ten minutes after the last active Claude session. A missing file is no reading. Claude sends `rate_limits` only to Pro and Max subscribers after a session's first response.
+- Antigravity (Gemini) has no built-in reader: its plan quota is only available through its OAuth credentials, which Cedr never reads. Without a readings source its plan is unknown, which still takes small and medium work. A tool the user trusts with those credentials can feed it through an `http`, `command` or `file` source instead (see Antigravity readings).
+
+### Antigravity readings
+
+The Gemini plan has a 5-hour and a weekly window shared by every Gemini model, and Argon has a weekly pool of its own. A source reports them under the harness id or one of its aliases, one window each, with the account as an optional `@` suffix:
+
+```json
+{"harnesses": [{"harness": "antigravity", "fetchedAt": "2026-11-05T23:14:47Z", "error": null, "windows": [
+  {"id": "gemini-5h", "kind": "session", "percent": 0.0, "resetsAt": "2026-11-06T04:14:47Z"},
+  {"id": "gemini-weekly", "kind": "weekly", "percent": 16.5, "resetsAt": "2026-11-10T00:00:00Z"},
+  {"id": "gemini-argon-weekly", "kind": "weekly", "percent": 84.6, "resetsAt": "2026-11-10T00:00:00Z"}]}]}
+```
+
+The routes name the shared windows in `expect` and the Argon pool as a model window, so it limits only Argon and a Flash pick never waits on it:
+
+```toml
+[harnesses.antigravity]
+expect = ["gemini-5h", "gemini-weekly"]
+
+[model_windows.gemini-argon-weekly]
+harness = "antigravity"
+model = "argon"
+```
+
+The window ids are whatever the source and the routes agree on; these are the conventional ones. A window the routes do not declare as a model window applies to every model. A source that cannot read the quota reports `"error"` (the plan reads as unknown), never a 0% window.
 
 ## Machine checks
 
 An org's shared routes assume every member has the same plans; each machine checks that for itself, every time it builds pools (`pick`, `pools`, `council plan`, the sync snapshot):
 
 - **Absent**: a harness listed in `[machine] skip`, or with a `command` that is not an executable file (an absolute path) or not found in any `PATH` directory, is `absent` on this machine, whatever its readings say. Summary `<harness> skipped on this machine` or `<harness> not installed (<command>)`. Nothing is run to check.
+- **Run by T3 Code**: T3 Code runs some agents itself (Antigravity among them) with no program on `PATH`, giving each provider instance a home of its own at `$T3CODE_HOME/userdata/providers/<driver>/<SHA-256 of the instance id, lowercase hex>/` (`$T3CODE_HOME` defaults to `~/.t3`). A harness whose `command` is not found is still present when such a directory exists for its T3 instance id (`t3`, default the harness id), under any driver. A `skip` still makes it absent. The directory outlives a provider removed from T3 Code; `skip` it on a machine that no longer has it.
 - **Stale machine file**: a harness with `billing = "plan"` and a `reader` hint, not absent, is stale when the local file has no `[[readings]]` source of that kind for it and the merged readings have no entry for it (so an `http`, `file` or `command` feed that covers it is enough). It means the routes gained a plan after this machine was set up. Each stale harness adds the warning `this machine has no <reader> usage reader for <harness>, which the routes expect: rerun "Set up this machine" in the app, or add [[readings]] kind = "<reader>", harness = "<harness>"` to stderr and to a pick's `warnings`. The harness keeps routing as `unknown`; the warning is the only change.
 
 ## Pool state

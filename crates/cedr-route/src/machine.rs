@@ -2,9 +2,10 @@
 //! is missing, and the id and name the app shows it by. Nothing here runs a program to check.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::config::{Config, xdg_dir};
 use crate::error::{Result, io_err};
@@ -19,6 +20,10 @@ pub struct Stale {
 
 /// Harnesses absent on this machine, with their pool summary, plus a warning per unknown skip name.
 pub fn absent(config: &Config) -> (HashMap<String, String>, Vec<String>) {
+    absent_with(config, &t3_providers())
+}
+
+fn absent_with(config: &Config, t3_providers: &Path) -> (HashMap<String, String>, Vec<String>) {
     let mut out = HashMap::new();
     let mut warnings = Vec::new();
     let skip = config
@@ -42,6 +47,7 @@ pub fn absent(config: &Config) -> (HashMap<String, String>, Vec<String>) {
         }
         if let Some(command) = &h.command
             && !installed(command)
+            && !t3_profile(t3_providers, h.t3.as_deref().unwrap_or(id))
         {
             out.insert(id.clone(), format!("{id} not installed ({command})"));
         }
@@ -80,6 +86,28 @@ pub fn stale_warning(s: &Stale) -> String {
         reader = s.reader,
         harness = s.harness
     )
+}
+
+/// Where T3 Code keeps the homes it gives the agents it runs itself: `$T3CODE_HOME` (default
+/// `~/.t3`) `/userdata/providers/<driver>/<SHA-256 of the provider instance id>/`.
+fn t3_providers() -> PathBuf {
+    xdg_dir("T3CODE_HOME", ".t3")
+        .join("userdata")
+        .join("providers")
+}
+
+/// Whether T3 Code has a provider profile for `instance`: T3 runs that agent without a program on
+/// `PATH`, so a missing `command` does not make the harness absent.
+fn t3_profile(providers: &Path, instance: &str) -> bool {
+    let name: String = Sha256::digest(instance.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    std::fs::read_dir(providers).is_ok_and(|drivers| {
+        drivers
+            .flatten()
+            .any(|driver| driver.path().join(&name).is_dir())
+    })
 }
 
 /// Whether `command` is an executable file: an absolute path as given, a name on `PATH`.
@@ -219,6 +247,32 @@ candidates = [{ target = "codex/sol" }, { target = "claude/sonnet" }]
         assert!(!absent.contains_key("codex-api"));
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("\"gone\""));
+    }
+
+    #[test]
+    fn a_t3_provider_profile_counts_as_installed() {
+        let text = "version = 1\n[harnesses.antigravity]\ncommand = \"/nonexistent/agy\"\n[harnesses.work]\ncommand = \"/nonexistent/agy\"\nt3 = \"agy_work\"\n[harnesses.other]\ncommand = \"/nonexistent/agy\"\n";
+        let c = config(text);
+        let dir = tempfile::tempdir().unwrap();
+        let hex = |s: &str| -> String {
+            Sha256::digest(s.as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        };
+        // Profiles are named by the T3 instance id (the `t3` key, else the harness id), under any driver.
+        std::fs::create_dir_all(dir.path().join("antigravity").join(hex("antigravity"))).unwrap();
+        std::fs::create_dir_all(dir.path().join("antigravity").join(hex("agy_work"))).unwrap();
+        // A file of that name is not a profile.
+        std::fs::write(dir.path().join("antigravity").join(hex("other")), "").unwrap();
+        let (absent, _) = absent_with(&c, dir.path());
+        assert!(!absent.contains_key("antigravity"));
+        assert!(!absent.contains_key("work"));
+        assert_eq!(absent["other"], "other not installed (/nonexistent/agy)");
+        // A skip still wins over a profile.
+        let c = config(&format!("{text}[machine]\nskip = [\"antigravity\"]\n"));
+        let (absent, _) = absent_with(&c, dir.path());
+        assert_eq!(absent["antigravity"], "antigravity skipped on this machine");
     }
 
     #[test]

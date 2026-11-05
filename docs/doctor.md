@@ -11,7 +11,7 @@ Each check is `{"id", "area", "state": "ok" | "warn" | "fail" | "skip", "message
 | `key.valid` | account | `GET /me` with the key answers 200; names the key's owner, never the key |
 | `org.member` | account | The configured org (monitor config, then `[sync] org`) is one the key's owner belongs to (`GET /me` lists them) |
 | `route.config` | route | A routes config is found and parses; names its path |
-| `route.readers` | route | Route's machine checks: harnesses whose program is missing, and stale usage readers |
+| `route.readers` | route | Route's machine checks: harnesses skipped or whose program is missing (and T3 Code does not run), and stale usage readers |
 | `route.statusline` | route | Claude's `~/.claude/settings.json` status line runs `cedr route statusline` (warn when Claude is installed and it does not) |
 | `route.sync` | route | The last background sync error, if any |
 | `mcp.claude`, `mcp.codex`, `mcp.grok` | mcp | `cedr` is registered as an MCP server for that agent (`claude mcp list`, `codex mcp list`, `grok mcp list`; skip when the agent is absent) |
