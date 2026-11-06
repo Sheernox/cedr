@@ -29,21 +29,21 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 const EXAMPLES: &str = "\
 Examples:
-  cedr sync init && cedr sync          import and compile agent setup
-  cedr doctor --format json            diagnose this machine and repo
-  cedr monitor --since 7d              report local API-equivalent usage
+  cedr sync init && cedr sync            import and compile agent setup
+  cedr doctor --format json              diagnose this machine and repo
+  cedr monitor --since 7d                report local API-equivalent usage
   cedr route pick review.code            pick the agent for a kind of work
   cedr route verdict <pick id> accepted  record how it went
   cedr council plan review.council       name the reviewers, one per vendor
-  cedr council merge a=a.md b=b.md --route review.council
-  cedr guard lint && cedr guard lock    pin the skills and MCP servers a repo loads
-  cedr guard verify                     fail when the setup no longer matches the lock
-  cedr guard outdated --fail-on high    inspect newer npm server surfaces
-  cedr guard push --updates             report pins, findings and available updates
+  cedr council merge a=a.md b=b.md       merge their reports into one gate
+  cedr guard lint && cedr guard lock     pin the skills and MCP servers a repo loads
+  cedr guard verify                      fail when the setup no longer matches the lock
+  cedr guard outdated --fail-on high     inspect newer npm server surfaces
+  cedr guard push --updates              report pins, findings and available updates
   cedr bench run --budget-usd 5          measure a change with a task suite
   claude mcp add cedr -- cedr mcp        give an agent cedr's tools
-  cedr update                           install the latest release
-  cedr telemetry off                    stop sending anonymous usage data
+  cedr update                            install the latest release
+  cedr telemetry off                     stop sending anonymous usage data
 
 Start with a routes.toml: https://cedr.dev/docs/route (the app can generate one).";
 
@@ -223,8 +223,8 @@ enum GuardCommand {
 
 /// Guard's commands sat at the top level until 0.6.0. They still run, so existing CI and scripts keep
 /// working and the GitHub Action can use older pinned releases, but help and completions list only `cedr guard`.
-const LEGACY_GUARD: [&str; 8] = [
-    "lint", "lock", "verify", "outdated", "push", "surface", "latest", "diff",
+const LEGACY_GUARD: [&str; 9] = [
+    "lint", "lock", "verify", "outdated", "remote", "push", "surface", "latest", "diff",
 ];
 
 fn cli_command() -> clap::Command {

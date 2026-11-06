@@ -948,11 +948,12 @@ fn help_lists_guard_but_not_its_old_top_level_names() {
     let commands = help.split("Options:").next().unwrap();
     assert!(commands.contains("\n  guard "));
     for old in [
-        "lint", "lock", "verify", "outdated", "push", "surface", "latest", "diff",
+        "lint", "lock", "verify", "outdated", "remote", "push", "surface", "latest", "diff",
     ] {
         assert!(
             !commands.contains(&format!("\n  {old} ")),
             "{old} is listed"
         );
+        assert!(cedr(&[old, "--help"]).status.success(), "{old} still runs");
     }
 }
