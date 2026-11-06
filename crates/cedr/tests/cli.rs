@@ -76,9 +76,27 @@ fn rules(report: &Value) -> BTreeSet<String> {
 #[test]
 fn lint_good_repo_is_clean() {
     let repo = scratch("repo-good");
-    let out = cedr(&["lint", path_str(repo.path())]);
+    let out = cedr(&["guard", "lint", path_str(repo.path())]);
     assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stdout));
-    assert!(out.stdout.is_empty());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.starts_with("cedr: no findings in ") && text.ends_with(" MCP servers\n"),
+        "{text}"
+    );
+    // The machine formats keep their shapes: JSON its report, GitHub only its summary line.
+    let json = stdout_json(&cedr(&[
+        "guard",
+        "lint",
+        path_str(repo.path()),
+        "--format",
+        "json",
+    ]));
+    assert_eq!(json["findings"], serde_json::json!([]));
+    let github = cedr(&["guard", "lint", path_str(repo.path()), "--format", "github"]);
+    assert_eq!(
+        String::from_utf8_lossy(&github.stdout),
+        "cedr: 0 errors, 0 warnings\n"
+    );
 }
 
 #[test]

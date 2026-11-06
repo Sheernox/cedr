@@ -819,6 +819,12 @@ fn init(name: &str) -> Result<ExitCode, String> {
     }
     settings::write_atomic(&path, STARTER.as_bytes())?;
     println!("{}", path.display());
+    eprintln!(
+        "cedr: next: 1. write a real task's prompt and test in it; \
+         2. make the candidate differ from the baseline: commit the agent setup change to measure so HEAD differs from main, \
+         or drop both refs and give the candidate another model to compare models; \
+         3. run cedr bench plan to check the suite, then cedr bench run --budget-usd 5"
+    );
     Ok(ExitCode::SUCCESS)
 }
 

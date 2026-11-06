@@ -117,7 +117,7 @@ On Linux and macOS, Ctrl-C (or SIGTERM or SIGHUP) kills the running step, remove
 
 ### `cedr bench init [--name NAME]`
 
-Writes a commented starter suite to `.cedr/bench/<name>.toml` (default `suite`) at the git top level of the working directory, to edit before use: its variants compare `main` with `HEAD` on the same model. Refuses to overwrite a file (exit 1). Prints the path.
+Writes a commented starter suite to `.cedr/bench/<name>.toml` (default `suite`) at the git top level of the working directory, to edit before use: its variants compare `main` with `HEAD` on the same model. Refuses to overwrite a file (exit 1). Prints the path, and on stderr the next steps: write a real task's prompt and test, make the candidate differ from the baseline (commit the change to measure, or give the candidate another model), then `cedr bench plan`.
 
 ### `cedr bench plan [SUITE] [--task ID]... [--trials N] [--format text|json]`
 

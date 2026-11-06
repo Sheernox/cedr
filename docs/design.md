@@ -112,7 +112,7 @@ Findings never show a URL's user info, query or fragment, and show a `command:` 
 | CG009 | per pattern | A ported SkillSpector pattern matched in a skill directory; SkillSpector high maps to error, medium and low to warning, and the message keeps the original severity |
 | CG010 | error | A skill directory that links outside the repo root (it is skipped, not read) |
 
-`cedr guard lint [PATH] [--format text|json|github] [--strict]`. Exit 0 when clean, 1 when any error is found (or any warning with `--strict`), 2 on usage or I/O failure.
+`cedr guard lint [PATH] [--format text|json|github] [--strict]`. With no findings, text output is one line, `cedr: no findings in <n> instruction files, <n> skills and <n> MCP servers`; JSON and GitHub output keep their shapes. Exit 0 when clean, 1 when any error is found (or any warning with `--strict`), 2 on usage or I/O failure.
 
 `--format github` (lint and verify) prints one GitHub Actions workflow command per finding, `::error file=<path>,line=<line>,title=<rule>::<message>` (`::warning` for warnings; `line=` omitted when `line` is null), so findings show as annotations on the pull request. Values are escaped as the runner expects: `%` `\r` `\n` as `%25` `%0D` `%0A` in the message, and additionally `:` and `,` as `%3A` and `%2C` in properties. Diagnostics on stderr escape control characters in repo paths, so no repo content starts a workflow command. A last line `cedr: <n> errors, <m> warnings` follows on stdout.
 

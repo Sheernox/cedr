@@ -336,6 +336,16 @@ fn run(command: GuardCommand) -> cedr_core::Result<ExitCode> {
         } => {
             let report = lint::lint(&path)?;
             print_report(&report, format);
+            // An empty text report would print nothing; say what was checked instead.
+            if report.is_empty() && matches!(format, ReportFormat::Text) {
+                let ws = cedr_core::discovery::discover(&path)?;
+                println!(
+                    "cedr: no findings in {} instruction files, {} skills and {} MCP servers",
+                    ws.instructions.len(),
+                    ws.skills.len(),
+                    ws.servers.len()
+                );
+            }
             let failed = report.has_errors() || (strict && !report.is_empty());
             Ok(exit(failed))
         }

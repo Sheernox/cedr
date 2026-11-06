@@ -416,6 +416,15 @@ fn init_writes_a_suite_that_plans_and_never_overwrites() {
     assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
     let written = repo.root().join(".cedr/bench/suite.toml");
     let starter = fs::read_to_string(&written).unwrap();
+    let next = String::from_utf8_lossy(&out.stderr);
+    for step in [
+        "prompt and test",
+        "HEAD differs from main",
+        "another model",
+        "cedr bench plan",
+    ] {
+        assert!(next.contains(step), "{next}");
+    }
     // The starter's variants are the same commit on a fresh repo, so only a real change can run it.
     git(&repo.root(), &["checkout", "-q", "-b", "change"]);
     repo.write("AGENTS.md", "new rules\n");
