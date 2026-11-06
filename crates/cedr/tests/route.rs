@@ -926,11 +926,11 @@ fn a_repository_routes_file_takes_the_user_orchestrator_or_says_why_not() {
 }
 
 #[test]
-fn pools_list_a_scoped_limit_for_the_version_a_family_target_resolves_to() {
+fn pools_list_a_scoped_limit_for_any_version_a_family_target_may_pick() {
     let s = Scratch::new(10.0, 20.0);
     let cfg = routes_file(
         &s,
-        "version = 1\n[harnesses.claude]\nexpect = [\"five_hour\", \"seven_day\"]\nmodels = [\"claude-opus-4-5\", \"claude-sonnet-5-5\"]\n[routes.r]\ncandidates = [{ target = \"claude/opus\" }]\n[[readings]]\nkind = \"claude-statusline\"\n",
+        "version = 1\n[harnesses.claude]\nexpect = [\"five_hour\", \"seven_day\"]\nmodels = [\"claude-opus-5-5\", \"claude-opus-4-5\", \"claude-sonnet-5-5\"]\n[routes.r]\ncandidates = [{ target = \"claude/opus\" }]\n[[readings]]\nkind = \"claude-statusline\"\n",
     );
     let now = chrono::Utc::now();
     let later = (now + chrono::Duration::hours(3)).to_rfc3339();

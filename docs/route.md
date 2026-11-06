@@ -278,7 +278,7 @@ All take `--config PATH`; picks also take `--readings`, `--models`, `--no-record
 |---|---|
 | `cedr route pick <route> [--size small\|medium\|large] [--avoid H]... [--judges P \| --escalates P] [--format text\|json\|t3]` | Pick and record; `--judges`/`--escalates` link a cascade's judge or escalation to its draft pick `P` |
 | `cedr route manual <harness>/<model> [--effort E] [--format ...]` | Tag a named model and record |
-| `cedr route pools [--format text\|json]` | Each harness's state, plus one row per model window family a route's target uses, by its name or the id it resolves to |
+| `cedr route pools [--format text\|json]` | Each harness's state, plus one row per model window family a route's target uses, by its name or any offered version it stands for (an evaluation may hold a pick to an older one) |
 | `cedr route list` | Routes with their tier chains, and `judge <route> -> <escalate route or self>` after a cascade's chain |
 | `cedr route show <route> [--readings F] [--models F] [--format text\|json]` | What the route would pick at each size right now, and each candidate's model, state, sizes taken and thresholds; records nothing |
 | `cedr route models [--readings F] [--models F] [--format text\|json]` | The model ids each harness offers, for use in targets |

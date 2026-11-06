@@ -716,13 +716,15 @@ impl Context<'_> {
                     .map(|(_, f)| f)
                     .filter(|f| {
                         routed.iter().any(|t| {
-                            // A family name ("opus") resolves to the id a window may name
-                            // ("opus-4-5" in "claude-opus-4-5").
+                            // A family name ("opus") stands for every offered version, any of
+                            // which a pick may use (an evaluation can hold back the newest).
                             t.split_once('/').is_some_and(|(h, m)| {
                                 h == harness
                                     && (crate::pool::in_family(m, f)
-                                        || crate::pool::resolve(harness, m, self.readings)
-                                            .is_some_and(|id| crate::pool::in_family(&id, f)))
+                                        || crate::pool::versions(harness, m, self.readings)
+                                            .is_some_and(|ids| {
+                                                ids.iter().any(|id| crate::pool::in_family(id, f))
+                                            }))
                             })
                         })
                     })
