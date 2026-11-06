@@ -541,3 +541,49 @@ fn a_missing_key_fails_only_when_an_org_needs_it_and_a_broken_key_always_does() 
         assert_eq!(doctor_check(home.path(), "key.valid").1, "no key");
     }
 }
+
+#[test]
+fn doctor_skips_absent_monitor_sources_but_warns_for_empty_configured_ones() {
+    let home = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(home.path().join(".claude/projects")).unwrap();
+    let cfg = home.path().join(".config/cedr");
+    fs::create_dir_all(&cfg).unwrap();
+    fs::write(cfg.join("monitor.toml"), "[paths]\nmuse='~/missing-muse'\n").unwrap();
+    for saved in [false, true] {
+        if saved {
+            let db = cedr_monitor::store::Store::open(
+                &home.path().join(".local/state/cedr/monitor.sqlite"),
+            )
+            .unwrap();
+            for harness in cedr_monitor::HARNESSES {
+                db.db.execute("INSERT OR REPLACE INTO sources(harness,data) VALUES (?1,?2)", (harness, serde_json::json!({"harness": harness, "state":"absent", "files":0,"malformed":0}).to_string())).unwrap();
+            }
+        }
+        let out = Command::new(env!("CARGO_BIN_EXE_cedr"))
+            .args(["doctor", "--format", "json"])
+            .arg(root.path())
+            .env_clear()
+            .env("HOME", home.path())
+            .env("PATH", "")
+            .env("CEDR_TELEMETRY", "0")
+            .env("CEDR_NO_AUTO_UPDATE", "1")
+            .output()
+            .unwrap();
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        for check in v["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["id"] == "monitor.sources")
+        {
+            let message = check["message"].as_str().unwrap();
+            let present = message.starts_with("claude:") || message.starts_with("muse:");
+            assert_eq!(
+                check["state"],
+                if present { "warn" } else { "skip" },
+                "{check}"
+            );
+        }
+    }
+}

@@ -18,7 +18,7 @@ Each check is `{"id", "area", "state": "ok" | "warn" | "fail" | "skip", "message
 | `route.sync` | route | The last background sync error, if any |
 | `mcp.claude`, `mcp.codex`, `mcp.grok` | mcp | `cedr` is registered as an MCP server for that agent (`claude mcp list`, `codex mcp list`, `grok mcp list`; skip when the agent is absent) |
 | `monitor.config` | monitor | The monitor config parses |
-| `monitor.sources` | monitor | One check per harness from `cedr monitor sources` |
+| `monitor.sources` | monitor | One check per harness from `cedr monitor sources`: skip when no source directories exist and neither `harnesses` nor `[paths]` configures it; warn when a present or configured source has no files. Saved absent or unsupported sources also skip when not present or configured |
 | `monitor.push` | monitor | The last push time (warn after 24 hours with an org set), and the last background push error |
 | `monitor.schedule` | monitor | The push timer is installed |
 | `sync.config` | sync | In a repo: `.cedr/sync.toml` exists and parses (skip outside a repo) |

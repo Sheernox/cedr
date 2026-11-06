@@ -881,3 +881,92 @@ fn claude_colon_star_permissions_import_as_plain_prefixes() {
     assert!(read("opencode.json").contains("\"rm *\": \"deny\""));
     assert!(read(".grok/config.toml").contains("pattern = \"rm *\""));
 }
+
+#[cfg(unix)]
+#[test]
+fn generated_instruction_files_can_become_shared_links() {
+    use std::os::unix::fs::symlink;
+    for (agent, path) in [("claude", "CLAUDE.md"), ("gemini", "GEMINI.md")] {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        fs::create_dir_all(r.join(".cedr/rules")).unwrap();
+        fs::write(
+            r.join(".cedr/sync.toml"),
+            format!("version=1\ntargets=['agents','{agent}']\n"),
+        )
+        .unwrap();
+        fs::write(r.join(".cedr/rules/10-agents.md"), "Shared rules.\n").unwrap();
+        let scoped = r.join(".cedr/rules/20-own.md");
+        fs::write(
+            &scoped,
+            format!("---\nagents: [{agent}]\n---\nOwn rules.\n"),
+        )
+        .unwrap();
+        assert!(cedr_sync::apply(r, &cedr_sync::plan(r).unwrap(), false).unwrap());
+        fs::remove_file(scoped).unwrap();
+        fs::remove_file(r.join(path)).unwrap();
+        symlink("AGENTS.md", r.join(path)).unwrap();
+        let before = cedr_sync::check(r);
+        assert!(
+            !before
+                .findings
+                .iter()
+                .any(|f| f.rule == cedr_core::finding::Rule::Cs004),
+            "{}",
+            before.to_text()
+        );
+        assert!(cedr_sync::apply(r, &cedr_sync::plan(r).unwrap(), false).unwrap());
+        assert!(cedr_sync::check(r).is_empty());
+        assert_eq!(fs::read_link(r.join(path)).unwrap(), Path::new("AGENTS.md"));
+        let lock: Value =
+            serde_json::from_slice(&fs::read(r.join(".cedr/sync.lock")).unwrap()).unwrap();
+        assert!(lock["files"].get(path).is_none());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_preserves_modes_and_new_files_follow_the_child_umask() {
+    use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+    let d = fixture();
+    let r = d.path();
+    fs::write(r.join("AGENTS.md"), "old rules\n").unwrap();
+    fs::set_permissions(r.join("AGENTS.md"), fs::Permissions::from_mode(0o640)).unwrap();
+    for mask in [0o022, 0o077] {
+        let settings = r.join(".claude/settings.json");
+        if settings.exists() {
+            fs::remove_file(&settings).unwrap();
+        }
+        let mut command = binary();
+        command
+            .args(["sync", "--force"])
+            .arg(r)
+            .env("CEDR_TELEMETRY", "0")
+            .env("CEDR_NO_AUTO_UPDATE", "1");
+        // Set the mask only in the child: changing it in the test process would race other tests.
+        unsafe {
+            command.pre_exec(move || {
+                libc::umask(mask);
+                Ok(())
+            });
+        }
+        let out = command.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            fs::metadata(r.join("AGENTS.md"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o640
+        );
+        assert_eq!(
+            fs::metadata(settings).unwrap().permissions().mode() & 0o777,
+            0o666 & !mask
+        );
+    }
+}

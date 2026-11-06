@@ -171,14 +171,25 @@ fn location(s: &str) -> Option<(&str, u64)> {
     let s = s.trim().trim_matches(['`', '*']);
     let (file, line) = s.rsplit_once(':')?;
     let line = line.parse().ok()?;
-    (!file.is_empty() && !file.contains(char::is_whitespace)).then_some((file, line))
+    // A trailing numeric column belongs to the location, not the filename (including Windows drives).
+    let (file, line) = match file.rsplit_once(':') {
+        Some((path, row)) if row.parse::<u64>().is_ok() => (path, row.parse().ok()?),
+        _ => (file, line),
+    };
+    (!file.is_empty()).then_some((file, line))
 }
 
 fn parse_line(line: &str) -> Option<Finding> {
     SEPARATORS.iter().find_map(|sep| {
         let mut parts = line.splitn(4, sep);
         let (file, line_no) = location(parts.next()?)?;
-        let severity = Severity::parse(parts.next()?.trim().trim_matches(['*', '`', '[', ']']))?;
+        let severity = Severity::parse(
+            &parts
+                .next()?
+                .trim()
+                .trim_matches(['*', '`', '[', ']'])
+                .to_ascii_uppercase(),
+        )?;
         let claim = parts.next()?.trim().trim_matches('*').trim().to_string();
         let scenario = parts
             .next()
@@ -194,17 +205,20 @@ fn parse_line(line: &str) -> Option<Finding> {
     })
 }
 
-/// A line that opens with a location and names a severity is meant as a finding.
+/// A severity in the finding's second field signals intent even when its location is malformed.
+/// Prose about an earlier finding has no such field and remains commentary.
 fn looks_like_finding(line: &str) -> bool {
-    let first = line
-        .split(char::is_whitespace)
-        .next()
-        .unwrap_or("")
-        .trim_end_matches([',', ';', '.']);
-    location(first.strip_suffix(':').unwrap_or(first)).is_some()
-        && line
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|w| Severity::parse(w).is_some())
+    SEPARATORS.iter().any(|sep| {
+        line.split(sep).nth(1).is_some_and(|field| {
+            Severity::parse(
+                &field
+                    .trim()
+                    .trim_matches(['*', '`', '[', ']', ' ', '-', '|'])
+                    .to_ascii_uppercase(),
+            )
+            .is_some()
+        })
+    })
 }
 
 /// The parsed value of a single score candidate, for parser regression cases.
@@ -932,7 +946,49 @@ mod tests {
             err("Looks fine.\nsrc/a.rs:12 - P1 -\nScore: 9/10"),
             "line 2: cannot read this finding; write `<file>:<line> - <P0|P1|P2|P3> - <claim>`"
         );
-        assert!(err("1. **src/a.rs:12**: P1: reads until EOF").starts_with("line 1:"));
+        for line in [
+            "src/a.rs:120-140 - P0 - leaks",
+            "src/a.rs#L120 - P0 - leaks",
+            "[a.rs](src/a.rs:120) - P1 - broken",
+            "src/my file.rs:12 - P1",
+        ] {
+            assert!(
+                err(&format!("{line}\nScore: 9/10")).starts_with("line 1:"),
+                "{line}"
+            );
+        }
+        assert!(
+            Report::from_text(
+                "- src/a.rs:12 (round-1 P1): fixed and verified.\nNo findings.",
+                "a"
+            )
+            .unwrap()
+            .findings
+            .is_empty()
+        );
+        for (line, file, row) in [
+            ("src/my file.rs:12 - P1 - broken", "src/my file.rs", 12),
+            ("`src/my file.rs:12` - P1 - broken", "src/my file.rs", 12),
+            ("src/a.rs:12 - p1 - broken", "src/a.rs", 12),
+            ("src/a.rs:12:5 - P1 - broken", "src/a.rs", 12),
+            (
+                "C:\\project\\a.rs:12:5 - P1 - broken",
+                "C:\\project\\a.rs",
+                12,
+            ),
+        ] {
+            let r = Report::from_text(&format!("{line}\nScore: 9/10"), "a").unwrap();
+            assert_eq!(r.findings.len(), 1, "{line}");
+            assert_eq!(
+                (
+                    &*r.findings[0].file,
+                    r.findings[0].line,
+                    r.findings[0].severity
+                ),
+                (file, row, Severity::P1)
+            );
+            assert_eq!(merge(&[r], q(1)).gate, Gate::Block);
+        }
         // Prose that mentions a location without opening on one is not a finding.
         assert!(
             Report::from_text("I checked src/a.rs:12 for P1 issues.\nNo findings.", "a").is_ok()

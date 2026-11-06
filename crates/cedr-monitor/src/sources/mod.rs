@@ -838,6 +838,26 @@ fn patterns(h: &str, c: &Config, home: &str) -> Vec<String> {
         _ => vec![],
     }
 }
+/// Whether source directories exist, even before the agent has written its first session.
+pub fn present(h: &str, c: &Config) -> Result<bool> {
+    if c.paths.contains_key(h) || c.harnesses.iter().any(|s| s == h) {
+        return Ok(true);
+    }
+    for pattern in patterns(h, c, &std::env::var("HOME").unwrap_or_default()) {
+        let root = pattern
+            .split_once("/**")
+            .map(|(p, _)| p)
+            .or_else(|| pattern.rsplit_once('/').map(|(p, _)| p))
+            .unwrap_or(&pattern);
+        for path in glob::glob(root)? {
+            if path?.exists() {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Read-only source discovery for diagnostics; does not collect or write usage.
 pub fn files(h: &str, c: &Config) -> Result<Vec<PathBuf>> {
     files_in(h, c, &std::env::var("HOME").unwrap_or_default())

@@ -608,6 +608,19 @@ pub fn checks(root: &Path) -> Vec<Check> {
     let snapshot = cedr_monitor::store::Store::source_snapshot(&cedr_monitor::store::path()).ok();
     if let Ok(config) = &monitor {
         for harness in cedr_monitor::HARNESSES {
+            let present = match cedr_monitor::sources::present(harness, config) {
+                Ok(present) => present,
+                Err(_) => {
+                    add(
+                        &mut out,
+                        "monitor.sources",
+                        "fail",
+                        format!("{harness}: cannot discover source directories"),
+                        "Repair source paths in monitor.toml",
+                    );
+                    continue;
+                }
+            };
             let saved = snapshot
                 .as_ref()
                 .and_then(|a| a.iter().find(|s| s["harness"] == *harness));
@@ -615,17 +628,22 @@ pub fn checks(root: &Path) -> Vec<Check> {
                 let state = match saved["state"].as_str() {
                     Some("ok") if saved["malformed"].as_u64().unwrap_or(0) == 0 => "ok",
                     Some("error") => "fail",
+                    Some("absent" | "unsupported") if !present => "skip",
                     _ => "warn",
                 };
                 add(
                     &mut out,
                     "monitor.sources",
                     state,
-                    format!(
-                        "{harness}: {} files, {} malformed",
-                        saved["files"].as_u64().unwrap_or(0),
-                        saved["malformed"].as_u64().unwrap_or(0)
-                    ),
+                    if state == "skip" {
+                        format!("{harness}: not on this machine")
+                    } else {
+                        format!(
+                            "{harness}: {} files, {} malformed",
+                            saved["files"].as_u64().unwrap_or(0),
+                            saved["malformed"].as_u64().unwrap_or(0)
+                        )
+                    },
                     "Run cedr monitor sources to inspect collection health",
                 );
                 continue;
@@ -634,8 +652,18 @@ pub fn checks(root: &Path) -> Vec<Check> {
                 Ok(files) => add(
                     &mut out,
                     "monitor.sources",
-                    if files.is_empty() { "warn" } else { "ok" },
-                    format!("{harness}: {} source files", files.len()),
+                    if !files.is_empty() {
+                        "ok"
+                    } else if !present {
+                        "skip"
+                    } else {
+                        "warn"
+                    },
+                    if files.is_empty() && !present {
+                        format!("{harness}: not on this machine")
+                    } else {
+                        format!("{harness}: {} source files", files.len())
+                    },
                     "Run cedr monitor sources to inspect collection health",
                 ),
                 Err(_) => add(

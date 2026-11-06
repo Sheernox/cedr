@@ -64,8 +64,26 @@ pub fn write(root: &Path, rel: &str, bytes: &[u8]) -> Result<()> {
     let parent = p.parent().ok_or("sync: missing parent")?;
     fs::create_dir_all(parent).map_err(|_| format!("sync: cannot create parent of {rel}"))?;
     path(root, rel)?;
-    let mut temp =
-        tempfile::NamedTempFile::new_in(parent).map_err(|_| format!("sync: cannot stage {rel}"))?;
+    let existing = match fs::metadata(&p) {
+        Ok(m) => Some(m.permissions()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err(format!("sync: cannot inspect permissions of {rel}")),
+    };
+    let mut builder = tempfile::Builder::new();
+    // Repo configuration follows the user's umask on creation and keeps its mode on replacement.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o666));
+    }
+    let mut temp = builder
+        .tempfile_in(parent)
+        .map_err(|_| format!("sync: cannot stage {rel}"))?;
+    if let Some(permissions) = existing {
+        temp.as_file()
+            .set_permissions(permissions)
+            .map_err(|_| format!("sync: cannot preserve permissions of {rel}"))?;
+    }
     temp.write_all(bytes)
         .map_err(|_| format!("sync: cannot write {rel}"))?;
     temp.persist(p)

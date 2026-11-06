@@ -106,7 +106,9 @@ fn read_lock(root: &Path) -> Result<Lock> {
         );
     }
     for (path, entry) in &lock.files {
-        io::path(root, path)?;
+        if !io::agents_link(root, path)? {
+            io::path(root, path)?;
+        }
         let valid = emit::owned_entry(path).is_some_and(|owned| {
             entry.target == owned.target
                 && entry.keys.is_empty() == owned.keys.is_empty()
