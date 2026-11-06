@@ -275,7 +275,13 @@ fn parse_line(line: &str) -> Option<Finding> {
         ),
         None => (rest, None),
     };
-    let claim = claim.trim().trim_matches(['*', '_']).trim().to_string();
+    let claim = without_bold(claim.trim());
+    let claim = claim
+        .strip_prefix('`')
+        .and_then(|s| s.strip_suffix('`'))
+        .unwrap_or(claim)
+        .trim()
+        .to_string();
     (!claim.is_empty()).then(|| Finding {
         file: file.into(),
         line: line_no,
@@ -1156,6 +1162,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(merge(&[r], q(1)).groups.len(), 2);
+        for (claim, expected) in [
+            ("_leaks_token_ exposed", "_leaks_token_ exposed"),
+            ("__init__ fails", "__init__ fails"),
+            ("plain claim", "plain claim"),
+            ("`plain claim`", "plain claim"),
+            ("**plain claim**", "plain claim"),
+            ("__plain claim__", "plain claim"),
+        ] {
+            let r = Report::from_text(&format!("src/a.rs:12 - P1 - {claim}"), "a").unwrap();
+            assert_eq!(r.findings[0].claim, expected);
+        }
         let path = Report::from_text("src/p1/a.rs:12 - P2 - broken", "a").unwrap();
         assert_eq!(
             (path.findings[0].file.as_str(), path.findings[0].severity),

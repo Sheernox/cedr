@@ -58,7 +58,9 @@ fn doctor_json_is_read_only_and_has_stable_checks() {
         assert!(c["area"].is_string());
         assert!(c["message"].is_string());
         assert!(["ok", "warn", "fail", "skip"].contains(&c["state"].as_str().unwrap()));
-        assert_eq!(c["fix"].is_null(), c["state"] == "ok");
+        let optional =
+            c["state"] == "skip" && (c["id"] == "key.present" || c["id"] == "monitor.schedule");
+        assert_eq!(c["fix"].is_null(), c["state"] == "ok" || optional);
     }
     assert_eq!(fs::read_dir(home.path()).unwrap().count(), 0);
 }

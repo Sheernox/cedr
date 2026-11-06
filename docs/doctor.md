@@ -2,7 +2,7 @@
 
 `cedr doctor [PATH] [--format text|json]` checks everything cedr needs on this machine and in the repo at `PATH` (default `.`), so a person or their agent can see what is missing and how to fix it. It reads and never writes. It calls the network only once the key checks out: the key check itself, the latest release and the org rule version.
 
-Each check is `{"id", "area", "state": "ok" | "warn" | "fail" | "skip", "message", "fix"}`, where `fix` is the command or step that resolves it (null when `ok`). Text output prints one line per check with its fix indented below, then `cedr: <n> ok, <m> warnings, <k> failures`.
+Each check is `{"id", "area", "state": "ok" | "warn" | "fail" | "skip", "message", "fix"}`, where `fix` is the command or step that resolves it (null when `ok`, or when a skipped optional account or push timer needs no action). Text output prints one line per check with its fix indented below, then `cedr: <n> ok, <m> warnings, <k> failures`.
 
 | ID | Area | Checks |
 |---|---|---|

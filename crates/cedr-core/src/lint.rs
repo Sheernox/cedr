@@ -18,6 +18,12 @@ const MAX_SCAN_BYTES: u64 = 1024 * 1024;
 
 pub fn lint(root: &Path) -> Result<Report> {
     let ws = discovery::discover(root)?;
+    lint_workspace(&ws)
+}
+
+/// Lint a discovered workspace so callers can report counts from the same scan.
+pub fn lint_workspace(ws: &Workspace) -> Result<Report> {
+    let root = ws.root.as_path();
     let mut findings = Vec::new();
     let mut packages = PackageCache::default();
     for rel in &ws.instructions {
@@ -27,11 +33,11 @@ pub fn lint(root: &Path) -> Result<Report> {
         findings.extend(broken_links(root, rel, &text));
         findings.extend(hidden_unicode(rel, &text));
     }
-    findings.extend(conflicting_instructions(&ws)?);
+    findings.extend(conflicting_instructions(ws)?);
     for skill in &ws.skills {
         findings.extend(skill_findings(root, skill)?);
     }
-    findings.extend(server_findings(&ws));
+    findings.extend(server_findings(ws));
     findings.extend(broad_permissions(root)?);
     findings.extend(ws.skipped.iter().map(|path| {
         Finding::new(

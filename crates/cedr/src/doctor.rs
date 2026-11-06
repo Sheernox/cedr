@@ -34,7 +34,7 @@ fn add(out: &mut Vec<Check>, id: &str, state: &str, message: impl Into<String>, 
         .into(),
         state: state.into(),
         message: message.into(),
-        fix: if state == "ok" {
+        fix: if state == "ok" || fix.is_empty() {
             None
         } else {
             Some(fix.into())
@@ -328,7 +328,11 @@ pub fn checks(root: &Path) -> Vec<Check> {
         "key.present",
         state,
         message,
-        "Set CEDR_API_KEY or save ~/.config/cedr/api-key with mode 600",
+        if state == "skip" {
+            ""
+        } else {
+            "Set CEDR_API_KEY or save ~/.config/cedr/api-key with mode 600"
+        },
     );
     let settings = Sync {
         org: org.clone().unwrap_or_default(),
@@ -735,7 +739,11 @@ pub fn checks(root: &Path) -> Vec<Check> {
         } else {
             "push timer absent"
         },
-        "Run cedr monitor schedule",
+        if org.is_none() {
+            ""
+        } else {
+            "Run cedr monitor schedule"
+        },
     );
     let repo = root.ancestors().any(|p| p.join(".git").exists()) || root.join(".cedr").exists();
     let config = cedr_sync::load_config(root);
