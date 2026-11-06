@@ -27,6 +27,7 @@ fn doctor_json_is_read_only_and_has_stable_checks() {
         "route.config",
         "route.readers",
         "route.orchestrator",
+        "route.targets",
         "route.statusline",
         "route.sync",
         "mcp.claude",
@@ -37,6 +38,7 @@ fn doctor_json_is_read_only_and_has_stable_checks() {
         "monitor.schedule",
         "sync.config",
         "sync.check",
+        "sync.shadowed",
         "sync.rules",
         "guard.lock",
     ] {
@@ -373,4 +375,83 @@ fn doctor_lists_only_the_stale_readers_a_pick_warns_about_and_asks_for_t3_code()
         doctor_check(home.path(), "route.statusline"),
         ("ok".to_string(), "readings come from T3 Code".to_string())
     );
+}
+
+#[test]
+fn doctor_names_targets_no_model_matches_and_sync_skills_agents_also_load_elsewhere() {
+    let home = tempfile::tempdir().unwrap();
+    let cfg = home.path().join(".config/cedr");
+    fs::create_dir_all(&cfg).unwrap();
+    fs::write(
+        cfg.join("routes.toml"),
+        "version = 1\n[harnesses.codex]\n[routes.r]\ncandidates = [{ target = \"codex/sol\" }, { target = \"codex/gpt-5.5\" }, { target = \"self\" }]\n[[readings]]\nkind = \"t3\"\n",
+    )
+    .unwrap();
+    let caches = home.path().join(".t3/caches");
+    fs::create_dir_all(&caches).unwrap();
+    fs::write(
+        caches.join("codex.json"),
+        r#"{"driver": "codex", "enabled": true, "models": [{"slug": "gpt-6.1-sol"}],
+            "skills": [{"name": "council", "scope": "user"}, {"name": "other", "scope": "user"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        doctor_check(home.path(), "route.targets"),
+        (
+            "warn".to_string(),
+            "targets no offered model matches: [codex/gpt-5.5]".to_string()
+        )
+    );
+    // A repo whose Sync writes `council` to the shared skills folder Codex reads.
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.path().join(".cedr/skills/council")).unwrap();
+    fs::write(
+        root.path().join(".cedr/skills/council/SKILL.md"),
+        "---\nname: council\ndescription: d\n---\n",
+    )
+    .unwrap();
+    fs::write(
+        root.path().join(".cedr/sync.toml"),
+        "version = 1\ntargets = [\"agents\"]\n",
+    )
+    .unwrap();
+    let shadowed = |root: &std::path::Path| {
+        let out = Command::new(env!("CARGO_BIN_EXE_cedr"))
+            .args(["doctor", "--format", "json"])
+            .arg(root)
+            .env_clear()
+            .env("CEDR_TELEMETRY", "0")
+            .env("CEDR_NO_AUTO_UPDATE", "1")
+            .env("HOME", home.path())
+            .env("PATH", "")
+            .output()
+            .unwrap();
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let c = v["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "sync.shadowed")
+            .cloned()
+            .unwrap();
+        (
+            c["state"].as_str().unwrap().to_string(),
+            c["message"].as_str().unwrap().to_string(),
+        )
+    };
+    assert_eq!(
+        shadowed(root.path()),
+        (
+            "warn".to_string(),
+            "agents also load these Sync skill names from elsewhere: codex: council (user)"
+                .to_string()
+        )
+    );
+    // Sync writing only Claude's folder leaves Codex's skills alone.
+    fs::write(
+        root.path().join(".cedr/sync.toml"),
+        "version = 1\ntargets = [\"claude\"]\n",
+    )
+    .unwrap();
+    assert_eq!(shadowed(root.path()).0, "ok");
 }

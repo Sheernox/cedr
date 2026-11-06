@@ -483,6 +483,12 @@ fn a_pick_starts_a_background_sync_that_sends_the_machine_snapshot() {
     )
     .unwrap();
     let cfg = cfg.display().to_string();
+    // A source that names the plan each harness is signed in with.
+    let readings = s.dir.path().join("readings.json");
+    let mut doc: Value =
+        serde_json::from_str(&std::fs::read_to_string(&readings).unwrap()).unwrap();
+    doc["plans"] = json!({"claude": "Claude Max", "unknown-harness": "Pro"});
+    std::fs::write(&readings, doc.to_string()).unwrap();
     let pick = s
         .command(&["route", "pick", "review.code", "--config", &cfg])
         .env("CEDR_API_KEY", "cedr_test")
@@ -529,6 +535,10 @@ fn a_pick_starts_a_background_sync_that_sends_the_machine_snapshot() {
     );
     let id = snap["machine"].as_str().unwrap();
     assert!(id.len() == 14 && id.starts_with("m-"), "{id}");
+    assert_eq!(
+        snap["plans"],
+        json!([{"harness": "claude", "plan": "Claude Max"}])
+    );
     let codex = snap["pools"]
         .as_array()
         .unwrap()

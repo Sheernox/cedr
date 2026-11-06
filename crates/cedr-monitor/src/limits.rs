@@ -46,18 +46,22 @@ pub fn project(mut v: Value, now: i64) -> Value {
 pub fn refresh(db: &Store) -> Vec<String> {
     let mut errors = vec![];
     // T3 Code's default instance ids, under the harness names Monitor reports.
-    let (t3, warnings) = cedr_route::readers::t3(
-        &cedr_route::readers::t3_caches(),
-        &[
-            ("claude", "claudeAgent"),
-            ("codex", "codex"),
-            ("muse", "muse"),
-            ("grok", "grok"),
-            ("antigravity", "antigravity"),
-        ],
-        Utc::now(),
-        |_| 600,
-    );
+    let harnesses: Vec<cedr_route::readers::T3Harness> = [
+        ("claude", "claudeAgent"),
+        ("codex", "codex"),
+        ("muse", "muse"),
+        ("grok", "grok"),
+        ("antigravity", "antigravity"),
+    ]
+    .into_iter()
+    .map(|(harness, instance)| cedr_route::readers::T3Harness {
+        harness,
+        instance,
+        effort_option: None,
+    })
+    .collect();
+    let (t3, warnings) =
+        cedr_route::readers::t3(&cedr_route::t3::caches(), &harnesses, Utc::now(), |_| 600);
     errors.extend(warnings);
     if db.readings(&t3).is_err() {
         errors.push("cannot save T3 Code readings".into());

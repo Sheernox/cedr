@@ -353,6 +353,15 @@ pub fn snapshot(session: &Session, sync: &Sync) -> Result<Value> {
         row.summary = clip(&row.summary, 256);
     }
     next.truncate(SNAPSHOT_ROWS);
+    // The subscription each plan is signed in with, where a source names it (T3 Code does).
+    let mut plans: Vec<Value> = session
+        .readings
+        .plans
+        .iter()
+        .map(|(harness, plan)| json!({"harness": clip(harness, 64), "plan": clip(plan, 64)}))
+        .collect();
+    plans.sort_by(|a, b| a["harness"].as_str().cmp(&b["harness"].as_str()));
+    plans.truncate(16);
     let mut snapshot = json!({
         "org": sync.org,
         "machine": machine::machine_id()?,
@@ -364,6 +373,7 @@ pub fn snapshot(session: &Session, sync: &Sync) -> Result<Value> {
         "pools": pools,
         "next": next,
         "stale": session.stale.iter().take(16).collect::<Vec<_>>(),
+        "plans": plans,
     });
     // Keep Route's wire order stable when Sync enables insertion-ordered JSON merging.
     snapshot.sort_all_objects();

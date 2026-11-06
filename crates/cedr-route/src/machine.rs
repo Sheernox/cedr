@@ -20,10 +20,20 @@ pub struct Stale {
 
 /// Harnesses absent on this machine, with their pool summary, plus a warning per unknown skip name.
 pub fn absent(config: &Config) -> (HashMap<String, String>, Vec<String>) {
-    absent_with(config, &t3_providers())
+    absent_with(
+        config,
+        &t3_providers(),
+        &crate::t3::caches(),
+        chrono::Utc::now(),
+    )
 }
 
-fn absent_with(config: &Config, t3_providers: &Path) -> (HashMap<String, String>, Vec<String>) {
+fn absent_with(
+    config: &Config,
+    t3_providers: &Path,
+    t3_caches: &Path,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (HashMap<String, String>, Vec<String>) {
     let mut out = HashMap::new();
     let mut warnings = Vec::new();
     let skip = config
@@ -41,13 +51,35 @@ fn absent_with(config: &Config, t3_providers: &Path) -> (HashMap<String, String>
             )),
         }
     }
+    // A machine that reads T3 Code delegates through it, so T3 Code's current view of a plan
+    // decides whether that plan can take work here.
+    let reads_t3 = config
+        .readings
+        .iter()
+        .any(|s| matches!(s, crate::config::ReadingsSource::T3));
     for (id, h) in &config.harnesses {
         if out.contains_key(id) {
             continue;
         }
+        let instance = h.t3.as_deref().unwrap_or(id);
+        let seen = (reads_t3 && h.billing == crate::config::Billing::Plan)
+            .then(|| crate::t3::read(t3_caches, instance).ok().flatten())
+            .flatten()
+            .filter(|p| p.current(now));
+        if let Some(p) = &seen {
+            if !p.enabled {
+                out.insert(id.clone(), format!("{id} disabled in T3 Code"));
+                continue;
+            }
+            if p.signed_out() {
+                out.insert(id.clone(), format!("{id} signed out in T3 Code"));
+                continue;
+            }
+        }
         if let Some(command) = &h.command
             && !installed(command)
-            && !t3_profile(t3_providers, h.t3.as_deref().unwrap_or(id))
+            && !t3_profile(t3_providers, instance)
+            && seen.as_ref().and_then(|p| p.installed()) != Some(true)
         {
             out.insert(id.clone(), format!("{id} not installed ({command})"));
         }
@@ -265,14 +297,83 @@ candidates = [{ target = "codex/sol" }, { target = "claude/sonnet" }]
         std::fs::create_dir_all(dir.path().join("antigravity").join(hex("agy_work"))).unwrap();
         // A file of that name is not a profile.
         std::fs::write(dir.path().join("antigravity").join(hex("other")), "").unwrap();
-        let (absent, _) = absent_with(&c, dir.path());
+        let (absent, _) = absent_with(&c, dir.path(), dir.path(), now());
         assert!(!absent.contains_key("antigravity"));
         assert!(!absent.contains_key("work"));
         assert_eq!(absent["other"], "other not installed (/nonexistent/agy)");
         // A skip still wins over a profile.
         let c = config(&format!("{text}[machine]\nskip = [\"antigravity\"]\n"));
-        let (absent, _) = absent_with(&c, dir.path());
+        let (absent, _) = absent_with(&c, dir.path(), dir.path(), now());
         assert_eq!(absent["antigravity"], "antigravity skipped on this machine");
+    }
+
+    fn now() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339("2026-10-29T02:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn t3_codes_current_view_decides_presence_on_a_machine_that_reads_it() {
+        let text = "version = 1\n[harnesses.claude]\ncommand = \"/nonexistent/claude\"\nt3 = \"claudeAgent\"\n[harnesses.codex]\ncommand = \"/nonexistent/codex\"\n[harnesses.grok]\n[harnesses.muse]\ncommand = \"/nonexistent/muse\"\n[harnesses.old]\n[harnesses.future]\n[[readings]]\nkind = \"t3\"\n";
+        let dir = tempfile::tempdir().unwrap();
+        let cache = |name: &str, body: serde_json::Value| {
+            std::fs::write(dir.path().join(format!("{name}.json")), body.to_string()).unwrap()
+        };
+        let at = "2026-10-29T01:58:00Z";
+        cache(
+            "claudeAgent",
+            // A null `auth` is an unknown sign-in, not an unreadable cache: installed still counts.
+            serde_json::json!({"checkedAt": at, "installed": true, "enabled": true, "auth": null}),
+        );
+        cache(
+            "codex",
+            serde_json::json!({"checkedAt": at, "installed": true, "enabled": false}),
+        );
+        cache(
+            "grok",
+            serde_json::json!({"checkedAt": at, "auth": {"status": "unauthenticated"}}),
+        );
+        // Muse reports no sign-in status at all: that is not signed out.
+        cache(
+            "muse",
+            serde_json::json!({"checkedAt": at, "installed": true, "auth": {"status": "unknown"}}),
+        );
+        // A view from the future (a clock moved back) says nothing either.
+        cache(
+            "future",
+            serde_json::json!({"checkedAt": "2026-10-29T05:00:00Z", "enabled": false}),
+        );
+        // Hours old: T3 Code is not running, so its view says nothing.
+        cache(
+            "old",
+            serde_json::json!({"checkedAt": "2026-10-28T20:00:00Z", "enabled": false}),
+        );
+        let (absent, _) = absent_with(&config(text), Path::new("/nonexistent"), dir.path(), now());
+        let mut found: Vec<(&str, &str)> = absent
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        found.sort();
+        assert_eq!(
+            found,
+            [
+                ("codex", "codex disabled in T3 Code"),
+                ("grok", "grok signed out in T3 Code")
+            ]
+        );
+        // Without a t3 source, T3 Code's view is not consulted.
+        let (absent, _) = absent_with(
+            &config(&text.replace("[[readings]]\nkind = \"t3\"\n", "")),
+            Path::new("/nonexistent"),
+            dir.path(),
+            now(),
+        );
+        assert_eq!(
+            absent.len(),
+            3,
+            "claude, codex and muse are simply not installed: {absent:?}"
+        );
     }
 
     #[test]

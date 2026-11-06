@@ -183,8 +183,25 @@ impl Context<'_> {
     }
 
     fn delegate(&self, route: &str, c: &Choice, reason: &str, orch: Option<&str>) -> Delegate {
-        let (harness, model, effort, p) = (c.harness, c.model.as_str(), c.effort, &c.pool);
+        let (harness, model, p) = (c.harness, c.model.as_str(), &c.pool);
         let h = &self.config.harnesses[harness];
+        // The model's own effort option, when a source lists it: an effort it does not offer
+        // becomes the nearest it does, and the option id comes from it when the routes name none.
+        let offered = self
+            .readings
+            .efforts
+            .get(harness)
+            .and_then(|m| m.get(model));
+        let effort = match offered {
+            Some(o) if !c.effort.is_empty() => {
+                crate::t3::clamp_effort(c.effort, &o.values).unwrap_or(c.effort)
+            }
+            _ => c.effort,
+        };
+        let effort_option = h
+            .effort_option
+            .as_deref()
+            .or(offered.map(|o| o.option.as_str()));
         let id = new_id();
         let target = format!("{harness}/{model}");
         let effort_part = if effort.is_empty() {
@@ -193,14 +210,16 @@ impl Context<'_> {
             format!(" {effort}")
         };
         let orch_part = orch.map(|o| format!("; {o}")).unwrap_or_default();
-        let reason = if c.preview {
-            format!("{reason} (preview)")
-        } else {
-            reason.to_string()
-        };
+        let mut reason = reason.to_string();
+        if c.preview {
+            reason.push_str(" (preview)");
+        }
+        if effort != c.effort {
+            reason.push_str(&format!(" ({} not offered)", c.effort));
+        }
         let mut options = Map::new();
-        if let Some(opt) = h.effort_option.as_ref().filter(|_| !effort.is_empty()) {
-            options.insert(opt.clone(), Value::String(effort.to_string()));
+        if let Some(opt) = effort_option.filter(|_| !effort.is_empty()) {
+            options.insert(opt.to_string(), Value::String(effort.to_string()));
         }
         Delegate {
             spare_for: None,
@@ -1041,6 +1060,54 @@ candidates = [{ target = "codex/sol" }]
         assert_eq!(
             pick(&c, &r, "design", Size::Medium, &[]).reason.as_deref(),
             Some("orchestrator-only route")
+        );
+    }
+
+    #[test]
+    fn an_effort_the_model_does_not_offer_becomes_the_nearest_it_does() {
+        let (c, mut r) = setup(10.0, 20.0, true);
+        r.merge(
+            &c,
+            &json!({"efforts": {
+                "codex": {"gpt-6.1-sol": {"option": "reasoningEffort", "values": ["low", "medium", "high", "xhigh"]}},
+                "antigravity": {"gemini-4-argon-high": {"option": "effort", "values": ["low", "high"]}}}}),
+        );
+        let ctx = Context {
+            config: &c,
+            rules: "abc1234",
+            readings: &r,
+            now: now(),
+            warnings: &[],
+        };
+        let d = &ctx.manual("codex/gpt-6.1-sol", "max").unwrap().delegates[0];
+        assert_eq!(d.effort, "xhigh");
+        assert_eq!(
+            d.t3.options,
+            json!({"reasoningEffort": "xhigh"})
+                .as_object()
+                .cloned()
+                .unwrap()
+        );
+        assert!(d.reason.ends_with("(max not offered)"), "{}", d.reason);
+        assert!(
+            d.tag
+                .starts_with("[route manual -> codex/gpt-6.1-sol xhigh |"),
+            "{}",
+            d.tag
+        );
+        // A harness whose routes name no effort option takes the model's own.
+        let d = &ctx
+            .manual("antigravity/gemini-4-argon-high", "high")
+            .unwrap()
+            .delegates[0];
+        assert_eq!(
+            d.t3.options,
+            json!({"effort": "high"}).as_object().cloned().unwrap()
+        );
+        // A model no source lists efforts for keeps the effort as given.
+        assert_eq!(
+            ctx.manual("codex/gpt-6-sol", "max").unwrap().delegates[0].effort,
+            "max"
         );
     }
 

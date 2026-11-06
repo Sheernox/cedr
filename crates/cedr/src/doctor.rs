@@ -100,7 +100,7 @@ pub fn checks(root: &Path) -> Vec<Check> {
             missing.sort();
             // T3 Code keeps current readings for every plan it runs; a machine running it reads
             // those first (docs/route.md, Built-in readers).
-            let no_t3 = cedr_route::readers::t3_caches().is_dir()
+            let no_t3 = cedr_route::t3::caches().is_dir()
                 && !c
                     .readings
                     .iter()
@@ -143,6 +143,42 @@ pub fn checks(root: &Path) -> Vec<Check> {
                 },
                 "Add [orchestrator] with the harness and model that delegate to this machine's routes.toml",
             );
+            // Route targets that the model lists (T3 Code's, a feed's or the config's own) do not
+            // offer: a pick of them is a routing error, not a fallback.
+            readings.fill_models(c);
+            let mut missing_targets: Vec<String> = c
+                .routes
+                .values()
+                .filter(|r| r.enabled)
+                .flat_map(|r| r.candidates.iter())
+                .filter_map(|cand| cand.target.split_once('/'))
+                .filter(|(h, _)| {
+                    !readings.absent.contains_key(*h)
+                        && readings.models.get(*h).is_some_and(|m| !m.is_empty())
+                })
+                .filter(|(h, m)| cedr_route::pool::resolve(h, m, &readings).is_none())
+                .map(|(h, m)| format!("{h}/{m}"))
+                .collect();
+            missing_targets.sort();
+            missing_targets.dedup();
+            add(
+                &mut out,
+                "route.targets",
+                if missing_targets.is_empty() {
+                    "ok"
+                } else {
+                    "warn"
+                },
+                if missing_targets.is_empty() {
+                    "every route target matches an offered model".to_string()
+                } else {
+                    format!(
+                        "targets no offered model matches: [{}]",
+                        missing_targets.join(", ")
+                    )
+                },
+                "Point the targets at models the harness offers (cedr route models lists them), or edit the routes in the app",
+            );
         }
         Err(_) => {
             add(
@@ -155,6 +191,13 @@ pub fn checks(root: &Path) -> Vec<Check> {
             add(
                 &mut out,
                 "route.readers",
+                "skip",
+                "no routes config",
+                "Configure Route first",
+            );
+            add(
+                &mut out,
+                "route.targets",
                 "skip",
                 "no routes config",
                 "Configure Route first",
@@ -396,8 +439,12 @@ pub fn checks(root: &Path) -> Vec<Check> {
                 .iter()
                 .any(|s| matches!(s, config::ReadingsSource::T3))
                 && cedr_route::readers::t3(
-                    &cedr_route::readers::t3_caches(),
-                    &[("claude", instance)],
+                    &cedr_route::t3::caches(),
+                    &[cedr_route::readers::T3Harness {
+                        harness: "claude",
+                        instance,
+                        effort_option: None,
+                    }],
                     chrono::Utc::now(),
                     |h| c.limits(Some(h), None).fresh_seconds,
                 )
@@ -615,6 +662,7 @@ pub fn checks(root: &Path) -> Vec<Check> {
             "Run cedr sync init",
         );
     }
+    add_shadowed(&mut out, root, config.is_ok());
     match cedr_sync::org::load(root) {
         Ok(Some(v)) => {
             let current = v["version"].as_u64().unwrap_or(0);
@@ -708,6 +756,7 @@ pub fn checks(root: &Path) -> Vec<Check> {
         "route.config",
         "route.readers",
         "route.orchestrator",
+        "route.targets",
         "route.statusline",
         "route.sync",
         "mcp.claude",
@@ -718,6 +767,7 @@ pub fn checks(root: &Path) -> Vec<Check> {
         "monitor.schedule",
         "sync.config",
         "sync.check",
+        "sync.shadowed",
         "sync.rules",
         "guard.lock",
         "bench.budget",
@@ -762,4 +812,95 @@ pub fn run(args: Args) -> Result<ExitCode, String> {
         }
     }
     Ok(crate::exit(failures > 0))
+}
+
+/// The agent each T3 Code driver is, under Sync's target names, and whether it reads the shared
+/// `.agents/skills/` folder (docs/sync.md, the target table).
+fn sync_target(driver: &str) -> Option<(&'static str, bool)> {
+    Some(match driver {
+        "claudeAgent" => ("claude", false),
+        "codex" => ("codex", true),
+        "grok" => ("grok", false),
+        "antigravity" => ("antigravity", true),
+        "cursor" => ("cursor", true),
+        "opencode" => ("opencode", true),
+        _ => return None,
+    })
+}
+
+/// `sync.shadowed`: skills Sync writes into this repo that an agent T3 Code runs also loads from
+/// elsewhere under the same name (its user folder, a bundle), so which copy it uses is unclear.
+/// T3 Code lists only what agents load outside a repo, so this is the overlap it can show.
+fn add_shadowed(out: &mut Vec<Check>, root: &Path, configured: bool) {
+    const FIX: &str =
+        "Rename the repo skill in .cedr/skills or remove the other copy, then run cedr sync";
+    let dir = cedr_route::t3::caches();
+    let targets = cedr_sync::load_config(root)
+        .map(|c| c.targets)
+        .unwrap_or_default();
+    let repo: Vec<String> = std::fs::read_dir(root.join(".cedr/skills"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().join("SKILL.md").is_file())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    if !configured || repo.is_empty() || !dir.is_dir() {
+        add(
+            out,
+            "sync.shadowed",
+            "skip",
+            "no Sync skills, or no T3 Code on this machine",
+            FIX,
+        );
+        return;
+    }
+    let mut shadowed = Vec::new();
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter_map(|n| n.strip_suffix(".json").map(str::to_string))
+        .collect();
+    files.sort();
+    for instance in files.iter().take(32) {
+        let Ok(Some(p)) = cedr_route::t3::read(&dir, instance) else {
+            continue;
+        };
+        let Some((target, shared)) = sync_target(&p.driver) else {
+            continue;
+        };
+        let written = targets
+            .iter()
+            .any(|t| t == target || (shared && t == "agents"));
+        if !p.enabled || !written {
+            continue;
+        }
+        let mut names: Vec<String> = p
+            .skills()
+            .into_iter()
+            .filter(|s| repo.contains(&s.name))
+            .map(|s| format!("{} ({})", s.name, s.scope))
+            .collect();
+        names.sort();
+        names.dedup();
+        if !names.is_empty() {
+            shadowed.push(format!("{target}: {}", names.join(", ")));
+        }
+    }
+    add(
+        out,
+        "sync.shadowed",
+        if shadowed.is_empty() { "ok" } else { "warn" },
+        if shadowed.is_empty() {
+            "no agent loads another skill under a Sync skill's name".to_string()
+        } else {
+            format!(
+                "agents also load these Sync skill names from elsewhere: {}",
+                shadowed.join("; ")
+            )
+        },
+        FIX,
+    );
 }

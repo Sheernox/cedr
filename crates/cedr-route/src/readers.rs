@@ -443,101 +443,62 @@ pub fn from_usage_cache(config: &Value, harness: &str) -> Result<Option<Value>, 
     ))
 }
 
-/// Where T3 Code keeps what it last read of each provider instance it runs: `$T3CODE_HOME/caches`
-/// (default `~/.t3/caches`), one `<instance id>.json` each.
-pub fn t3_caches() -> PathBuf {
-    xdg_dir("T3CODE_HOME", ".t3").join("caches")
-}
-
-/// A provider cache holds a provider's models, skills and commands; one past this is not one.
-const T3_MAX_BYTES: usize = 4 << 20;
 /// More windows or model families than any plan has; the rest are ignored, so a hostile cache
 /// cannot multiply its windows by its families.
 const T3_MAX_WINDOWS: usize = 64;
 const T3_MAX_FAMILIES: usize = 16;
 
-/// What T3 Code last read of each plan, for `(harness, T3 instance id)` pairs, as a readings
-/// document, plus a warning per cache that could not be read. T3 Code keeps these readings for its
-/// own UI from the sessions it runs and the vendors' own CLIs and SDKs, so reading them runs nothing
-/// and reads no credentials. A plan T3 Code has no current reading for (no cache, disabled, no or
-/// unavailable limits, or one older than `fresh(harness)` seconds) is left out, so a later source
-/// supplies it. The cache format is T3 Code's own and undocumented: the provider's `driver`,
-/// `enabled`, `models[].slug` and `usageLimits` (`checkedAt`, `windows[]` with `id`, `kind`,
-/// `usedPercent`, `resetsAt`, `windowDurationMins`); the rest of the file is skipped.
+/// One plan harness for the `t3` reader: its id, its T3 instance id, and the effort option its
+/// routes name, if any.
+pub struct T3Harness<'a> {
+    pub harness: &'a str,
+    pub instance: &'a str,
+    pub effort_option: Option<&'a str>,
+}
+
+/// What T3 Code last read of each plan, as a readings document, plus a warning per cache that
+/// could not be read (docs/route.md, Built-in readers). T3 Code keeps these readings for its own UI
+/// from the sessions it runs and the vendors' own CLIs and SDKs, so reading them runs nothing and
+/// reads no credentials. A plan T3 Code has no current reading for (no cache, disabled, no or
+/// unavailable limits, or one older than `fresh(harness)` seconds) gets no entry, so a later source
+/// supplies it; its models, efforts and plan still come through.
 pub fn t3(
     dir: &Path,
-    instances: &[(&str, &str)],
+    harnesses: &[T3Harness],
     now: DateTime<Utc>,
     fresh: impl Fn(&str) -> i64,
 ) -> (Value, Vec<String>) {
-    #[derive(serde::Deserialize)]
-    struct Provider {
-        #[serde(default)]
-        driver: String,
-        #[serde(default = "enabled")]
-        enabled: bool,
-        #[serde(default)]
-        models: Value,
-        #[serde(rename = "usageLimits", default)]
-        usage: Value,
-    }
-    fn enabled() -> bool {
-        true
-    }
     let mut entries = Vec::new();
     let mut models = Map::new();
+    let mut efforts = Map::new();
+    let mut plans = Map::new();
     let mut warnings = Vec::new();
-    for &(harness, instance) in instances {
-        // The instance id comes from the routes, which may be shared: it names a file in `dir`, never a path.
-        let safe = !instance.is_empty()
-            && !instance.starts_with('.')
-            && instance
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
-        if !safe {
-            continue;
-        }
-        let path = dir.join(format!("{instance}.json"));
-        let bytes = match std::fs::File::open(&path) {
-            Ok(f) => match crate::readings::read_limited(f, T3_MAX_BYTES) {
-                Ok(b) if b.len() <= T3_MAX_BYTES => b,
-                Ok(_) => {
-                    warnings.push(format!(
-                        "t3 readings: {instance} cache exceeds {T3_MAX_BYTES} bytes"
-                    ));
-                    continue;
-                }
-                Err(e) => {
-                    warnings.push(format!("t3 readings: {}: {e}", path.display()));
-                    continue;
-                }
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+    for h in harnesses {
+        let p = match crate::t3::read(dir, h.instance) {
+            Ok(Some(p)) => p,
+            Ok(None) => continue,
             Err(e) => {
-                warnings.push(format!("t3 readings: {}: {e}", path.display()));
+                warnings.push(format!("t3 readings: {e}"));
                 continue;
             }
-        };
-        let Ok(p) = serde_json::from_slice::<Provider>(&bytes) else {
-            warnings.push(format!(
-                "t3 readings: {instance} is not a T3 Code provider cache, or T3 Code changed its format"
-            ));
-            continue;
         };
         if !p.enabled {
             continue;
         }
-        let offered: Vec<String> = p
-            .models
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|m| m["slug"].as_str())
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect();
+        let offered = p.offered();
         if !offered.is_empty() {
-            models.insert(harness.to_string(), json!(offered));
+            models.insert(h.harness.to_string(), json!(offered));
+        }
+        let by_model: Map<String, Value> = p
+            .efforts(h.effort_option)
+            .into_iter()
+            .map(|(m, e)| (m, json!({"option": e.option, "values": e.values})))
+            .collect();
+        if !by_model.is_empty() {
+            efforts.insert(h.harness.to_string(), Value::Object(by_model));
+        }
+        if let Some(plan) = p.plan() {
+            plans.insert(h.harness.to_string(), json!(plan));
         }
         let failed = |v: &Value| !v.is_null() && v != &json!(false) && v != &json!("");
         if failed(&p.usage["unavailable"]) || failed(&p.usage["error"]) {
@@ -548,7 +509,7 @@ pub fn t3(
         };
         // Judged to the millisecond, as the pool judges it, so a reading the pool calls stale never
         // covers the sources after it.
-        if (now - checked).num_milliseconds() as f64 / 1000.0 > fresh(harness) as f64 {
+        if (now - checked).num_milliseconds() as f64 / 1000.0 > fresh(h.harness) as f64 {
             continue;
         }
         let windows = t3_windows(&p.driver, &p.usage["windows"], &offered);
@@ -557,10 +518,13 @@ pub fn t3(
         }
         let fetched = checked.to_rfc3339_opts(SecondsFormat::Millis, true);
         entries.push(
-            json!({"harness": harness, "fetchedAt": fetched, "error": null, "windows": windows}),
+            json!({"harness": h.harness, "fetchedAt": fetched, "error": null, "windows": windows}),
         );
     }
-    (json!({"harnesses": entries, "models": models}), warnings)
+    (
+        json!({"harnesses": entries, "models": models, "efforts": efforts, "plans": plans}),
+        warnings,
+    )
 }
 
 /// T3 Code's windows for one provider in the readings format. Window ids stay T3's, except where
@@ -570,11 +534,13 @@ pub fn t3(
 /// window per family). Antigravity's `gemini-*` windows stay shared, as a feed sends them.
 fn t3_windows(driver: &str, raw: &Value, offered: &[String]) -> Vec<Value> {
     // The families of the other vendors' models Antigravity offers, for its `3p-*` windows.
-    let others: std::collections::BTreeSet<&str> = offered
+    let others: Vec<&str> = offered
         .iter()
         .filter(|m| !m.contains("gemini"))
         .filter_map(|m| m.split('-').next())
         .filter(|f| !f.is_empty())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .take(T3_MAX_FAMILIES)
         .collect();
     let mut out = Vec::new();
@@ -833,7 +799,15 @@ mod tests {
             ("y", "../outside"),
             ("z", "missing"),
         ];
-        let (doc, warnings) = t3(&caches, &instances, now(), |_| 600);
+        let harnesses: Vec<T3Harness> = instances
+            .iter()
+            .map(|&(harness, instance)| T3Harness {
+                harness,
+                instance,
+                effort_option: None,
+            })
+            .collect();
+        let (doc, warnings) = t3(&caches, &harnesses, now(), |_| 600);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(
             warnings[0].contains("broken is not a T3 Code provider cache"),
@@ -893,6 +867,19 @@ mod tests {
             doc["models"].get("muse").is_none(),
             "a disabled instance is skipped"
         );
+    }
+
+    #[test]
+    fn many_versions_of_one_family_never_crowd_out_another_from_antigravitys_pools() {
+        let mut offered: Vec<String> = (0..20).map(|i| format!("claude-{i}-low")).collect();
+        offered.push("gpt-oss-120b-medium".into());
+        let windows = t3_windows(
+            "antigravity",
+            &json!([{"id": "3p-5h", "kind": "session", "usedPercent": 4}]),
+            &offered,
+        );
+        let ids: Vec<&str> = windows.iter().filter_map(|w| w["id"].as_str()).collect();
+        assert_eq!(ids, ["3p-5h-claude", "3p-5h-gpt"]);
     }
 
     fn usage_cache(account: &str) -> Value {

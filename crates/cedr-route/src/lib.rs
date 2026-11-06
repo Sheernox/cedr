@@ -15,6 +15,7 @@ pub mod readers;
 pub mod readings;
 pub mod session;
 pub mod sync;
+pub mod t3;
 
 pub use error::{Error, Result};
 

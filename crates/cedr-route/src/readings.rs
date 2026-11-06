@@ -55,6 +55,10 @@ pub struct Readings {
     pub models: HashMap<String, Vec<String>>,
     /// Harnesses this machine does not have, with their pool summary (docs/route.md, Machine checks).
     pub absent: HashMap<String, String>,
+    /// Each harness's models' effort options, by model id (docs/route.md, Model options).
+    pub efforts: HashMap<String, HashMap<String, crate::t3::Effort>>,
+    /// The subscription each plan harness is signed in with, when a source names it.
+    pub plans: HashMap<String, String>,
 }
 
 /// Parses an RFC 3339 timestamp; one without an offset is unusable, never assumed UTC.
@@ -129,6 +133,55 @@ impl Readings {
         }
         if let Some(models) = doc.get("models").and_then(Value::as_object) {
             self.merge_models(config, models);
+        }
+        self.merge_efforts(config, doc);
+        for (name, plan) in doc
+            .get("plans")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            if let (Some(id), Some(plan)) = (config.harness_for(name), plan.as_str()) {
+                let plan: String = plan.chars().take(64).collect();
+                if !plan.is_empty() && !plan.chars().any(char::is_control) {
+                    self.plans.entry(id.to_string()).or_insert(plan);
+                }
+            }
+        }
+    }
+
+    /// `efforts`: `{"<harness>": {"<model id>": {"option": "<id>", "values": [...]}}}`, the first
+    /// per model winning. A malformed model entry is skipped.
+    fn merge_efforts(&mut self, config: &Config, doc: &Value) {
+        for (name, models) in doc
+            .get("efforts")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            let Some(id) = config.harness_for(name) else {
+                continue;
+            };
+            let known = self.efforts.entry(id.to_string()).or_default();
+            for (model, e) in models.as_object().into_iter().flatten() {
+                let option = e["option"].as_str().filter(|o| !o.is_empty());
+                let values: Vec<String> = e["values"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                if let Some(option) = option
+                    && !values.is_empty()
+                {
+                    known.entry(model.clone()).or_insert(crate::t3::Effort {
+                        option: option.to_string(),
+                        values,
+                    });
+                }
+            }
         }
     }
 
@@ -303,16 +356,19 @@ fn fetch(
         }
         ReadingsSource::T3 => {
             // T3 Code runs plans, so a key billed per token has nothing to read there.
-            let instances: Vec<(&str, &str)> = config
+            let harnesses: Vec<crate::readers::T3Harness> = config
                 .harnesses
                 .iter()
                 .filter(|(_, h)| h.billing == crate::config::Billing::Plan)
-                .map(|(id, h)| (id.as_str(), h.t3.as_deref().unwrap_or(id)))
+                .map(|(id, h)| crate::readers::T3Harness {
+                    harness: id,
+                    instance: h.t3.as_deref().unwrap_or(id),
+                    effort_option: h.effort_option.as_deref(),
+                })
                 .collect();
-            let (doc, warnings) =
-                crate::readers::t3(&crate::readers::t3_caches(), &instances, now, |h| {
-                    config.limits(Some(h), None).fresh_seconds
-                });
+            let (doc, warnings) = crate::readers::t3(&crate::t3::caches(), &harnesses, now, |h| {
+                config.limits(Some(h), None).fresh_seconds
+            });
             Ok(Fetched {
                 doc,
                 warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
