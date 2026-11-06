@@ -58,10 +58,51 @@ pub struct ManualArgs {
     effort: Option<String>,
 }
 
+/// The published shape of a council report (docs/council.md, Reports). The handler still parses each
+/// report with `Report::from_json`, which rejects anything else, so this only tells clients to send
+/// report objects rather than JSON text.
+#[derive(JsonSchema)]
+#[schemars(crate = "rmcp::schemars", deny_unknown_fields)]
+#[allow(dead_code)]
+struct ReportSchema {
+    /// <harness>/<model>
+    member: String,
+    /// Pick id of this member's review
+    pick: Option<String>,
+    /// The member's own score out of 10; shown, never decides the gate
+    score: Option<f64>,
+    /// The member this spare stood in for
+    spare_for: Option<String>,
+    /// Every finding; empty when the member reviewed and found nothing
+    findings: Vec<FindingSchema>,
+}
+
+#[derive(JsonSchema)]
+#[schemars(crate = "rmcp::schemars", deny_unknown_fields)]
+#[allow(dead_code)]
+struct FindingSchema {
+    file: String,
+    line: u64,
+    severity: SeveritySchema,
+    claim: String,
+    scenario: Option<String>,
+}
+
+#[derive(JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[allow(dead_code)]
+enum SeveritySchema {
+    P0,
+    P1,
+    P2,
+    P3,
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct MergeArgs {
-    /// One report object per member: {"member", "pick"?, "score"?, "spare_for"?, "findings": [{"file", "line", "severity", "claim", "scenario"?}]}
+    /// One report object per member
+    #[schemars(with = "Vec<ReportSchema>")]
     reports: Vec<Value>,
     /// Council route whose quorum and blocking severity apply
     route: Option<String>,
@@ -518,4 +559,95 @@ pub fn serve(config: Option<PathBuf>) -> std::io::Result<()> {
         service.waiting().await.map_err(std::io::Error::other)?;
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The JSON Schema keywords schemars emits for these arguments, checked the way a client would.
+    fn valid(schema: &Value, root: &Value, v: &Value) -> bool {
+        if let Some(r) = schema["$ref"].as_str() {
+            let name = r.trim_start_matches("#/$defs/");
+            return valid(&root["$defs"][name], root, v);
+        }
+        let kind = match v {
+            Value::Null => "null",
+            Value::Bool(_) => "boolean",
+            Value::Number(n) if n.is_u64() || n.is_i64() => "integer",
+            Value::Number(_) => "number",
+            Value::String(_) => "string",
+            Value::Array(_) => "array",
+            Value::Object(_) => "object",
+        };
+        let types: Vec<&str> = match &schema["type"] {
+            Value::String(t) => vec![t],
+            Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
+            _ => vec![],
+        };
+        if !types.is_empty()
+            && !types
+                .iter()
+                .any(|t| *t == kind || (*t == "number" && kind == "integer"))
+        {
+            return false;
+        }
+        if let Some(options) = schema["enum"].as_array()
+            && !options.contains(v)
+        {
+            return false;
+        }
+        if let (Some(items), Value::Array(a)) = (schema.get("items"), v) {
+            return a.iter().all(|i| valid(items, root, i));
+        }
+        if let Value::Object(o) = v {
+            let props = &schema["properties"];
+            let required = schema["required"].as_array().into_iter().flatten();
+            return required
+                .filter_map(Value::as_str)
+                .all(|k| o.contains_key(k))
+                && o.iter().all(|(k, x)| match props.get(k) {
+                    Some(p) => valid(p, root, x),
+                    None => schema["additionalProperties"] != false,
+                });
+        }
+        true
+    }
+
+    #[test]
+    fn council_merge_publishes_the_report_objects_its_handler_reads() {
+        let tool = RouteServer::tool_router()
+            .list_all()
+            .into_iter()
+            .find(|t| t.name == "council_merge")
+            .unwrap();
+        let schema = Value::Object((*tool.input_schema).clone());
+        let report = json!({"member": "codex/sol", "pick": "p-1", "score": 7.5, "spare_for": "claude/opus",
+            "findings": [{"file": "src/a.rs", "line": 12, "severity": "P1", "claim": "c", "scenario": null}]});
+        assert!(Report::from_json(report.clone(), None).is_ok());
+        assert!(valid(
+            &schema,
+            &schema,
+            &json!({"reports": [report.clone()]})
+        ));
+        assert!(valid(
+            &schema,
+            &schema,
+            &json!({"reports": [{"member": "a", "findings": []}]})
+        ));
+        // What a client that read the old `items: true` might send, and fields the handler refuses.
+        assert!(!valid(
+            &schema,
+            &schema,
+            &json!({"reports": [report.to_string()]})
+        ));
+        let mut extra = report.clone();
+        extra["verdict"] = json!("ok");
+        assert!(Report::from_json(extra.clone(), None).is_err());
+        assert!(!valid(&schema, &schema, &json!({"reports": [extra]})));
+        let mut p9 = report;
+        p9["findings"][0]["severity"] = json!("P9");
+        assert!(!valid(&schema, &schema, &json!({"reports": [p9]})));
+    }
 }
