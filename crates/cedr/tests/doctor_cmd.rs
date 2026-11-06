@@ -16,34 +16,44 @@ fn doctor_json_is_read_only_and_has_stable_checks() {
         .env("PATH", "")
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    // Nothing here needs the hosted app, so a missing key is not a failure.
+    assert_eq!(output.status.code(), Some(0));
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     let checks = value["checks"].as_array().unwrap();
-    for id in [
-        "cli.version",
-        "key.present",
-        "key.valid",
-        "org.member",
-        "route.config",
-        "route.readers",
-        "route.orchestrator",
-        "route.targets",
-        "route.statusline",
-        "route.sync",
-        "mcp.claude",
-        "mcp.codex",
-        "monitor.config",
-        "monitor.sources",
-        "monitor.push",
-        "monitor.schedule",
-        "sync.config",
-        "sync.check",
-        "sync.shadowed",
-        "sync.rules",
-        "guard.lock",
-    ] {
-        assert!(checks.iter().any(|c| c["id"] == id), "missing {id}");
-    }
+    let mut ids: Vec<&str> = checks.iter().map(|c| c["id"].as_str().unwrap()).collect();
+    ids.dedup();
+    // Every check sits beside the others of its area.
+    assert_eq!(
+        ids,
+        [
+            "cli.version",
+            "key.present",
+            "key.valid",
+            "org.member",
+            "route.config",
+            "route.readers",
+            "route.orchestrator",
+            "route.targets",
+            "route.statusline",
+            "route.sync",
+            "mcp.claude",
+            "mcp.codex",
+            "mcp.grok",
+            "monitor.config",
+            "monitor.sources",
+            "monitor.push",
+            "monitor.schedule",
+            "sync.config",
+            "sync.check",
+            "sync.shadowed",
+            "sync.rules",
+            "guard.lock",
+            "bench.budget",
+            "bench.push",
+            "bench.suite",
+        ]
+    );
+    assert_eq!(checks[1]["state"], "skip");
     for c in checks {
         assert!(c["area"].is_string());
         assert!(c["message"].is_string());
@@ -402,6 +412,22 @@ fn doctor_names_targets_no_model_matches_and_sync_skills_agents_also_load_elsewh
             "targets no offered model matches: [codex/gpt-5.5]".to_string()
         )
     );
+    // A present harness with no model list resolves none of its targets either.
+    fs::write(
+        cfg.join("routes.toml"),
+        "version = 1\n[harnesses.codex]\n[harnesses.claude]\n[harnesses.gone]\ncommand = \"gone\"\n[harnesses.muse]\n[routes.r]\ncandidates = [{ target = \"codex/sol\" }, { target = \"codex/gpt-5.5\" }, { target = \"claude/opus\" }, { target = \"gone/x\" }]\n[routes.off]\nenabled = false\ncandidates = [{ target = \"muse/x\" }]\n[[readings]]\nkind = \"t3\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        doctor_check(home.path(), "route.targets").1,
+        "harnesses with no model list: [claude]; targets no offered model matches: [codex/gpt-5.5]"
+    );
+    fs::write(
+        cfg.join("routes.toml"),
+        "version = 1\n[harnesses.claude]\nmodels = [\"claude-opus-5-5\"]\n[routes.r]\ncandidates = [{ target = \"claude/opus\" }]\n",
+    )
+    .unwrap();
+    assert_eq!(doctor_check(home.path(), "route.targets").0, "ok");
     // A repo whose Sync writes `council` to the shared skills folder Codex reads.
     let root = tempfile::tempdir().unwrap();
     fs::create_dir_all(root.path().join(".cedr/skills/council")).unwrap();
@@ -461,4 +487,37 @@ fn doctor_names_targets_no_model_matches_and_sync_skills_agents_also_load_elsewh
     )
     .unwrap();
     assert_eq!(shadowed(root.path()).0, "ok");
+}
+
+#[test]
+fn a_missing_key_fails_only_when_an_org_needs_it_and_a_broken_key_always_does() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().unwrap();
+    let cfg = home.path().join(".config/cedr");
+    fs::create_dir_all(&cfg).unwrap();
+    assert_eq!(doctor_check(home.path(), "key.present").0, "skip");
+    // An org in routes.toml [sync] (or monitor.toml) needs the key.
+    fs::write(
+        cfg.join("routes.toml"),
+        "version = 1\n[sync]\norg = \"org-fixture\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        doctor_check(home.path(), "key.present"),
+        (
+            "fail".to_string(),
+            "no API key, but an organization is configured for the hosted app".to_string()
+        )
+    );
+    fs::remove_file(cfg.join("routes.toml")).unwrap();
+    // Without an org, a key that exists but cannot be used still fails, and is never sent.
+    let key = cfg.join("api-key");
+    for (bytes, mode) in [(&b"k-1"[..], 0o644), (&b"  \n"[..], 0o600)] {
+        fs::write(&key, bytes).unwrap();
+        fs::set_permissions(&key, fs::Permissions::from_mode(mode)).unwrap();
+        let (state, message) = doctor_check(home.path(), "key.present");
+        assert_eq!(state, "fail", "{message}");
+        assert!(message.starts_with("API key unusable"), "{message}");
+        assert_eq!(doctor_check(home.path(), "key.valid").1, "no key");
+    }
 }

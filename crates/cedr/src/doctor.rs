@@ -144,40 +144,56 @@ pub fn checks(root: &Path) -> Vec<Check> {
                 "Add [orchestrator] with the harness and model that delegate to this machine's routes.toml",
             );
             // Route targets that the model lists (T3 Code's, a feed's or the config's own) do not
-            // offer: a pick of them is a routing error, not a fallback.
+            // offer, and present harnesses that list no models at all, whose targets then resolve to
+            // nothing (docs/route.md, Model resolution): a pick of them is a routing error, not a
+            // fallback.
             readings.fill_models(c);
-            let mut missing_targets: Vec<String> = c
+            let targets: Vec<(&str, &str)> = c
                 .routes
                 .values()
                 .filter(|r| r.enabled)
                 .flat_map(|r| r.candidates.iter())
                 .filter_map(|cand| cand.target.split_once('/'))
-                .filter(|(h, _)| {
-                    !readings.absent.contains_key(*h)
-                        && readings.models.get(*h).is_some_and(|m| !m.is_empty())
-                })
-                .filter(|(h, m)| cedr_route::pool::resolve(h, m, &readings).is_none())
+                .filter(|(h, _)| !readings.absent.contains_key(*h))
+                .collect();
+            let listed = |h: &str| readings.models.get(h).is_some_and(|m| !m.is_empty());
+            let mut unlisted: Vec<&str> = targets
+                .iter()
+                .map(|(h, _)| *h)
+                .filter(|h| !listed(h))
+                .collect();
+            unlisted.sort();
+            unlisted.dedup();
+            let mut missing_targets: Vec<String> = targets
+                .iter()
+                .filter(|(h, m)| listed(h) && cedr_route::pool::resolve(h, m, &readings).is_none())
                 .map(|(h, m)| format!("{h}/{m}"))
                 .collect();
             missing_targets.sort();
             missing_targets.dedup();
+            let mut problems = vec![];
+            if !unlisted.is_empty() {
+                problems.push(format!(
+                    "harnesses with no model list: [{}]",
+                    unlisted.join(", ")
+                ));
+            }
+            if !missing_targets.is_empty() {
+                problems.push(format!(
+                    "targets no offered model matches: [{}]",
+                    missing_targets.join(", ")
+                ));
+            }
             add(
                 &mut out,
                 "route.targets",
-                if missing_targets.is_empty() {
-                    "ok"
-                } else {
-                    "warn"
-                },
-                if missing_targets.is_empty() {
+                if problems.is_empty() { "ok" } else { "warn" },
+                if problems.is_empty() {
                     "every route target matches an offered model".to_string()
                 } else {
-                    format!(
-                        "targets no offered model matches: [{}]",
-                        missing_targets.join(", ")
-                    )
+                    problems.join("; ")
                 },
-                "Point the targets at models the harness offers (cedr route models lists them), or edit the routes in the app",
+                "Add models = [\"<model id>\", ...] to each listed [harnesses.<id>] in routes.toml, or configure a readings source that lists models (kind = \"t3\" under T3 Code); point the targets at models the harness offers (cedr route models lists them)",
             );
         }
         Err(_) => {
@@ -211,38 +227,6 @@ pub fn checks(root: &Path) -> Vec<Check> {
             );
         }
     }
-    let key = cedr_route::sync::api_key().and_then(|key| {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if std::env::var("CEDR_API_KEY")
-                .ok()
-                .is_none_or(|s| s.trim().is_empty())
-            {
-                let path = config::xdg_dir("XDG_CONFIG_HOME", ".config").join("cedr/api-key");
-                if std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o777 != 0o600) {
-                    return Err(cedr_route::Error::Usage(
-                        "API key file requires mode 600".into(),
-                    ));
-                }
-            }
-        }
-        if key.is_empty() {
-            return Err(cedr_route::Error::Usage("API key is empty".into()));
-        }
-        Ok(key)
-    });
-    add(
-        &mut out,
-        "key.present",
-        if key.is_ok() { "ok" } else { "fail" },
-        if key.is_ok() {
-            "API key configured"
-        } else {
-            "API key missing or file permissions invalid"
-        },
-        "Set CEDR_API_KEY or save ~/.config/cedr/api-key with mode 600",
-    );
     let monitor = cedr_monitor::config::Config::load();
     let org = monitor
         .as_ref()
@@ -254,6 +238,56 @@ pub fn checks(root: &Path) -> Vec<Check> {
                 .ok()
                 .and_then(|c| c.sync.as_ref().map(|s| s.org.clone()))
         });
+    let key_path = config::xdg_dir("XDG_CONFIG_HOME", ".config").join("cedr/api-key");
+    let key = cedr_route::sync::api_key().and_then(|key| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if std::env::var("CEDR_API_KEY")
+                .ok()
+                .is_none_or(|s| s.trim().is_empty())
+            {
+                if std::fs::metadata(&key_path)
+                    .is_ok_and(|m| m.permissions().mode() & 0o777 != 0o600)
+                {
+                    return Err(cedr_route::Error::Usage(
+                        "API key file requires mode 600".into(),
+                    ));
+                }
+            }
+        }
+        if key.is_empty() {
+            return Err(cedr_route::Error::Usage("API key is empty".into()));
+        }
+        Ok(key)
+    });
+    // No key at all is a failure only when something here needs the hosted app (an org for Monitor
+    // pushes or Route sync); a key that exists but is broken always is.
+    let no_key = std::env::var("CEDR_API_KEY")
+        .ok()
+        .is_none_or(|s| s.trim().is_empty())
+        && std::fs::symlink_metadata(&key_path)
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound);
+    let (state, message) = match &key {
+        Ok(_) => ("ok", "API key configured".to_string()),
+        Err(_) if no_key && org.is_none() => (
+            "skip",
+            "no API key; none needed without an org in monitor.toml or routes.toml [sync]"
+                .to_string(),
+        ),
+        Err(_) if no_key => (
+            "fail",
+            "no API key, but an organization is configured for the hosted app".to_string(),
+        ),
+        Err(e) => ("fail", format!("API key unusable: {e}")),
+    };
+    add(
+        &mut out,
+        "key.present",
+        state,
+        message,
+        "Set CEDR_API_KEY or save ~/.config/cedr/api-key with mode 600",
+    );
     let settings = Sync {
         org: org.clone().unwrap_or_default(),
         routes: Default::default(),
@@ -761,6 +795,7 @@ pub fn checks(root: &Path) -> Vec<Check> {
         "route.sync",
         "mcp.claude",
         "mcp.codex",
+        "mcp.grok",
         "monitor.config",
         "monitor.sources",
         "monitor.push",
@@ -771,6 +806,7 @@ pub fn checks(root: &Path) -> Vec<Check> {
         "sync.rules",
         "guard.lock",
         "bench.budget",
+        "bench.push",
         "bench.suite",
     ];
     out.sort_by_key(|c| {

@@ -7,13 +7,13 @@ Each check is `{"id", "area", "state": "ok" | "warn" | "fail" | "skip", "message
 | ID | Area | Checks |
 |---|---|---|
 | `cli.version` | cli | The running version, and whether a newer release is listed at `https://api.github.com/repos/Sheernox/cedr/releases/latest` (warn when older; skip offline) |
-| `key.present` | account | `$CEDR_API_KEY` or `~/.config/cedr/api-key` exists; the file is mode 600 |
+| `key.present` | account | `$CEDR_API_KEY` or `~/.config/cedr/api-key` exists, and the file is mode 600 and not empty. No key at all is a skip unless an org is configured (monitor config or the user routes file's `[sync]`), when it fails; a key file with the wrong mode, unreadable or empty always fails |
 | `key.valid` | account | `GET /me` with the key answers 200; names the key's owner, never the key |
 | `org.member` | account | The configured org (monitor config, then `[sync] org`) is one the key's owner belongs to (`GET /me` lists them) |
 | `route.config` | route | A routes config is found and parses; names its path |
 | `route.readers` | route | Route's machine checks, judged on the readings a pick builds (the file, `http`, `command`, `t3` and `claude-statusline` sources; no account probe is started): harnesses skipped or whose program is missing (and T3 Code does not run), and stale usage readers, never an absent harness or one an earlier source covers; warn too when T3 Code has a caches directory on this machine and no `t3` readings source reads it |
 | `route.orchestrator` | route | The routes in use set an `[orchestrator]` (names it; warn when none is set, since route tags then leave out the delegating plan's use) |
-| `route.targets` | route | Enabled route targets whose harness has a model list (from any source, or the config's `models`) and is present, but whose model resolves to nothing (docs/route.md, Model resolution): warn, naming them |
+| `route.targets` | route | For enabled routes, on present harnesses: warn naming the harnesses with no model list (from any source, or the config's `models`), since none of their targets resolve, and the targets whose model resolves to nothing in the harness's list (docs/route.md, Model resolution). The fix is `models = [...]` on the harness or a readings source that lists models |
 | `route.statusline` | route | Claude's plan reading: ok when a `t3` source gives Claude a current reading; otherwise `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json` when set) has a status line running `cedr route statusline`, or Claude Code has cached its plan usage (docs/route.md, Built-in readers); warn when Claude is present (on `PATH` or run by T3 Code) and neither holds, or there is no status line and the cache cannot be read or the routes do not have exactly one `claude-statusline` source |
 | `route.sync` | route | The last background sync error, if any |
 | `mcp.claude`, `mcp.codex`, `mcp.grok` | mcp | `cedr` is registered as an MCP server for that agent (`claude mcp list`, `codex mcp list`, `grok mcp list`; skip when the agent is absent) |

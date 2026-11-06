@@ -107,6 +107,7 @@ model = "opus"
 [harnesses.claude]
 expect = ["five_hour", "seven_day"]
 effort_option = "effort"
+models = ["claude-opus-5-5", "claude-sonnet-5-5"]   # what targets resolve to; T3 Code lists them itself
 
 [harnesses.codex]
 expect = ["primary"]
