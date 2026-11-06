@@ -58,3 +58,32 @@ fn a_push_with_nowhere_to_send_fails_before_reading_any_log() {
         "collected logs before finding there was nowhere to send them"
     );
 }
+#[test]
+fn limits_include_claude_codes_usage_cache_without_a_status_line() {
+    let d = tempfile::tempdir().unwrap();
+    let claude = d.path().join("claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    let now = chrono::Utc::now();
+    let cache = serde_json::json!({"oauthAccount": {"accountUuid": "acct-a"}, "cachedUsageUtilization": {
+        "accountUuid": "acct-a", "fetchedAtMs": now.timestamp_millis(), "utilization": {
+        "five_hour": {"utilization": 39, "resets_at": (now + chrono::Duration::hours(3)).to_rfc3339()}}}});
+    std::fs::write(claude.join(".claude.json"), cache.to_string()).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_cedr"))
+        .args(["monitor", "limits", "--format", "json"])
+        .env("HOME", d.path())
+        .env("PATH", "")
+        .env("XDG_STATE_HOME", d.path().join("state"))
+        .env("XDG_CONFIG_HOME", d.path().join("config"))
+        .env("XDG_DATA_HOME", d.path().join("data"))
+        .env("CLAUDE_CONFIG_DIR", &claude)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v.to_string().contains(r#""harness":"claude""#), "{v}");
+    assert!(v.to_string().contains(r#""percent":39.0"#), "{v}");
+}

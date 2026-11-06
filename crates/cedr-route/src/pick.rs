@@ -716,8 +716,14 @@ impl Context<'_> {
                     .map(|(_, f)| f)
                     .filter(|f| {
                         routed.iter().any(|t| {
-                            t.split_once('/')
-                                .is_some_and(|(h, m)| h == harness && m.contains(f))
+                            // A family name ("opus") resolves to the id a window may name
+                            // ("opus-4-5" in "claude-opus-4-5").
+                            t.split_once('/').is_some_and(|(h, m)| {
+                                h == harness
+                                    && (m.contains(f)
+                                        || crate::pool::resolve(harness, m, self.readings)
+                                            .is_some_and(|id| id.contains(f)))
+                            })
                         })
                     })
                     .collect();

@@ -53,6 +53,16 @@ pub fn refresh(db: &Store) -> Vec<String> {
             Err(_) => errors.push("invalid Claude capture".into()),
         }
     }
+    // Hosts that run Claude Code through its SDK have no status line, only its own usage cache.
+    match cedr_route::readers::claude_usage("claude") {
+        Ok(Some(v)) => {
+            if db.readings(&v).is_err() {
+                errors.push("cannot save Claude readings".into());
+            }
+        }
+        Ok(None) => {}
+        Err(_) => errors.push("Claude Code's usage cache unreadable".into()),
+    }
     for (h, command, reader) in [
         (
             "codex",

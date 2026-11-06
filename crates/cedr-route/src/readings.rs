@@ -185,7 +185,7 @@ pub fn collect(config: &Config, config_dir: &Path, now: DateTime<Utc>) -> (Readi
         if covered(config, &readings, source) {
             continue;
         }
-        match fetch(source, config_dir, now, claude_cache) {
+        match fetch(source, config_dir, now, claude_cache.then_some(config)) {
             Ok(Fetched { doc, warning }) => {
                 readings.merge(config, &doc);
                 warnings.extend(warning);
@@ -265,7 +265,7 @@ fn fetch(
     source: &ReadingsSource,
     config_dir: &Path,
     now: DateTime<Utc>,
-    claude_cache: bool,
+    claude_cache: Option<&Config>,
 ) -> Result<Fetched, String> {
     match source {
         ReadingsSource::File { path } => {
@@ -318,14 +318,22 @@ fn fetch(
             crate::readers::grok(harness, COMMAND_TIMEOUT)
                 .map_err(|e| format!("grok readings unavailable ({e})"))
         }),
-        ReadingsSource::ClaudeStatusline { harness } => claude(harness, claude_cache),
+        ReadingsSource::ClaudeStatusline { harness } => {
+            // A window kept from the older reading must itself still be fresh (see `claude`).
+            let fresh = claude_cache.map(|c| c.limits(c.harness_for(harness), None).fresh_seconds);
+            claude(harness, fresh, now)
+        }
     }
 }
 
 /// The newer of the status line capture and Claude Code's own usage cache. Hosts that run Claude
 /// Code through its SDK (no status line) only have the cache. Either one failing is an error only
 /// when the other has no reading.
-fn claude(harness: &str, use_cache: bool) -> Result<Fetched, String> {
+fn claude(
+    harness: &str,
+    cache_fresh_seconds: Option<i64>,
+    now: DateTime<Utc>,
+) -> Result<Fetched, String> {
     let path = crate::readers::statusline_path(harness);
     let capture = match read_file(&path, MAX_BYTES) {
         Ok(bytes) => parse_doc(&bytes)
@@ -334,7 +342,7 @@ fn claude(harness: &str, use_cache: bool) -> Result<Fetched, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("readings {}: {e}", path.display())),
     };
-    let cache = if use_cache {
+    let cache = if cache_fresh_seconds.is_some() {
         crate::readers::claude_usage(harness)
             .map_err(|e| format!("claude readings unavailable ({e})"))
     } else {
@@ -349,7 +357,10 @@ fn claude(harness: &str, use_cache: bool) -> Result<Fetched, String> {
                 (c, u)
             };
             // The capture has no model windows, so the newer document keeps the other's windows
-            // it lacks rather than dropping a limit.
+            // it lacks rather than dropping a limit. They take the newer one's `fetchedAt`, so
+            // once the older reading is stale their use is unknown, never its old percent.
+            let fresh = cache_fresh_seconds.unwrap_or(0);
+            let older_fresh = fetched(&older).is_some_and(|at| (now - at).num_seconds() <= fresh);
             let extra: Vec<Value> = older["harnesses"][0]["windows"]
                 .as_array()
                 .into_iter()
@@ -359,7 +370,13 @@ fn claude(harness: &str, use_cache: bool) -> Result<Fetched, String> {
                         .as_array()
                         .is_some_and(|ws| ws.iter().any(|n| n["id"] == w["id"]))
                 })
-                .cloned()
+                .map(|w| {
+                    let mut w = w.clone();
+                    if !older_fresh {
+                        w["percent"] = Value::Null;
+                    }
+                    w
+                })
                 .collect();
             if let Some(ws) = newer["harnesses"][0]["windows"].as_array_mut() {
                 ws.extend(extra);
@@ -540,6 +557,24 @@ mod tests {
             Path::new("t.toml"),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn the_codex_reader_runs_until_an_earlier_source_also_listed_its_models() {
+        let c = config();
+        let codex = ReadingsSource::Codex {
+            harness: "codex".into(),
+            cache_seconds: 60,
+        };
+        let mut r = Readings::default();
+        assert!(!covered(&c, &r, &codex));
+        r.merge(
+            &c,
+            &json!({"harnesses": [{"harness": "codex", "fetchedAt": "2026-10-29T01:00:00Z", "windows": []}]}),
+        );
+        assert!(!covered(&c, &r, &codex), "its model list is still to come");
+        r.merge(&c, &json!({"models": {"codex": ["gpt-6.1-sol"]}}));
+        assert!(covered(&c, &r, &codex));
     }
 
     #[test]

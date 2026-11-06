@@ -938,9 +938,14 @@ pub fn load(path: &Path) -> Result<Loaded> {
     match config.orchestrator {
         Some(o) if merged.harnesses.contains_key(&o.harness) => merged.orchestrator = Some(o),
         Some(o) => warnings.push(format!(
-            "{}: orchestrator harness {:?} is not in the shared routes; using theirs",
+            "{}: orchestrator harness {:?} is not in the shared routes; {}",
             path.display(),
-            o.harness
+            o.harness,
+            if merged.orchestrator.is_some() {
+                "using theirs"
+            } else {
+                "none is used"
+            }
         )),
         None => {}
     }

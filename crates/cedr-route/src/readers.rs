@@ -384,11 +384,14 @@ pub fn from_usage_cache(config: &Value, harness: &str) -> Result<Option<Value>, 
     else {
         return Ok(None);
     };
-    let signed_in = config["oauthAccount"]["accountUuid"].as_str();
-    if signed_in.is_none() || signed_in != cache["accountUuid"].as_str() {
+    let changed = || "Claude Code changed its usage cache format".to_string();
+    let cached = cache["accountUuid"]
+        .as_str()
+        .filter(|a| !a.is_empty())
+        .ok_or_else(changed)?;
+    if config["oauthAccount"]["accountUuid"].as_str() != Some(cached) {
         return Ok(None);
     }
-    let changed = || "Claude Code changed its usage cache format".to_string();
     let fetched = cache["fetchedAtMs"]
         .as_i64()
         .and_then(DateTime::<Utc>::from_timestamp_millis)
@@ -418,19 +421,25 @@ pub fn from_usage_cache(config: &Value, harness: &str) -> Result<Option<Value>, 
         if l["kind"] != "weekly_scoped" {
             continue;
         }
-        // Named like the status line's windows, so a model name becomes a window id word.
-        let name: String = model
+        // The family is spelled like model ids ("Opus 4.5" -> "opus-4-5", found in
+        // "claude-opus-4-5"); the window id like the status line's ("seven_day_opus_4_5").
+        let family: String = model
             .chars()
             .map(|c| {
                 if c.is_ascii_alphanumeric() {
                     c.to_ascii_lowercase()
                 } else {
-                    '_'
+                    '-'
                 }
             })
             .collect();
-        let mut w = window(format!("seven_day_{name}"), "weekly", l, "percent");
-        w["model"] = Value::String(name);
+        let mut w = window(
+            format!("seven_day_{}", family.replace('-', "_")),
+            "weekly",
+            l,
+            "percent",
+        );
+        w["model"] = Value::String(family);
         windows.push(w);
     }
     if windows.is_empty() {
@@ -512,7 +521,9 @@ mod tests {
                 "limits": [
                     {"kind": "session", "percent": 39, "scope": null},
                     {"kind": "weekly_scoped", "percent": 2, "resets_at": "2026-11-09T04:00:00+00:00",
-                     "scope": {"model": {"id": null, "display_name": "Fable"}}}]}}})
+                     "scope": {"model": {"id": null, "display_name": "Fable"}}},
+                    {"kind": "weekly_scoped", "percent": 7, "resets_at": "2026-11-09T04:00:00+00:00",
+                     "scope": {"model": {"id": null, "display_name": "Opus 4.5"}}}]}}})
     }
 
     #[test]
@@ -527,7 +538,8 @@ mod tests {
             json!([
                 {"id": "five_hour", "kind": "session", "percent": 39.0, "resetsAt": "2026-11-06T01:00:00Z"},
                 {"id": "seven_day", "kind": "weekly", "percent": 45.5, "resetsAt": "2026-11-09T04:00:00Z"},
-                {"id": "seven_day_fable", "kind": "weekly", "percent": 2.0, "resetsAt": "2026-11-09T04:00:00Z", "model": "fable"}
+                {"id": "seven_day_fable", "kind": "weekly", "percent": 2.0, "resetsAt": "2026-11-09T04:00:00Z", "model": "fable"},
+                {"id": "seven_day_opus_4_5", "kind": "weekly", "percent": 7.0, "resetsAt": "2026-11-09T04:00:00Z", "model": "opus-4-5"}
             ])
         );
     }
@@ -547,13 +559,18 @@ mod tests {
         let mut signed_out = usage_cache("acct-a");
         signed_out["oauthAccount"] = Value::Null;
         assert!(from_usage_cache(&signed_out, "claude").unwrap().is_none());
-        let err = from_usage_cache(
-            &json!({"oauthAccount": {"accountUuid": "acct-a"},
-                    "cachedUsageUtilization": {"accountUuid": "acct-a", "usage": {}}}),
-            "claude",
-        )
-        .unwrap_err();
-        assert!(err.contains("changed its usage cache format"), "{err}");
+        for cache in [
+            json!({"accountUuid": "acct-a", "usage": {}}),
+            json!({"fetchedAtMs": 1793750400000i64, "utilization": {}}),
+            json!({"accountUuid": "", "fetchedAtMs": 1793750400000i64, "utilization": {}}),
+        ] {
+            let err = from_usage_cache(
+                &json!({"oauthAccount": {"accountUuid": "acct-a"}, "cachedUsageUtilization": cache}),
+                "claude",
+            )
+            .unwrap_err();
+            assert!(err.contains("changed its usage cache format"), "{err}");
+        }
     }
 
     /// A stand-in `codex` that answers like `codex app-server` does.

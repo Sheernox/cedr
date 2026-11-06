@@ -339,8 +339,13 @@ pub fn checks(root: &Path) -> Vec<Check> {
         });
     // Claude Code run through its SDK (T3 Code and other orchestrators) renders no status line,
     // so its own usage cache is the reading there.
-    let cache = cedr_route::readers::claude_usage("claude");
-    let (state, message) = match (installed("claude"), statusline, &cache) {
+    let installed_claude = installed("claude");
+    let cache = if installed_claude && !statusline {
+        cedr_route::readers::claude_usage("claude")
+    } else {
+        Ok(None)
+    };
+    let (state, message) = match (installed_claude, statusline, &cache) {
         (false, _, _) => ("skip", "harness absent".to_string()),
         (true, true, _) => ("ok", "status line configured".to_string()),
         (true, false, Err(e)) => (

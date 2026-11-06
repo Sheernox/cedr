@@ -766,6 +766,12 @@ fn the_newer_of_the_status_line_capture_and_the_usage_cache_wins() {
         "{out}"
     );
     assert!(write(earlier, now).contains(r#""summary": "claude s39% w45%""#));
+    // A stale cache's model window no longer counts as read.
+    let out = write(now, now - chrono::Duration::minutes(20));
+    assert!(
+        out.contains(r#""summary": "claude s10% w11% fable?%""#),
+        "{out}"
+    );
 }
 
 #[test]
@@ -795,7 +801,7 @@ fn a_built_in_reader_for_a_harness_an_earlier_source_read_stays_quiet() {
 }
 
 #[test]
-fn a_machine_orchestrator_applies_over_shared_routes_without_one() {
+fn a_machine_orchestrator_applies_over_shared_routes() {
     let s = Scratch::new(10.0, 20.0);
     let shared = std::fs::read_to_string(config()).unwrap().replace(
         "[orchestrator]\nharness = \"claude\"\nmodel = \"opus\"\n",
@@ -844,6 +850,18 @@ fn a_machine_orchestrator_applies_over_shared_routes_without_one() {
         "{}",
         String::from_utf8_lossy(&o.stderr)
     );
+
+    // The machine's own beats one the shared routes set, which stays the fallback.
+    let theirs = std::fs::read_to_string(config()).unwrap().replace(
+        "[orchestrator]\nharness = \"claude\"",
+        "[orchestrator]\nharness = \"codex\"",
+    );
+    std::fs::write(org.join("acme.toml"), theirs).unwrap();
+    let v: Value = serde_json::from_slice(&pick(&routes_file(&s, local)).stdout).unwrap();
+    assert_eq!(v["orchestrator"], "claude s5% w20%");
+    let gone = local.replace("harness = \"claude\"", "harness = \"gone\"");
+    let v: Value = serde_json::from_slice(&pick(&routes_file(&s, &gone)).stdout).unwrap();
+    assert_eq!(v["orchestrator"], "codex w10%");
 }
 
 #[test]
@@ -894,4 +912,34 @@ fn a_repository_routes_file_takes_the_user_orchestrator_or_says_why_not() {
         "{}",
         String::from_utf8_lossy(&o.stderr)
     );
+}
+
+#[test]
+fn pools_list_a_scoped_limit_for_the_version_a_family_target_resolves_to() {
+    let s = Scratch::new(10.0, 20.0);
+    let cfg = routes_file(
+        &s,
+        "version = 1\n[harnesses.claude]\nexpect = [\"five_hour\", \"seven_day\"]\nmodels = [\"claude-opus-4-5\", \"claude-sonnet-5-5\"]\n[routes.r]\ncandidates = [{ target = \"claude/opus\" }]\n[[readings]]\nkind = \"claude-statusline\"\n",
+    );
+    let now = chrono::Utc::now();
+    let later = (now + chrono::Duration::hours(3)).to_rfc3339();
+    let claude = s.dir.path().join("claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    let cache = json!({"oauthAccount": {"accountUuid": "acct-a"}, "cachedUsageUtilization": {
+        "accountUuid": "acct-a", "fetchedAtMs": now.timestamp_millis(), "utilization": {
+        "five_hour": {"utilization": 39, "resets_at": later},
+        "seven_day": {"utilization": 45, "resets_at": later},
+        "limits": [{"kind": "weekly_scoped", "percent": 100, "resets_at": later,
+                    "scope": {"model": {"display_name": "Opus 4.5"}}}]}}});
+    std::fs::write(claude.join(".claude.json"), cache.to_string()).unwrap();
+    let o = s.cedr(&["route", "pools", "--config", &cfg, "--format", "json"]);
+    let pools: Value = serde_json::from_slice(&o.stdout).unwrap();
+    let opus = pools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["family"] == "opus-4-5")
+        .unwrap_or_else(|| panic!("{pools}"));
+    assert_eq!(opus["state"], "out");
+    assert_eq!(opus["summary"], "claude s39% w45% opus-4-5100%");
 }
