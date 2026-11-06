@@ -330,10 +330,6 @@ pub fn claude_config_path() -> Option<PathBuf> {
         .map(|h| PathBuf::from(h).join(".claude.json"))
 }
 
-/// The file also holds Claude Code's projects and settings, so it may be far larger than a
-/// readings document; this only bounds a runaway file.
-const CLAUDE_CONFIG_MAX_BYTES: usize = 16 * 1024 * 1024;
-
 /// The plan usage Claude Code last cached, as a readings document. Ok(None) when there is no
 /// config file or no cache in it yet; an error when either is unreadable.
 pub fn claude_usage(harness: &str) -> Result<Option<Value>, String> {
@@ -345,16 +341,8 @@ pub fn claude_usage(harness: &str) -> Result<Option<Value>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
-    let bytes = crate::readings::read_limited(file, CLAUDE_CONFIG_MAX_BYTES)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    if bytes.len() > CLAUDE_CONFIG_MAX_BYTES {
-        return Err(format!(
-            "{} is larger than {CLAUDE_CONFIG_MAX_BYTES} bytes",
-            path.display()
-        ));
-    }
     // Only the two fields are kept: the rest of the file (projects, MCP server settings with their
-    // tokens) is skipped while parsing, never held.
+    // tokens) is streamed past while parsing, never held, so its size does not matter.
     #[derive(serde::Deserialize)]
     struct Fields {
         #[serde(rename = "oauthAccount", default)]
@@ -362,8 +350,14 @@ pub fn claude_usage(harness: &str) -> Result<Option<Value>, String> {
         #[serde(rename = "cachedUsageUtilization", default)]
         cache: Value,
     }
-    let fields: Fields =
-        serde_json::from_slice(&bytes).map_err(|_| format!("{} is not JSON", path.display()))?;
+    let fields: Fields = serde_json::from_reader(std::io::BufReader::new(file)).map_err(|e| {
+        let what = if e.is_data() {
+            "is not a Claude Code config object"
+        } else {
+            "is not JSON"
+        };
+        format!("{} {what}", path.display())
+    })?;
     let account = fields.account["accountUuid"].clone();
     from_usage_cache(
         &json!({"oauthAccount": {"accountUuid": account}, "cachedUsageUtilization": fields.cache}),

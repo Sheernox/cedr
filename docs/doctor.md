@@ -13,7 +13,7 @@ Each check is `{"id", "area", "state": "ok" | "warn" | "fail" | "skip", "message
 | `route.config` | route | A routes config is found and parses; names its path |
 | `route.readers` | route | Route's machine checks: harnesses skipped or whose program is missing (and T3 Code does not run), and stale usage readers |
 | `route.orchestrator` | route | The routes in use set an `[orchestrator]` (names it; warn when none is set, since route tags then leave out the delegating plan's use) |
-| `route.statusline` | route | Claude's plan reading: `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json` when set) has a status line running `cedr route statusline`, or Claude Code has cached its plan usage (docs/route.md, Built-in readers); warn when Claude is installed and neither holds, or there is no status line and the cache cannot be read |
+| `route.statusline` | route | Claude's plan reading: `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json` when set) has a status line running `cedr route statusline`, or Claude Code has cached its plan usage (docs/route.md, Built-in readers); warn when Claude is present (on `PATH` or run by T3 Code) and neither holds, or there is no status line and the cache cannot be read or the routes do not have exactly one `claude-statusline` source |
 | `route.sync` | route | The last background sync error, if any |
 | `mcp.claude`, `mcp.codex`, `mcp.grok` | mcp | `cedr` is registered as an MCP server for that agent (`claude mcp list`, `codex mcp list`, `grok mcp list`; skip when the agent is absent) |
 | `monitor.config` | monitor | The monitor config parses |

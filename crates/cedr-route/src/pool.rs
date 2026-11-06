@@ -110,6 +110,26 @@ fn inferred_family<'a>(id: &'a str, offered: &[String]) -> Option<&'a str> {
     found.all(|other| other == family).then_some(family)
 }
 
+/// Whether `model` belongs to `family`: the id contains it, and a family ending in a version
+/// ("opus-4") is not just the start of a longer one ("claude-opus-4-5"). A date suffix of eight
+/// digits or more ("claude-opus-4-5-20250929") is the same version, not a longer one.
+pub fn in_family(model: &str, family: &str) -> bool {
+    if !family.ends_with(|c: char| c.is_ascii_digit()) {
+        return model.contains(family);
+    }
+    model.match_indices(family).any(|(at, _)| {
+        let rest = &model[at + family.len()..];
+        if rest.starts_with(|c: char| c.is_ascii_digit()) {
+            return false;
+        }
+        let Some(next) = rest.strip_prefix(['-', '.']) else {
+            return true;
+        };
+        let digits = next.chars().take_while(char::is_ascii_digit).count();
+        digits == 0 || digits >= 8
+    })
+}
+
 /// A harness's model windows as `(window id, family)`: those `[model_windows]` names, then those
 /// its reading limits to a `model` itself, then those `inferred_family` places.
 pub fn model_windows<'a>(
@@ -136,15 +156,18 @@ pub fn model_windows<'a>(
         .get(harness)
         .map(Vec::as_slice)
         .unwrap_or_default();
+    // A source that scopes any window with `model` has said which are scoped; the rest are shared.
+    let scoped_by_source = entry.windows.iter().any(|w| w.model.is_some());
     for w in &entry.windows {
         if expect.contains(&w.id) || families.iter().any(|(id, _)| *id == w.id) {
             continue;
         }
-        if let Some(f) = w
-            .model
-            .as_deref()
-            .or_else(|| inferred_family(&w.id, offered))
-        {
+        let inferred = || {
+            (!scoped_by_source)
+                .then(|| inferred_family(&w.id, offered))
+                .flatten()
+        };
+        if let Some(f) = w.model.as_deref().or_else(inferred) {
             families.push((w.id.as_str(), f));
         }
     }
@@ -216,7 +239,7 @@ pub fn pool_with(
     expect.extend(
         families
             .iter()
-            .filter(|(_, f)| model.contains(f))
+            .filter(|(_, f)| in_family(model, f))
             .map(|(w, _)| *w),
     );
     let mut state = State::Ready;
@@ -226,7 +249,7 @@ pub fn pool_with(
     for w in &entry.windows {
         let family = families.iter().find(|(id, _)| *id == w.id).map(|(_, f)| *f);
         if let Some(f) = family
-            && !model.contains(f)
+            && !in_family(model, f)
         {
             continue;
         }
@@ -420,6 +443,50 @@ model = "fable"
         assert_eq!(fable(&t), "claude s10% w20% fable30%");
         t.fresh_seconds = 60;
         assert_eq!(fable(&t), "claude s10% w20% fable?%");
+    }
+
+    #[test]
+    fn a_source_that_scopes_one_window_leaves_the_others_shared() {
+        let config = Config::parse(
+            "version = 1\n[harnesses.antigravity]\nexpect = []\n",
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        let mut r = Readings::default();
+        r.merge(
+            &config,
+            &json!({"harnesses": [{"harness": "antigravity", "fetchedAt": "2026-10-29T01:59:00Z", "windows": [
+                {"id": "gemini-5h@acct", "kind": "session", "percent": 0, "resetsAt": "2026-10-29T05:00:00Z"},
+                {"id": "gemini-weekly@acct", "kind": "weekly", "percent": 17, "resetsAt": "2026-11-02T00:00:00Z"},
+                {"id": "gemini-argon-wtu-weekly@acct", "kind": "weekly", "percent": 93,
+                 "resetsAt": "2026-11-02T00:00:00Z", "model": "argon"}
+            ]}], "models": {"antigravity": [
+                "gemini-4-argon-high", "gemini-4-argon-medium", "gemini-4-argon-low",
+                "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
+                "claude-opus-5-5-low", "claude-opus-5-5-medium"]}}),
+        );
+        let p = |m: &str| {
+            let p = pool("antigravity", m, &r, &config, now());
+            (p.state, p.summary)
+        };
+        let shared = (State::Ready, "antigravity s0% w17%".to_string());
+        assert_eq!(p("gemini-3.8-flash-high"), shared);
+        assert_eq!(p("claude-opus-5-5-low"), shared);
+        assert_eq!(
+            p("gemini-4-argon-high"),
+            (State::Out, "antigravity s0% w17% argon93%".to_string())
+        );
+    }
+
+    #[test]
+    fn a_versioned_family_does_not_match_a_longer_version() {
+        assert!(in_family("claude-opus-4", "opus-4"));
+        assert!(in_family("claude-opus-4-5", "opus-4-5"));
+        assert!(!in_family("claude-opus-4-5", "opus-4"));
+        assert!(!in_family("claude-opus-45", "opus-4"));
+        assert!(in_family("claude-fable-5-1", "fable"));
+        assert!(in_family("claude-opus-4-5-20250929", "opus-4-5"));
+        assert!(!in_family("claude-opus-4-55", "opus-4-5"));
     }
 
     #[test]

@@ -202,7 +202,7 @@ fn doctor_says_why_claude_has_no_reading_and_when_no_orchestrator_is_set() {
     fs::set_permissions(bin.join("claude"), fs::Permissions::from_mode(0o755)).unwrap();
     let cfg = home.path().join(".config/cedr");
     fs::create_dir_all(&cfg).unwrap();
-    let routes = "version = 1\n[harnesses.claude]\nexpect = [\"five_hour\", \"seven_day\"]\n";
+    let routes = "version = 1\n[harnesses.claude]\nexpect = [\"five_hour\", \"seven_day\"]\n[[readings]]\nkind = \"claude-statusline\"\n";
     fs::write(cfg.join("routes.toml"), routes).unwrap();
     let check_with = |id: &str, path: &std::path::Path| {
         let out = Command::new(env!("CARGO_BIN_EXE_cedr"))
@@ -245,12 +245,35 @@ fn doctor_says_why_claude_has_no_reading_and_when_no_orchestrator_is_set() {
     .unwrap();
     let (state, message) = check("route.statusline");
     assert_eq!(state, "ok");
-    // A Claude the routes count as present (T3 Code runs it with nothing on PATH) is not skipped.
+    assert!(message.contains("usage cache"), "{message}");
+    // Claude that T3 Code runs from a provider profile, with nothing on PATH, is not skipped.
+    let profile = home
+        .path()
+        .join(".t3/userdata/providers/claudeAgent")
+        .join("c857d09db23e6822e3600bc06ad8d58f92ed62bc8efd81c753f77048662cb97d");
+    fs::create_dir_all(&profile).unwrap();
+    fs::write(
+        cfg.join("routes.toml"),
+        routes.replace(
+            "[harnesses.claude]\n",
+            "[harnesses.claude]\ncommand = \"claude\"\n",
+        ),
+    )
+    .unwrap();
     assert_eq!(
         check_with("route.statusline", std::path::Path::new("")).0,
         "ok"
     );
-    assert!(message.contains("usage cache"), "{message}");
+    // A second Claude source means the cache serves neither.
+    fs::write(
+        cfg.join("routes.toml"),
+        format!("{routes}[harnesses.work]\n[[readings]]\nkind = \"claude-statusline\"\nharness = \"work\"\n"),
+    )
+    .unwrap();
+    let (state, message) = check("route.statusline");
+    assert_eq!(state, "warn");
+    assert!(message.contains("only with one"), "{message}");
+    fs::write(cfg.join("routes.toml"), routes).unwrap();
     fs::write(
         cfg.join("routes.toml"),
         format!("{routes}[orchestrator]\nharness = \"claude\"\nmodel = \"opus\"\n"),

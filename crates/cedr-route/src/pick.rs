@@ -720,9 +720,9 @@ impl Context<'_> {
                             // ("opus-4-5" in "claude-opus-4-5").
                             t.split_once('/').is_some_and(|(h, m)| {
                                 h == harness
-                                    && (m.contains(f)
+                                    && (crate::pool::in_family(m, f)
                                         || crate::pool::resolve(harness, m, self.readings)
-                                            .is_some_and(|id| id.contains(f)))
+                                            .is_some_and(|id| crate::pool::in_family(&id, f)))
                             })
                         })
                     })

@@ -348,6 +348,14 @@ pub fn checks(root: &Path) -> Vec<Check> {
                     .0
                     .contains_key("claude")
         });
+    // Route reads the cache only for a single claude-statusline source (docs/route.md).
+    let sources = routes.as_ref().map_or(0, |l| {
+        l.config
+            .readings
+            .iter()
+            .filter(|s| matches!(s, config::ReadingsSource::ClaudeStatusline { .. }))
+            .count()
+    });
     let cache = if installed_claude && !statusline {
         cedr_route::readers::claude_usage("claude")
     } else {
@@ -359,6 +367,12 @@ pub fn checks(root: &Path) -> Vec<Check> {
         (true, false, Err(e)) => (
             "warn",
             format!("Claude Code's usage cache cannot be read ({e})"),
+        ),
+        (true, false, Ok(Some(_))) if sources != 1 => (
+            "warn",
+            format!(
+                "no status line, and Claude Code's usage cache is read only with one claude-statusline readings source (the routes have {sources})"
+            ),
         ),
         (true, false, Ok(Some(_))) => (
             "ok",
@@ -374,7 +388,7 @@ pub fn checks(root: &Path) -> Vec<Check> {
         "route.statusline",
         state,
         message,
-        "Configure Claude statusLine.command to run cedr route statusline, or run Claude Code signed in to a Pro or Max plan",
+        "Configure Claude statusLine.command to run cedr route statusline, or run Claude Code signed in to a Pro or Max plan; without Claude on this machine, add claude to [machine] skip",
     );
     let sync_error = std::fs::metadata(cedr_route::sync::log_path()).is_ok_and(|m| m.len() > 0);
     add(
