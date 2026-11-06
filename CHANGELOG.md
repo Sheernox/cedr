@@ -2,6 +2,31 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.9.4 (2026-11-05)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.9.4.png" alt="cedr v0.9.4: last review" width="770">
+
+**v0.9.4** · 2 changes from 1 contributor
+
+### Highlights
+**A council stops at its last review.** A route's `rounds` counts revisions, so `rounds = 3` allows four reviews. Once the last one blocks, the gate stands: `cedr council merge` and the `council_merge` MCP tool now refuse a later `--round` (exit 2) and record nothing, so a run can no longer pass after its gate stood.
+
+### Fixes
+- **Council merge:** a numbered `--round` past `rounds + 1` is a usage error naming the last review. Unlimited rounds are unchanged.
+- **Council text:** `next: revise (revision N of M)` and the brief title `(revision N of M)` count revisions; `cedr route history` prints council records as `review <round> of <rounds + 1>`, so the last review reads `review 4 of 4`, not `round 4/3`. JSON is unchanged.
+- **Council stats:** text labels the run counts `revised_runs` and `passed_after_revision_runs`; they count runs, not revisions, as the JSON fields `revised` and `passed_after_revision` always have.
+- **Council skill:** the score table in `cedr council skill` counts reviews (`Reviews: 2`, `Review 1`).
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* fix(council): stop merges past the last review and say rounds counts revisions
+* chore(release): ship the council last review cap as cedr 0.9.4
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.9.3...v0.9.4
+</details>
+
 ## v0.9.3 (2026-11-05)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.9.3.png" alt="cedr v0.9.3: shadows" width="770">
