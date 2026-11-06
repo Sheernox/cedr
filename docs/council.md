@@ -51,7 +51,9 @@ A spare stays out unless a regular member cannot take this review. A vacancy is 
 One report per member, in either form:
 
 - JSON: `{"member": "<harness>/<model>", "pick": "p-...", "score": 8, "findings": [{"file": "src/a.rs", "line": 12, "severity": "P1", "claim": "...", "scenario": "..."}]}`. `pick`, `score` and `scenario` are optional; `findings` may be empty (reviewed, nothing found).
-- Text: lines of the form `<file>:<line> - <P0|P1|P2|P3> - <claim>` with an optional ` - <scenario>`, as review briefs ask for. A line `Score: <n>/10` sets the score; the last such line counts. Other lines are ignored. The member comes from the argument (`<member>=<path>`).
+- Text: lines of the form `<file>:<line> - <P0|P1|P2|P3> - <claim>` with an optional ` - <scenario>`, as review briefs ask for. The fields may be separated by a spaced hyphen, en dash (U+2013) or em dash (U+2014), or by ` | ` (a Markdown table row, its outer pipes dropped); a line may open with a list marker (`-`, `*`, `+`, `1.`, `1)`), and backticks or bold around the location, severity or claim are dropped. A line `Score: <n>/10` sets the score; the last such line counts. A line `No findings.` (any case, bold or listed) says the member found nothing. Other lines are ignored. The member comes from the argument (`<member>=<path>`).
+
+A text report must show it finished: it is an error (exit 2, naming the file) when it is empty or whitespace, or when it has no findings, no valid score and no `No findings.` line, since a failed or cut-off reply is not a clean review. A line that opens with `<file>:<line>` and names `P0` to `P3` but cannot be read as a finding is an error naming the file and its line number, never a dropped finding. A JSON report with `"findings": []` is a complete, clean review.
 
 `P0` is the most severe. A score is the member's own view of the change, from 0 to 10, and is shown but never decides the gate; a JSON score off that scale is an error. A report that cannot be read or parsed is an error, not an empty review. Reports are capped at 256 KiB each.
 

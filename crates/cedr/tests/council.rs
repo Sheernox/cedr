@@ -198,6 +198,37 @@ fn merge_without_quorum_is_incomplete_and_text_needs_a_member() {
     let o = s.cedr(&["council", "merge", &text.display().to_string()]);
     assert_eq!(o.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&o.stderr).contains("needs <member>=<path>"));
+    // A failed reply never counts toward the quorum.
+    let failed = s.dir.path().join("failed.md");
+    std::fs::write(&failed, "Error: rate limited\n").unwrap();
+    let ok = format!("b={}", text.display());
+    let o = s.cedr(&[
+        "council",
+        "merge",
+        &format!("a={}", failed.display()),
+        &ok,
+        "--quorum",
+        "2",
+    ]);
+    assert_eq!(o.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains(&format!("{}: no findings", failed.display())),
+        "{err}"
+    );
+    std::fs::write(&failed, "Checked it.\n`src/a.rs:3` - P1\n").unwrap();
+    let err = String::from_utf8_lossy(
+        &s.cedr(&["council", "merge", &format!("a={}", failed.display())])
+            .stderr,
+    )
+    .into_owned();
+    assert!(
+        err.contains(&format!(
+            "{}: line 2: cannot read this finding",
+            failed.display()
+        )),
+        "{err}"
+    );
 }
 
 #[test]

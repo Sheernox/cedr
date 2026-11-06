@@ -134,7 +134,10 @@ fn read_report(arg: &str) -> Result<Report> {
     })?;
     let text = String::from_utf8(bytes)
         .map_err(|_| Error::Usage(format!("{}: report is not UTF-8 text", path.display())))?;
-    Ok(Report::from_text(&text, member))
+    Report::from_text(&text, member).map_err(|e| Error::Parse {
+        path: path.clone(),
+        message: e.to_string(),
+    })
 }
 
 fn read_previous(path: &Path) -> Result<Value> {

@@ -82,35 +82,129 @@ impl Report {
         Ok(report)
     }
 
-    /// A text report: lines `<file>:<line> - <P0..P3> - <claim>[ - <scenario>]`, tolerating the
-    /// list markers, backticks and bold that review replies wrap them in, and a `Score: <n>/10`
-    /// line, the last one counting. Other lines are ignored.
-    pub fn from_text(text: &str, member: &str) -> Report {
-        let findings = text.lines().filter_map(parse_line).collect();
-        Report {
+    /// A text report (docs/council.md, Reports): finding lines `<file>:<line> - <P0..P3> - <claim>[ -
+    /// <scenario>]`, and a `Score: <n>/10` line, the last one counting. A reply with no findings must
+    /// still say it finished, with a valid score or a `No findings.` line, so an empty, failed or
+    /// cut-off reply is an error rather than a clean review. A line that starts with a location and
+    /// names a severity but cannot be read is an error too, never a silently dropped finding.
+    pub fn from_text(text: &str, member: &str) -> Result<Report> {
+        if text.trim().is_empty() {
+            return Err(Error::Usage("the report is empty".into()));
+        }
+        let mut findings = vec![];
+        let mut no_findings = false;
+        for (i, raw) in text.lines().enumerate() {
+            let line = unwrap_line(raw);
+            if line
+                .trim_matches(['*', '_', '`'])
+                .trim_end_matches('.')
+                .eq_ignore_ascii_case("no findings")
+            {
+                no_findings = true;
+            } else if let Some(f) = parse_line(line) {
+                findings.push(f);
+            } else if looks_like_finding(line) {
+                return Err(Error::Usage(format!(
+                    "line {}: cannot read this finding; write `<file>:<line> - <P0|P1|P2|P3> - <claim>`",
+                    i + 1
+                )));
+            }
+        }
+        let score = {
+            let last = text
+                .lines()
+                .enumerate()
+                .filter(|(_, l)| !l.trim().is_empty())
+                .map(|(i, _)| i)
+                .last();
+            text.lines()
+                .enumerate()
+                .filter(|(i, l)| {
+                    (!l.trim().starts_with("- ") && !l.trim().starts_with("* ")) || Some(*i) == last
+                })
+                .filter_map(|(_, l)| score_candidate(l))
+                .last()
+                .flatten()
+        };
+        if findings.is_empty() && score.is_none() && !no_findings {
+            return Err(Error::Usage(
+                "no findings, no `Score: <n>/10` line and no `No findings.` line: a failed or cut-off reply is not a clean review".into(),
+            ));
+        }
+        Ok(Report {
             spare_for: None,
             member: member.to_string(),
             pick: None,
-            score: {
-                let last = text
-                    .lines()
-                    .enumerate()
-                    .filter(|(_, l)| !l.trim().is_empty())
-                    .map(|(i, _)| i)
-                    .last();
-                text.lines()
-                    .enumerate()
-                    .filter(|(i, l)| {
-                        (!l.trim().starts_with("- ") && !l.trim().starts_with("* "))
-                            || Some(*i) == last
-                    })
-                    .filter_map(|(_, l)| score_candidate(l))
-                    .last()
-                    .flatten()
-            },
+            score,
             findings,
-        }
+        })
     }
+}
+
+/// Separators a finding line may put between its fields: a spaced hyphen, en dash or em dash, or a
+/// table's pipe.
+const SEPARATORS: [&str; 4] = [" - ", " \u{2013} ", " \u{2014} ", " | "];
+
+/// The line without the list marker (`-`, `*`, `+`, `1.`, `1)`) or table pipes around it.
+fn unwrap_line(line: &str) -> &str {
+    let line = line.trim();
+    let line = ["- ", "* ", "+ "]
+        .iter()
+        .find_map(|m| line.strip_prefix(m))
+        .unwrap_or_else(|| {
+            let digits = line.len() - line.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+            line[digits..]
+                .strip_prefix(". ")
+                .or_else(|| line[digits..].strip_prefix(") "))
+                .filter(|_| digits > 0)
+                .unwrap_or(line)
+        });
+    let line = line.trim();
+    match line.strip_prefix('|') {
+        Some(inner) => inner.strip_suffix('|').unwrap_or(inner).trim(),
+        None => line,
+    }
+}
+
+/// `<file>:<line>` with the backticks or bold a reply wraps it in removed.
+fn location(s: &str) -> Option<(&str, u64)> {
+    let s = s.trim().trim_matches(['`', '*']);
+    let (file, line) = s.rsplit_once(':')?;
+    let line = line.parse().ok()?;
+    (!file.is_empty() && !file.contains(char::is_whitespace)).then_some((file, line))
+}
+
+fn parse_line(line: &str) -> Option<Finding> {
+    SEPARATORS.iter().find_map(|sep| {
+        let mut parts = line.splitn(4, sep);
+        let (file, line_no) = location(parts.next()?)?;
+        let severity = Severity::parse(parts.next()?.trim().trim_matches(['*', '`', '[', ']']))?;
+        let claim = parts.next()?.trim().trim_matches('*').trim().to_string();
+        let scenario = parts
+            .next()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        (!claim.is_empty()).then(|| Finding {
+            file: file.to_string(),
+            line: line_no,
+            severity,
+            claim,
+            scenario,
+        })
+    })
+}
+
+/// A line that opens with a location and names a severity is meant as a finding.
+fn looks_like_finding(line: &str) -> bool {
+    let first = line
+        .split(char::is_whitespace)
+        .next()
+        .unwrap_or("")
+        .trim_end_matches([',', ';', '.']);
+    location(first.strip_suffix(':').unwrap_or(first)).is_some()
+        && line
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|w| Severity::parse(w).is_some())
 }
 
 /// The parsed value of a single score candidate, for parser regression cases.
@@ -157,34 +251,6 @@ fn score_candidate(line: &str) -> Option<Option<f64>> {
             .map(|s| if s == 0.0 { 0.0 } else { s })
     } else {
         None
-    })
-}
-
-fn parse_line(line: &str) -> Option<Finding> {
-    let line = line.trim();
-    let line = line
-        .strip_prefix("- ")
-        .or_else(|| line.strip_prefix("* "))
-        .unwrap_or(line);
-    let mut parts = line.splitn(4, " - ");
-    let location = parts.next()?.trim().trim_matches('`');
-    let severity = Severity::parse(parts.next()?.trim().trim_matches('*'))?;
-    let claim = parts.next()?.trim().to_string();
-    let scenario = parts
-        .next()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let (file, line_no) = location.rsplit_once(':')?;
-    let line_no: u64 = line_no.parse().ok()?;
-    if file.is_empty() || claim.is_empty() {
-        return None;
-    }
-    Some(Finding {
-        file: file.to_string(),
-        line: line_no,
-        severity,
-        claim,
-        scenario,
     })
 }
 
@@ -623,7 +689,7 @@ mod tests {
             - `crates/a.rs:264` - **P1** - redirects bypass HTTPS - an HTTPS feed redirects to HTTP\n\
             src/b.rs:9 - P3 - tie order differs\n\
             not a finding: src/c.rs:1 - P9 - nope\n";
-        let r = Report::from_text(text, "codex/sol");
+        let r = Report::from_text(text, "codex/sol").unwrap();
         assert_eq!(r.findings.len(), 2);
         let a = &r.findings[0];
         assert_eq!(
@@ -842,6 +908,81 @@ mod tests {
     }
 
     #[test]
+    fn a_text_report_must_finish_and_every_finding_must_read() {
+        let err = |text: &str| Report::from_text(text, "a").unwrap_err().to_string();
+        for text in [
+            "",
+            "  \n\t\n",
+            "Error: rate limited\n",
+            "I will review this now.",
+            "Score: 11/10",
+            "- Score: 7/10\nexample above",
+        ] {
+            assert!(
+                err(text).contains("not a clean review") || err(text).contains("empty"),
+                "{text:?}"
+            );
+        }
+        for text in ["No findings.", "**No findings.**", "- no findings"] {
+            let r = Report::from_text(text, "a").unwrap();
+            assert!(r.findings.is_empty() && r.score.is_none(), "{text}");
+        }
+        assert!(Report::from_text("Checked the parser.\nScore: 9/10", "a").is_ok());
+        assert_eq!(
+            err("Looks fine.\nsrc/a.rs:12 - P1 -\nScore: 9/10"),
+            "line 2: cannot read this finding; write `<file>:<line> - <P0|P1|P2|P3> - <claim>`"
+        );
+        assert!(err("1. **src/a.rs:12**: P1: reads until EOF").starts_with("line 1:"));
+        // Prose that mentions a location without opening on one is not a finding.
+        assert!(
+            Report::from_text("I checked src/a.rs:12 for P1 issues.\nNo findings.", "a").is_ok()
+        );
+    }
+
+    #[test]
+    fn finding_lines_take_dashes_pipes_and_markdown_around_their_fields() {
+        let text = "1. `src/a.rs:12` \u{2013} **P1** \u{2013} reads until EOF \u{2013} endless stdin\n\
+            2) **src/b.rs:3** \u{2014} P2 \u{2014} **no cap**\n\
+            + src/c.rs:4 | P3 | naming\n\
+            | src/d.rs:5 | P0 | leaks the key | a shared log |\n";
+        let r = Report::from_text(text, "a").unwrap();
+        let got: Vec<_> = r
+            .findings
+            .iter()
+            .map(|f| {
+                (
+                    f.file.as_str(),
+                    f.line,
+                    f.severity,
+                    f.claim.as_str(),
+                    f.scenario.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    "src/a.rs",
+                    12,
+                    Severity::P1,
+                    "reads until EOF",
+                    Some("endless stdin")
+                ),
+                ("src/b.rs", 3, Severity::P2, "no cap", None),
+                ("src/c.rs", 4, Severity::P3, "naming", None),
+                (
+                    "src/d.rs",
+                    5,
+                    Severity::P0,
+                    "leaks the key",
+                    Some("a shared log")
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn json_reports_need_a_member_and_known_fields() {
         let ok = Report::from_json(json!({"member": "codex", "findings": [{"file": "a", "line": 1, "severity": "P2", "claim": "c"}]}), None).unwrap();
         assert_eq!(ok.findings[0].severity, Severity::P2);
@@ -860,6 +1001,7 @@ mod tests {
     }
     #[test]
     fn scores_use_only_the_last_candidate_and_normalize_zero() {
+        let score = |text: &str| Report::from_text(text, "a").unwrap().score;
         for line in [
             "Score: 7/10",
             "**Score:** 7/10",
@@ -871,32 +1013,28 @@ mod tests {
             "| Score | 7/10 |",
             "SCORE 7 / 10.",
         ] {
-            assert_eq!(Report::from_text(line, "a").score, Some(7.0), "{line}");
+            assert_eq!(score(line), Some(7.0), "{line}");
         }
+        // A rejected candidate leaves no score; beside a finding the report still reads.
         for line in [
             "score: 8/10 once the tests pass",
+            "- Score: 7/10\nexample above",
+            "Score: 8/10\nScore: 11/10",
+        ] {
+            assert_eq!(score(&format!("a.rs:1 - P3 - x\n{line}")), None, "{line}");
+        }
+        for line in [
             "score/a.rs:1 - P1 - x",
             "score.rs:12 - P1 - 3/10 of the time",
-            "- Score: 7/10\nexample above",
         ] {
-            assert_eq!(Report::from_text(line, "a").score, None, "{line}");
+            assert_eq!(score(line), None, "{line}");
         }
         assert_eq!(
-            Report::from_text("Score: 8/10\nScore is subjective, though.", "a").score,
+            score("Score: 8/10\nScore is subjective, though."),
             Some(8.0)
         );
-        assert_eq!(
-            Report::from_text("Score: 8/10\nScore: 11/10", "a").score,
-            None
-        );
-        assert_eq!(Report::from_text("- Score: 7/10\n\n", "a").score, Some(7.0));
-        assert_eq!(
-            Report::from_text("Score: -0/10", "a")
-                .score
-                .unwrap()
-                .to_bits(),
-            0f64.to_bits()
-        );
+        assert_eq!(score("- Score: 7/10\n\n"), Some(7.0));
+        assert_eq!(score("Score: -0/10").unwrap().to_bits(), 0f64.to_bits());
         assert_eq!(
             Report::from_json(json!({"member":"a","score":-0.0,"findings":[]}), None)
                 .unwrap()
