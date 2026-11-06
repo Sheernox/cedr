@@ -157,10 +157,16 @@ pub fn checks(root: &Path) -> Vec<Check> {
                 .filter(|(h, _)| !readings.absent.contains_key(*h))
                 .collect();
             let listed = |h: &str| readings.models.get(h).is_some_and(|m| !m.is_empty());
+            // The codex reader lists its models at pick time; doctor does not start it.
+            let reader_lists = |h: &str| {
+                c.readings.iter().any(
+                    |s| matches!(s, config::ReadingsSource::Codex { harness, .. } if harness == h),
+                )
+            };
             let mut unlisted: Vec<&str> = targets
                 .iter()
                 .map(|(h, _)| *h)
-                .filter(|h| !listed(h))
+                .filter(|h| !listed(h) && !reader_lists(h))
                 .collect();
             unlisted.sort();
             unlisted.dedup();

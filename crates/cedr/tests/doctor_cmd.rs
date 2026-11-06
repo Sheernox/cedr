@@ -415,7 +415,7 @@ fn doctor_names_targets_no_model_matches_and_sync_skills_agents_also_load_elsewh
     // A present harness with no model list resolves none of its targets either.
     fs::write(
         cfg.join("routes.toml"),
-        "version = 1\n[harnesses.codex]\n[harnesses.claude]\n[harnesses.gone]\ncommand = \"gone\"\n[harnesses.muse]\n[routes.r]\ncandidates = [{ target = \"codex/sol\" }, { target = \"codex/gpt-5.5\" }, { target = \"claude/opus\" }, { target = \"gone/x\" }]\n[routes.off]\nenabled = false\ncandidates = [{ target = \"muse/x\" }]\n[[readings]]\nkind = \"t3\"\n",
+        "version = 1\n[harnesses.codex]\n[harnesses.claude]\n[harnesses.gone]\ncommand = \"gone\"\n[harnesses.muse]\n[harnesses.cx]\n[[readings]]\nkind = \"codex\"\nharness = \"cx\"\n[routes.r]\ncandidates = [{ target = \"codex/sol\" }, { target = \"codex/gpt-5.5\" }, { target = \"claude/opus\" }, { target = \"gone/x\" }, { target = \"cx/sol\" }]\n[routes.off]\nenabled = false\ncandidates = [{ target = \"muse/x\" }]\n[[readings]]\nkind = \"t3\"\n",
     )
     .unwrap();
     assert_eq!(
