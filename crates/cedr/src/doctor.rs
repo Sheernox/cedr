@@ -98,7 +98,14 @@ pub fn checks(root: &Path) -> Vec<Check> {
             let stale = cedr_route::machine::stale(c, &readings);
             let mut missing = absent.keys().cloned().collect::<Vec<_>>();
             missing.sort();
-            let message = format!(
+            // T3 Code keeps current readings for every plan it runs; a machine running it reads
+            // those first (docs/route.md, Built-in readers).
+            let no_t3 = cedr_route::readers::t3_caches().is_dir()
+                && !c
+                    .readings
+                    .iter()
+                    .any(|s| matches!(s, config::ReadingsSource::T3));
+            let mut message = format!(
                 "absent harnesses: [{}]; stale readers: [{}]",
                 missing.join(", "),
                 stale
@@ -107,16 +114,19 @@ pub fn checks(root: &Path) -> Vec<Check> {
                     .collect::<Vec<_>>()
                     .join(", ")
             );
+            if no_t3 {
+                message.push_str("; T3 Code runs on this machine but no readings source reads it");
+            }
             add(
                 &mut out,
                 "route.readers",
-                if absent.is_empty() && stale.is_empty() {
+                if absent.is_empty() && stale.is_empty() && !no_t3 {
                     "ok"
                 } else {
                     "warn"
                 },
                 message,
-                "Install missing harnesses and configure their usage readers",
+                "Install missing harnesses and configure their usage readers; with T3 Code, add [[readings]] kind = \"t3\" as the first source in the user routes.toml",
             );
             add(
                 &mut out,
@@ -373,13 +383,36 @@ pub fn checks(root: &Path) -> Vec<Check> {
             .filter(|s| matches!(s, config::ReadingsSource::ClaudeStatusline { .. }))
             .count()
     });
-    let cache = if installed_claude && !statusline {
+    // T3 Code's own reading of Claude comes first when the routes read it.
+    let from_t3 = installed_claude
+        && routes.as_ref().is_ok_and(|l| {
+            let c = &l.config;
+            let instance = c
+                .harnesses
+                .get("claude")
+                .and_then(|h| h.t3.as_deref())
+                .unwrap_or("claude");
+            c.readings
+                .iter()
+                .any(|s| matches!(s, config::ReadingsSource::T3))
+                && cedr_route::readers::t3(
+                    &cedr_route::readers::t3_caches(),
+                    &[("claude", instance)],
+                    chrono::Utc::now(),
+                    |h| c.limits(Some(h), None).fresh_seconds,
+                )
+                .0["harnesses"]
+                    .as_array()
+                    .is_some_and(|e| !e.is_empty())
+        });
+    let cache = if installed_claude && !statusline && !from_t3 {
         cedr_route::readers::claude_usage("claude")
     } else {
         Ok(None)
     };
     let (state, message) = match (installed_claude, statusline, &cache) {
         (false, _, _) => ("skip", "harness absent".to_string()),
+        _ if from_t3 => ("ok", "readings come from T3 Code".to_string()),
         (true, true, _) => ("ok", "status line configured".to_string()),
         (true, false, Err(e)) => (
             "warn",

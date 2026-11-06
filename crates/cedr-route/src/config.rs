@@ -382,6 +382,8 @@ pub enum ReadingsSource {
         #[serde(default = "default_cache_seconds")]
         cache_seconds: i64,
     },
+    /// Plan usage and models T3 Code last read for the plans it runs (docs/route.md, Built-in readers).
+    T3,
     /// Plan usage and models from `codex app-server`.
     Codex {
         #[serde(default = "default_codex")]

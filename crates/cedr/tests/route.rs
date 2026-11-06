@@ -709,6 +709,82 @@ fn claude_reads_claude_codes_usage_cache_without_a_status_line() {
 }
 
 #[test]
+fn t3_code_readings_come_first_and_the_claude_reader_fills_in_when_they_are_stale() {
+    let s = Scratch::new(10.0, 20.0);
+    let cfg = routes_file(
+        &s,
+        "version = 1\n[harnesses.claude]\nexpect = [\"five_hour\", \"seven_day\"]\nt3 = \"claudeAgent\"\n[routes.r]\ncandidates = [{ target = \"claude/fable\" }]\n[[readings]]\nkind = \"t3\"\n[[readings]]\nkind = \"claude-statusline\"\n",
+    );
+    let now = chrono::Utc::now();
+    let later = (now + chrono::Duration::hours(3)).to_rfc3339();
+    let caches = s.dir.path().join("t3/caches");
+    std::fs::create_dir_all(&caches).unwrap();
+    let t3 = |checked: chrono::DateTime<chrono::Utc>| {
+        json!({"driver": "claudeAgent", "enabled": true,
+               "models": [{"slug": "claude-opus-5-5"}, {"slug": "claude-fable-5-1"}],
+               "usageLimits": {"checkedAt": checked.to_rfc3339(), "windows": [
+                   {"id": "five_hour", "kind": "session", "usedPercent": 8, "resetsAt": later},
+                   {"id": "seven_day", "kind": "weekly", "usedPercent": 49, "resetsAt": later},
+                   {"id": "seven_day_fable", "kind": "weekly", "usedPercent": 3, "resetsAt": later}]}})
+        .to_string()
+    };
+    std::fs::write(caches.join("claudeAgent.json"), t3(now)).unwrap();
+    // A broken capture shows whether the claude-statusline reader ran: it warns when it does.
+    let captures = s.dir.path().join("state/cedr/readings");
+    std::fs::create_dir_all(&captures).unwrap();
+    std::fs::write(captures.join("claude.json"), "{cut").unwrap();
+    let pools = |s: &Scratch| {
+        let o = s.cedr(&["route", "pools", "--config", &cfg, "--format", "json"]);
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let rows: Value = serde_json::from_slice(&o.stdout).unwrap();
+        let rows: Vec<(String, String)> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["family"].as_str().unwrap().into(),
+                    r["summary"].as_str().unwrap().into(),
+                )
+            })
+            .collect();
+        (rows, String::from_utf8_lossy(&o.stderr).into_owned())
+    };
+    let (rows, stderr) = pools(&s);
+    assert_eq!(
+        rows,
+        [
+            ("".to_string(), "claude s8% w49%".to_string()),
+            ("fable".to_string(), "claude s8% w49% fable3%".to_string())
+        ]
+    );
+    assert!(
+        !stderr.contains("claude"),
+        "the covered claude reader stays quiet: {stderr}"
+    );
+    // T3 Code stopped refreshing: the next source supplies the reading.
+    std::fs::write(
+        caches.join("claudeAgent.json"),
+        t3(now - chrono::Duration::hours(1)),
+    )
+    .unwrap();
+    let claude = s.dir.path().join("claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    let cache = json!({"oauthAccount": {"accountUuid": "acct-a"}, "cachedUsageUtilization": {
+        "accountUuid": "acct-a", "fetchedAtMs": now.timestamp_millis(), "utilization": {
+        "five_hour": {"utilization": 39, "resets_at": later},
+        "seven_day": {"utilization": 45, "resets_at": later}}}});
+    std::fs::write(claude.join(".claude.json"), cache.to_string()).unwrap();
+    let (rows, _) = pools(&s);
+    assert_eq!(rows[0], ("".to_string(), "claude s39% w45%".to_string()));
+}
+
+#[test]
 fn several_claude_harnesses_never_share_one_usage_cache() {
     let s = Scratch::new(10.0, 20.0);
     let cfg = routes_file(

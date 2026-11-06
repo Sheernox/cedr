@@ -112,7 +112,10 @@ effort_option = "effort"
 expect = ["primary"]
 effort_option = "reasoningEffort"
 
-[[readings]]                    # where plan usage comes from
+[[readings]]                    # where plan usage comes from, first source first
+kind = "t3"                     # T3 Code's own readings of the plans it runs
+
+[[readings]]
 kind = "claude-statusline"
 harness = "claude"
 
@@ -130,7 +133,7 @@ candidates = [
 ]
 ```
 
-**2. Let cedr see your Claude plan usage.** It reads what Claude Code caches on its own, and an interactive Claude Code status line keeps it fresher between refreshes: make cedr your status line in `~/.claude/settings.json`, adding `-- <your command>` to keep an existing one.
+**2. Let cedr see your Claude plan usage.** Under T3 Code the `t3` source already has it. Otherwise cedr reads what Claude Code caches on its own, and an interactive Claude Code status line keeps it fresher between refreshes: make cedr your status line in `~/.claude/settings.json`, adding `-- <your command>` to keep an existing one.
 
 ```json
 { "statusLine": { "type": "command", "command": "cedr route statusline" } }

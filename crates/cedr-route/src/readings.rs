@@ -188,7 +188,7 @@ pub fn collect(config: &Config, config_dir: &Path, now: DateTime<Utc>) -> (Readi
         if covered(config, &readings, source) {
             continue;
         }
-        match fetch(source, config_dir, now, claude_cache) {
+        match fetch(config, source, config_dir, now, claude_cache) {
             Ok(Fetched { doc, warning }) => {
                 readings.merge(config, &doc);
                 warnings.extend(warning);
@@ -265,6 +265,7 @@ pub fn parse_doc(bytes: &[u8]) -> Result<Value, String> {
 }
 
 fn fetch(
+    config: &Config,
     source: &ReadingsSource,
     config_dir: &Path,
     now: DateTime<Utc>,
@@ -298,6 +299,23 @@ fn fetch(
                 run_command(command, COMMAND_TIMEOUT).map_err(|e| {
                     format!("readings command {} failed ({e})", command_label(command))
                 })
+            })
+        }
+        ReadingsSource::T3 => {
+            // T3 Code runs plans, so a key billed per token has nothing to read there.
+            let instances: Vec<(&str, &str)> = config
+                .harnesses
+                .iter()
+                .filter(|(_, h)| h.billing == crate::config::Billing::Plan)
+                .map(|(id, h)| (id.as_str(), h.t3.as_deref().unwrap_or(id)))
+                .collect();
+            let (doc, warnings) =
+                crate::readers::t3(&crate::readers::t3_caches(), &instances, now, |h| {
+                    config.limits(Some(h), None).fresh_seconds
+                });
+            Ok(Fetched {
+                doc,
+                warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
             })
         }
         ReadingsSource::Codex {

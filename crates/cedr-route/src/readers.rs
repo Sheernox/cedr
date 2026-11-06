@@ -443,6 +443,197 @@ pub fn from_usage_cache(config: &Value, harness: &str) -> Result<Option<Value>, 
     ))
 }
 
+/// Where T3 Code keeps what it last read of each provider instance it runs: `$T3CODE_HOME/caches`
+/// (default `~/.t3/caches`), one `<instance id>.json` each.
+pub fn t3_caches() -> PathBuf {
+    xdg_dir("T3CODE_HOME", ".t3").join("caches")
+}
+
+/// A provider cache holds a provider's models, skills and commands; one past this is not one.
+const T3_MAX_BYTES: usize = 4 << 20;
+/// More windows or model families than any plan has; the rest are ignored, so a hostile cache
+/// cannot multiply its windows by its families.
+const T3_MAX_WINDOWS: usize = 64;
+const T3_MAX_FAMILIES: usize = 16;
+
+/// What T3 Code last read of each plan, for `(harness, T3 instance id)` pairs, as a readings
+/// document, plus a warning per cache that could not be read. T3 Code keeps these readings for its
+/// own UI from the sessions it runs and the vendors' own CLIs and SDKs, so reading them runs nothing
+/// and reads no credentials. A plan T3 Code has no current reading for (no cache, disabled, no or
+/// unavailable limits, or one older than `fresh(harness)` seconds) is left out, so a later source
+/// supplies it. The cache format is T3 Code's own and undocumented: the provider's `driver`,
+/// `enabled`, `models[].slug` and `usageLimits` (`checkedAt`, `windows[]` with `id`, `kind`,
+/// `usedPercent`, `resetsAt`, `windowDurationMins`); the rest of the file is skipped.
+pub fn t3(
+    dir: &Path,
+    instances: &[(&str, &str)],
+    now: DateTime<Utc>,
+    fresh: impl Fn(&str) -> i64,
+) -> (Value, Vec<String>) {
+    #[derive(serde::Deserialize)]
+    struct Provider {
+        #[serde(default)]
+        driver: String,
+        #[serde(default = "enabled")]
+        enabled: bool,
+        #[serde(default)]
+        models: Value,
+        #[serde(rename = "usageLimits", default)]
+        usage: Value,
+    }
+    fn enabled() -> bool {
+        true
+    }
+    let mut entries = Vec::new();
+    let mut models = Map::new();
+    let mut warnings = Vec::new();
+    for &(harness, instance) in instances {
+        // The instance id comes from the routes, which may be shared: it names a file in `dir`, never a path.
+        let safe = !instance.is_empty()
+            && !instance.starts_with('.')
+            && instance
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
+        if !safe {
+            continue;
+        }
+        let path = dir.join(format!("{instance}.json"));
+        let bytes = match std::fs::File::open(&path) {
+            Ok(f) => match crate::readings::read_limited(f, T3_MAX_BYTES) {
+                Ok(b) if b.len() <= T3_MAX_BYTES => b,
+                Ok(_) => {
+                    warnings.push(format!(
+                        "t3 readings: {instance} cache exceeds {T3_MAX_BYTES} bytes"
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    warnings.push(format!("t3 readings: {}: {e}", path.display()));
+                    continue;
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                warnings.push(format!("t3 readings: {}: {e}", path.display()));
+                continue;
+            }
+        };
+        let Ok(p) = serde_json::from_slice::<Provider>(&bytes) else {
+            warnings.push(format!(
+                "t3 readings: {instance} is not a T3 Code provider cache, or T3 Code changed its format"
+            ));
+            continue;
+        };
+        if !p.enabled {
+            continue;
+        }
+        let offered: Vec<String> = p
+            .models
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m["slug"].as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        if !offered.is_empty() {
+            models.insert(harness.to_string(), json!(offered));
+        }
+        let failed = |v: &Value| !v.is_null() && v != &json!(false) && v != &json!("");
+        if failed(&p.usage["unavailable"]) || failed(&p.usage["error"]) {
+            continue;
+        }
+        let Some(checked) = crate::readings::parse_ts(&p.usage["checkedAt"]) else {
+            continue;
+        };
+        // Judged to the millisecond, as the pool judges it, so a reading the pool calls stale never
+        // covers the sources after it.
+        if (now - checked).num_milliseconds() as f64 / 1000.0 > fresh(harness) as f64 {
+            continue;
+        }
+        let windows = t3_windows(&p.driver, &p.usage["windows"], &offered);
+        if windows.is_empty() {
+            continue;
+        }
+        let fetched = checked.to_rfc3339_opts(SecondsFormat::Millis, true);
+        entries.push(
+            json!({"harness": harness, "fetchedAt": fetched, "error": null, "windows": windows}),
+        );
+    }
+    (json!({"harnesses": entries, "models": models}), warnings)
+}
+
+/// T3 Code's windows for one provider in the readings format. Window ids stay T3's, except where
+/// a built-in reader names the same window otherwise, so routes that expect one accept the other.
+/// Windows that limit only some models carry `model`: Claude's `seven_day_<family>`, and
+/// Antigravity's Argon pool and its pools for the other vendors' models it offers (`3p-*`, one
+/// window per family). Antigravity's `gemini-*` windows stay shared, as a feed sends them.
+fn t3_windows(driver: &str, raw: &Value, offered: &[String]) -> Vec<Value> {
+    // The families of the other vendors' models Antigravity offers, for its `3p-*` windows.
+    let others: std::collections::BTreeSet<&str> = offered
+        .iter()
+        .filter(|m| !m.contains("gemini"))
+        .filter_map(|m| m.split('-').next())
+        .filter(|f| !f.is_empty())
+        .take(T3_MAX_FAMILIES)
+        .collect();
+    let mut out = Vec::new();
+    for w in raw.as_array().into_iter().flatten().take(T3_MAX_WINDOWS) {
+        let Some(id) = w["id"].as_str().filter(|i| !i.is_empty()) else {
+            continue;
+        };
+        let Some(percent) = w["usedPercent"]
+            .as_f64()
+            .filter(|p| p.is_finite() && *p >= 0.0)
+        else {
+            continue;
+        };
+        let minutes = w["windowDurationMins"].as_i64().filter(|m| *m > 0);
+        let kind = match (w["kind"].as_str(), minutes) {
+            (Some("session"), _) => "session",
+            (Some("weekly"), _) => "weekly",
+            (_, Some(m)) if m <= SESSION_MAX_MINUTES => "session",
+            _ => "weekly",
+        };
+        let window = |id: &str, model: Option<&str>| {
+            let mut v = json!({
+                "id": id,
+                "kind": kind,
+                "percent": percent,
+                "resetsAt": crate::readings::parse_ts(&w["resetsAt"]).map(stamp),
+                "windowMinutes": minutes,
+            });
+            if let Some(m) = model {
+                v["model"] = json!(m);
+            }
+            v
+        };
+        let bare = id.split('@').next().unwrap_or(id);
+        match driver {
+            "claudeAgent" => {
+                let family = bare
+                    .strip_prefix("seven_day_")
+                    .map(|f| f.replace('_', "-"))
+                    .filter(|f| !f.is_empty());
+                out.push(window(id, family.as_deref()));
+            }
+            "grok" if bare == "subscription" => out.push(window("weekly", None)),
+            "antigravity" if bare.starts_with("gemini-argon") => {
+                out.push(window(id, Some("argon")))
+            }
+            "antigravity" if bare.starts_with("3p-") => {
+                // Without a model list there is no family to scope them to, and shared they
+                // would hold Gemini models to the other vendors' use.
+                for f in &others {
+                    out.push(window(&format!("{bare}-{f}"), Some(f)));
+                }
+            }
+            _ => out.push(window(id, None)),
+        }
+    }
+    out
+}
+
 /// Writes a capture atomically, so a pick never reads half a file.
 pub fn save_capture(path: &Path, doc: &Value) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
@@ -503,6 +694,205 @@ mod tests {
     fn statusline_without_rate_limits_captures_nothing() {
         assert!(from_statusline(&json!({"model": {}}), "claude", now()).is_none());
         assert_eq!(statusline_text("claude", None), "claude no limits yet");
+    }
+
+    /// A T3 Code provider cache, trimmed to what the reader uses plus a field it must skip.
+    fn t3_cache(
+        driver: &str,
+        enabled: bool,
+        checked: &str,
+        models: &[&str],
+        windows: Value,
+    ) -> String {
+        json!({"driver": driver, "instanceId": driver, "enabled": enabled, "auth": {"email": "a@example.invalid"},
+               "models": models.iter().map(|m| json!({"slug": m, "name": m})).collect::<Vec<_>>(),
+               "usageLimits": {"checkedAt": checked, "windows": windows}})
+        .to_string()
+    }
+
+    #[test]
+    fn t3_code_caches_become_readings_scoped_like_the_built_in_readers() {
+        let root = tempfile::tempdir().unwrap();
+        let caches = root.path().join("caches");
+        std::fs::create_dir(&caches).unwrap();
+        let write = |name: &str, body: String| std::fs::write(caches.join(name), body).unwrap();
+        write(
+            "claudeAgent.json",
+            t3_cache(
+                "claudeAgent",
+                true,
+                "2026-10-29T01:58:00.120Z",
+                &["claude-opus-5-5", "claude-fable-5-1"],
+                json!([
+                {"id": "five_hour", "kind": "session", "usedPercent": 8, "windowDurationMins": 300, "resetsAt": "2026-10-29T06:00:00.119Z"},
+                {"id": "seven_day", "kind": "weekly", "usedPercent": 49, "windowDurationMins": 10080, "resetsAt": "2026-11-02T04:00:00Z"},
+                {"id": "seven_day_fable", "kind": "weekly", "usedPercent": 0, "windowDurationMins": 10080}]),
+            ),
+        );
+        write(
+            "grok.json",
+            t3_cache(
+                "grok",
+                true,
+                "2026-10-29T01:59:00Z",
+                &["grok-4.7"],
+                json!([{"id": "subscription", "kind": "weekly", "usedPercent": 69, "resetsAt": "2026-11-01T20:13:30Z"}]),
+            ),
+        );
+        write(
+            "antigravity.json",
+            t3_cache(
+                "antigravity",
+                true,
+                "2026-10-29T01:59:00Z",
+                &[
+                    "gemini-4-argon-high",
+                    "gemini-3.8-flash-high",
+                    "claude-opus-5-5-low",
+                    "gpt-oss-120b-medium",
+                ],
+                json!([
+                {"id": "3p-5h", "kind": "session", "usedPercent": 4, "windowDurationMins": 300},
+                {"id": "gemini-5h", "kind": "session", "usedPercent": 0, "windowDurationMins": 300},
+                {"id": "gemini-argon-wtu-weekly", "kind": "weekly", "usedPercent": 92.01, "resetsAt": "2026-11-02T06:32:12Z"},
+                {"id": "gemini-weekly", "kind": "weekly", "usedPercent": "n/a"}]),
+            ),
+        );
+        // Stale, disabled, unavailable and malformed caches give no reading, so a later source can.
+        write(
+            "codex.json",
+            t3_cache(
+                "codex",
+                true,
+                "2026-10-29T01:40:00Z",
+                &["gpt-6.1-sol"],
+                json!([{"id": "primary", "kind": "weekly", "usedPercent": 9}]),
+            ),
+        );
+        write(
+            "muse.json",
+            t3_cache(
+                "muse",
+                false,
+                "2026-10-29T01:59:00Z",
+                &["muse-wonder-1.0"],
+                json!([{"id": "weekly", "kind": "weekly", "usedPercent": 9}]),
+            ),
+        );
+        write("work.json", json!({"driver": "claudeAgent", "models": [],
+            "usageLimits": {"checkedAt": "2026-10-29T01:59:00Z", "unavailable": {"reason": "signed out"}, "windows": []}}).to_string());
+        write("broken.json", "{\"models\": {\"a\": 1".into());
+        // An instance id from shared routes never reaches outside the caches directory.
+        write(
+            "../outside.json",
+            t3_cache(
+                "grok",
+                true,
+                "2026-10-29T01:59:00Z",
+                &[],
+                json!([{"id": "subscription", "kind": "weekly", "usedPercent": 1}]),
+            ),
+        );
+        // Just past fresh_seconds, by half a second.
+        write(
+            "late.json",
+            t3_cache(
+                "grok",
+                true,
+                "2026-10-29T01:49:59.500Z",
+                &[],
+                json!([{"id": "subscription", "kind": "weekly", "usedPercent": 1}]),
+            ),
+        );
+        // A hostile cache: many families times many `3p-*` windows stays bounded.
+        let many: Vec<String> = (0..100).map(|i| format!("v{i}-model")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        let windows: Vec<Value> = (0..100)
+            .map(|i| json!({"id": format!("3p-{i}"), "kind": "weekly", "usedPercent": 1}))
+            .collect();
+        write(
+            "many.json",
+            t3_cache(
+                "antigravity",
+                true,
+                "2026-10-29T01:59:00Z",
+                &many,
+                json!(windows),
+            ),
+        );
+        let instances = [
+            ("late", "late"),
+            ("many", "many"),
+            ("claude", "claudeAgent"),
+            ("grok", "grok"),
+            ("antigravity", "antigravity"),
+            ("codex", "codex"),
+            ("muse", "muse"),
+            ("claude-work", "work"),
+            ("x", "broken"),
+            ("y", "../outside"),
+            ("z", "missing"),
+        ];
+        let (doc, warnings) = t3(&caches, &instances, now(), |_| 600);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("broken is not a T3 Code provider cache"),
+            "{warnings:?}"
+        );
+        let entries = doc["harnesses"].as_array().unwrap();
+        let by = |h: &str| entries.iter().find(|e| e["harness"] == h).cloned();
+        let many = by("many").unwrap()["windows"].as_array().unwrap().len();
+        assert_eq!(many, T3_MAX_WINDOWS * T3_MAX_FAMILIES);
+        assert!(
+            by("late").is_none(),
+            "600.5 seconds is past a 600-second threshold"
+        );
+        assert_eq!(entries.len(), 4, "{entries:?}");
+        let claude = by("claude").unwrap();
+        assert_eq!(claude["fetchedAt"], "2026-10-29T01:58:00.120Z");
+        assert_eq!(
+            claude["windows"][0],
+            json!({"id": "five_hour", "kind": "session", "percent": 8.0,
+            "resetsAt": "2026-10-29T06:00:00Z", "windowMinutes": 300})
+        );
+        assert_eq!(claude["windows"][2]["model"], "fable");
+        assert_eq!(by("grok").unwrap()["windows"][0]["id"], "weekly");
+        let ag: Vec<(String, Option<String>)> = by("antigravity").unwrap()["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| {
+                (
+                    w["id"].as_str().unwrap().to_string(),
+                    w["model"].as_str().map(str::to_string),
+                )
+            })
+            .collect();
+        assert_eq!(
+            ag,
+            [
+                ("3p-5h-claude".to_string(), Some("claude".to_string())),
+                ("3p-5h-gpt".to_string(), Some("gpt".to_string())),
+                ("gemini-5h".to_string(), None),
+                (
+                    "gemini-argon-wtu-weekly".to_string(),
+                    Some("argon".to_string())
+                ),
+            ]
+        );
+        assert!(
+            by("codex").is_none(),
+            "a reading older than fresh_seconds falls through"
+        );
+        assert_eq!(
+            doc["models"]["codex"],
+            json!(["gpt-6.1-sol"]),
+            "models still come through"
+        );
+        assert!(
+            doc["models"].get("muse").is_none(),
+            "a disabled instance is skipped"
+        );
     }
 
     fn usage_cache(account: &str) -> Value {

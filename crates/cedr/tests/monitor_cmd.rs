@@ -77,6 +77,8 @@ fn limits_include_claude_codes_usage_cache_without_a_status_line() {
         .env("XDG_CONFIG_HOME", d.path().join("config"))
         .env("XDG_DATA_HOME", d.path().join("data"))
         .env("CLAUDE_CONFIG_DIR", &claude)
+        // T3 Code's caches would supply Claude first; HOME holds none.
+        .env_remove("T3CODE_HOME")
         .output()
         .unwrap();
     assert!(
@@ -133,4 +135,64 @@ fn limits_text_rounds_elapsed_share_but_json_keeps_number() {
         .unwrap();
     assert!((row["elapsedShare"].as_f64().unwrap() - 0.31).abs() < 0.001);
     assert!(row["runsOutAt"].is_null());
+}
+
+#[test]
+fn limits_read_t3_code_first_including_antigravity() {
+    let d = tempfile::tempdir().unwrap();
+    let now = chrono::Utc::now();
+    let later = (now + chrono::Duration::hours(3)).to_rfc3339();
+    let claude = d.path().join("claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    let cache = serde_json::json!({"oauthAccount": {"accountUuid": "acct-a"}, "cachedUsageUtilization": {
+        "accountUuid": "acct-a", "fetchedAtMs": now.timestamp_millis(), "utilization": {
+        "five_hour": {"utilization": 39, "resets_at": later}}}});
+    std::fs::write(claude.join(".claude.json"), cache.to_string()).unwrap();
+    let caches = d.path().join(".t3/caches");
+    std::fs::create_dir_all(&caches).unwrap();
+    for (instance, id, percent) in [
+        ("claudeAgent", "five_hour", 8),
+        ("antigravity", "gemini-weekly", 17),
+    ] {
+        let doc = serde_json::json!({"driver": instance, "enabled": true, "usageLimits": {
+            "checkedAt": now.to_rfc3339(), "windows": [
+                {"id": id, "kind": "session", "usedPercent": percent, "resetsAt": later, "windowDurationMins": 300}]}});
+        std::fs::write(caches.join(format!("{instance}.json")), doc.to_string()).unwrap();
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_cedr"))
+        .args(["monitor", "limits", "--format", "json"])
+        .env("HOME", d.path())
+        .env("PATH", "")
+        .env("XDG_STATE_HOME", d.path().join("state"))
+        .env("XDG_CONFIG_HOME", d.path().join("config"))
+        .env("XDG_DATA_HOME", d.path().join("data"))
+        .env("CLAUDE_CONFIG_DIR", &claude)
+        .env_remove("T3CODE_HOME")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows: Vec<(&str, &str, f64)> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["harness"].as_str().unwrap(),
+                r["window"].as_str().unwrap(),
+                r["percent"].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("antigravity", "gemini-weekly", 17.0),
+            ("claude", "five_hour", 8.0)
+        ]
+    );
 }

@@ -313,7 +313,7 @@ fn doctor_check(home: &std::path::Path, id: &str) -> (String, String) {
 }
 
 #[test]
-fn doctor_lists_only_the_stale_readers_a_pick_warns_about() {
+fn doctor_lists_only_the_stale_readers_a_pick_warns_about_and_asks_for_t3_code() {
     let home = tempfile::tempdir().unwrap();
     let cfg = home.path().join(".config/cedr");
     fs::create_dir_all(&cfg).unwrap();
@@ -334,5 +334,43 @@ fn doctor_lists_only_the_stale_readers_a_pick_warns_about() {
             "warn".to_string(),
             "absent harnesses: [grok]; stale readers: [muse]".to_string()
         )
+    );
+    // T3 Code on the machine, unread: doctor says so.
+    let caches = home.path().join(".t3/caches");
+    fs::create_dir_all(&caches).unwrap();
+    let (_, message) = doctor_check(home.path(), "route.readers");
+    assert!(
+        message.ends_with("T3 Code runs on this machine but no readings source reads it"),
+        "{message}"
+    );
+    // Read first, it covers muse and Claude, which then needs neither a status line nor its cache.
+    fs::write(
+        cfg.join("routes.toml"),
+        routes.replace(
+            "[[readings]]",
+            "[harnesses.claude]\nt3 = \"claudeAgent\"\n[[readings]]\nkind = \"t3\"\n[[readings]]",
+        ),
+    )
+    .unwrap();
+    let windows = format!(
+        r#"{{"checkedAt": "{now}", "windows": [{{"id": "weekly", "kind": "weekly", "usedPercent": 5}}]}}"#
+    );
+    for (instance, driver) in [("muse", "muse"), ("claudeAgent", "claudeAgent")] {
+        fs::write(
+            caches.join(format!("{instance}.json")),
+            format!(r#"{{"driver": "{driver}", "enabled": true, "usageLimits": {windows}}}"#),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        doctor_check(home.path(), "route.readers"),
+        (
+            "warn".to_string(),
+            "absent harnesses: [grok]; stale readers: []".to_string()
+        )
+    );
+    assert_eq!(
+        doctor_check(home.path(), "route.statusline"),
+        ("ok".to_string(), "readings come from T3 Code".to_string())
     );
 }

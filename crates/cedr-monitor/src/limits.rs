@@ -41,8 +41,35 @@ pub fn project(mut v: Value, now: i64) -> Value {
     v["outlook"] = json!(outlook);
     v
 }
+/// Stores each plan's current readings: what T3 Code last read for the plans it runs first, then
+/// each vendor's own reader for the plans T3 Code gave no current reading.
 pub fn refresh(db: &Store) -> Vec<String> {
     let mut errors = vec![];
+    // T3 Code's default instance ids, under the harness names Monitor reports.
+    let (t3, warnings) = cedr_route::readers::t3(
+        &cedr_route::readers::t3_caches(),
+        &[
+            ("claude", "claudeAgent"),
+            ("codex", "codex"),
+            ("muse", "muse"),
+            ("grok", "grok"),
+            ("antigravity", "antigravity"),
+        ],
+        Utc::now(),
+        |_| 600,
+    );
+    errors.extend(warnings);
+    if db.readings(&t3).is_err() {
+        errors.push("cannot save T3 Code readings".into());
+    }
+    let from_t3 = |h: &str| {
+        t3["harnesses"]
+            .as_array()
+            .is_some_and(|e| e.iter().any(|e| e["harness"] == h))
+    };
+    if from_t3("claude") {
+        return refresh_rest(db, errors, &from_t3);
+    }
     let path = cedr_route::readers::statusline_path("claude");
     if let Ok(b) = std::fs::read(path) {
         match serde_json::from_slice::<Value>(&b) {
@@ -64,6 +91,15 @@ pub fn refresh(db: &Store) -> Vec<String> {
         Ok(None) => {}
         Err(_) => errors.push("Claude Code's usage cache unreadable".into()),
     }
+    refresh_rest(db, errors, &from_t3)
+}
+
+/// The vendor readers for Codex, Muse and Grok, for those T3 Code did not cover.
+fn refresh_rest(
+    db: &Store,
+    mut errors: Vec<String>,
+    from_t3: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
     for (h, command, reader) in [
         (
             "codex",
@@ -74,6 +110,9 @@ pub fn refresh(db: &Store) -> Vec<String> {
         ("muse", "muse", cedr_route::readers::muse),
         ("grok", "grok", cedr_route::readers::grok),
     ] {
+        if from_t3(h) {
+            continue;
+        }
         let installed = std::env::var_os("PATH")
             .is_some_and(|p| std::env::split_paths(&p).any(|p| p.join(command).is_file()));
         if !installed {
