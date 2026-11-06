@@ -728,3 +728,104 @@ fn a_server_grok_cannot_namespace_is_left_out_and_named() {
             .any(|n| n == "mcp.1digit: not supported by grok")
     );
 }
+#[cfg(unix)]
+#[test]
+fn a_claude_or_gemini_link_to_agents_md_is_imported_once_and_left_alone() {
+    use std::os::unix::fs::symlink;
+    let d = tempfile::tempdir().unwrap();
+    let r = d.path();
+    fs::write(r.join("AGENTS.md"), "Shared instructions.\n").unwrap();
+    symlink("AGENTS.md", r.join("CLAUDE.md")).unwrap();
+    symlink("./AGENTS.md", r.join("GEMINI.md")).unwrap();
+    let o = binary().args(["sync", "init"]).arg(r).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let c = cedr_sync::load_config(r).unwrap();
+    assert_eq!(c.targets, ["agents", "claude", "gemini"]);
+    let rules: Vec<_> = fs::read_dir(r.join(".cedr/rules"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(rules, ["10-agents.md"], "the links add no duplicate rules");
+    let links = || {
+        (
+            fs::read_link(r.join("CLAUDE.md")).unwrap(),
+            fs::read_link(r.join("GEMINI.md")).unwrap(),
+        )
+    };
+    let before = links();
+    for args in [&["sync"][..], &["sync", "check"]] {
+        let o = run(r, args);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+    assert_eq!(links(), before);
+    assert!(
+        fs::read_to_string(r.join("AGENTS.md"))
+            .unwrap()
+            .contains("Shared instructions.")
+    );
+    // A rule only Claude reads needs a CLAUDE.md of its own: refuse, and say how to convert.
+    fs::write(
+        r.join(".cedr/rules/20-claude.md"),
+        "---\nagents: [claude]\n---\nClaude only.\n",
+    )
+    .unwrap();
+    let o = run(r, &["sync"]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains(
+            "CLAUDE.md is a link to AGENTS.md, but rules scoped to claude need a CLAUDE.md of their own; remove the link (rm CLAUDE.md) and run cedr sync"
+        ),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(run(r, &["sync", "check"]).status.code(), Some(1));
+    assert_eq!(links(), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn other_instruction_links_are_refused_with_a_way_out() {
+    use std::os::unix::fs::symlink;
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("AGENTS.md"), "Elsewhere.\n").unwrap();
+    let cases: [(&str, fn(&Path, &Path)); 4] = [
+        ("outside", |r, o| {
+            fs::write(r.join("AGENTS.md"), "Here.\n").unwrap();
+            symlink(o.join("AGENTS.md"), r.join("CLAUDE.md")).unwrap();
+        }),
+        ("dangling", |r, _| {
+            symlink("AGENTS.md", r.join("CLAUDE.md")).unwrap()
+        }),
+        ("chained", |r, _| {
+            fs::write(r.join("AGENTS.md"), "Here.\n").unwrap();
+            symlink("AGENTS.md", r.join("GEMINI.md")).unwrap();
+            symlink("GEMINI.md", r.join("CLAUDE.md")).unwrap();
+        }),
+        ("linked AGENTS.md", |r, _| {
+            fs::write(r.join("RULES.md"), "Here.\n").unwrap();
+            symlink("RULES.md", r.join("AGENTS.md")).unwrap();
+            symlink("AGENTS.md", r.join("CLAUDE.md")).unwrap();
+        }),
+    ];
+    for (name, setup) in cases {
+        let d = tempfile::tempdir().unwrap();
+        setup(d.path(), outside.path());
+        let o = binary()
+            .args(["sync", "init"])
+            .arg(d.path())
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(2), "{name}: {err}");
+        assert!(err.contains("symlink refused"), "{name}: {err}");
+        assert!(
+            err.contains("replace it with a regular file"),
+            "{name}: {err}"
+        );
+        assert!(!d.path().join(".cedr").exists(), "{name}: nothing written");
+    }
+}

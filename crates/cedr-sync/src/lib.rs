@@ -153,6 +153,25 @@ pub fn plan(root: &Path) -> Result<Plan> {
     let paths: std::collections::BTreeSet<_> =
         outputs.keys().chain(old.files.keys()).cloned().collect();
     for path in paths {
+        if io::agents_link(&root, &path)? {
+            // A file generated before the link replaced it is forgotten, and the link kept.
+            if !outputs.contains_key(&path) {
+                continue;
+            }
+            let target = if path == "CLAUDE.md" {
+                "claude"
+            } else {
+                "gemini"
+            };
+            return Err(format!(
+                "sync: {path} is a link to AGENTS.md, but rules scoped to {target} need a {path} of their own; remove the link (rm {path}) and run cedr sync, which writes {path} with those rules{}",
+                if target == "claude" {
+                    " and an @AGENTS.md import"
+                } else {
+                    " and has Gemini read AGENTS.md too"
+                }
+            ));
+        }
         let current = io::read(&root, &path)?;
         let previous = old.files.get(&path);
         let output = outputs.remove(&path);

@@ -120,7 +120,18 @@ pub fn init(root: &Path, targets: Option<Vec<String>>) -> Result<Vec<String>> {
         ".agents/mcp_config.json",
         ".grok/config.toml",
     ] {
-        io::path(root, path)?;
+        if io::agents_link(root, path)? {
+            continue;
+        }
+        io::path(root, path).map_err(|e| {
+            if matches!(path, "CLAUDE.md" | "GEMINI.md") {
+                format!(
+                    "{e}; the one link Sync keeps is {path} pointing straight at this repo's own AGENTS.md file (ln -s AGENTS.md {path})"
+                )
+            } else {
+                e
+            }
+        })?;
     }
     for rel in [
         ".agents/skills",
@@ -145,6 +156,14 @@ pub fn init(root: &Path, targets: Option<Vec<String>>) -> Result<Vec<String>> {
         ("GEMINI.md", "gemini", "30-gemini"),
         (".github/copilot-instructions.md", "copilot", "40-copilot"),
     ] {
+        // A link to AGENTS.md holds the shared instructions already: the agent is found, and there
+        // is nothing of its own to import.
+        if io::agents_link(root, path)? {
+            if !found.iter().any(|s| s == target) {
+                found.push(target.into());
+            }
+            continue;
+        }
         if let Some(b) = io::read(root, path)? {
             if !found.iter().any(|s| s == target) {
                 found.push(target.into());

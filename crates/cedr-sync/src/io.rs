@@ -19,7 +19,9 @@ pub fn path(root: &Path, relative: &str) -> Result<PathBuf> {
         p.push(component);
         match fs::symlink_metadata(&p) {
             Ok(m) if m.file_type().is_symlink() => {
-                return Err(format!("sync: symlink refused: {relative}"));
+                return Err(format!(
+                    "sync: symlink refused: {relative}; Sync never reads or writes through a link, so replace it with a regular file (a copy of what it points to) or remove it"
+                ));
             }
             Ok(_) => (),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
@@ -28,6 +30,27 @@ pub fn path(root: &Path, relative: &str) -> Result<PathBuf> {
     }
     Ok(p)
 }
+/// Whether `rel`, which must be `CLAUDE.md` or `GEMINI.md` at the root, is a symlink straight to the
+/// repo's own regular `AGENTS.md` (link text `AGENTS.md` or `./AGENTS.md`). Such a link already makes
+/// the agent read the shared instructions, so import and Sync leave it alone; every other link stays
+/// refused by `path`.
+pub fn agents_link(root: &Path, rel: &str) -> Result<bool> {
+    if !matches!(rel, "CLAUDE.md" | "GEMINI.md") {
+        return Ok(false);
+    }
+    let link = root.join(rel);
+    match fs::symlink_metadata(&link) {
+        Ok(m) if m.file_type().is_symlink() => (),
+        Ok(_) => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err(format!("sync: cannot inspect {rel}")),
+    }
+    let target = fs::read_link(&link).map_err(|_| format!("sync: cannot inspect {rel}"))?;
+    let agents = path(root, "AGENTS.md")?;
+    Ok(matches!(target.to_str(), Some("AGENTS.md" | "./AGENTS.md"))
+        && fs::symlink_metadata(agents).is_ok_and(|m| m.file_type().is_file()))
+}
+
 pub fn read(root: &Path, rel: &str) -> Result<Option<Vec<u8>>> {
     let p = path(root, rel)?;
     match fs::read(p) {
