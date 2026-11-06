@@ -6,7 +6,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.10.0.png" alt="cedr v0.10.0: polish" width="770">
 
-**v0.10.0** · 21 changes from 1 contributor
+**v0.10.0** · 24 changes from 1 contributor
 
 ### Highlights
 **Start locally without an account.** `cedr doctor` skips the optional API key when no organization is configured and skips Monitor sources absent from the machine and push scheduling without an organization. Route parse errors include the loader's path and reason. Missing model lists and misspelled efforts now get actionable Route diagnostics, and the README's Route quick start includes Claude's model list.
@@ -22,7 +22,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
   **Upgrade step:** account-health scripts should inspect `key.present` and `key.valid` in `--format json` instead of using Doctor's exit code as proof of an account.
 
 ### Fixes
-- **Council:** preserves findings for filenames containing spaces and delimiters, handles mixed separators, lowercase severity and line-column locations, normalizes list markers, headings, blockquotes and bold labels, and ignores prose confirming earlier fixes.
+- **Council:** refuses numbered reviews past the route's last allowed review, distinguishes reviews from revisions in text output, and preserves findings for filenames containing spaces and delimiters, handles mixed separators, lowercase severity and line-column locations, normalizes list markers, headings, blockquotes and bold labels, and ignores commentary in the documented earlier-fix form.
 - **Sync:** imports Claude's `Bash(git:*)` and `Bash(rm:*)` as command prefixes for every supported target; existing generated instruction files can become shared links without stale lock ownership blocking the change. New Unix files follow the umask; replaced files keep their permissions.
 - **Monitor:** counts and costs sessions by harness and session id together, keeping separate sessions separate without changing stored data or push shapes.
 - **Guard:** rejects non-object JSON MCP configuration roots before writing a lock. Clean text lint output names the number of instruction files, skills and servers checked; JSON and GitHub output keep their shapes.
@@ -32,6 +32,8 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 <summary>Full changelog</summary>
 
 #### What's Changed
+* fix(council): stop merges past the last review and say rounds counts revisions
+* chore(release): ship the council last review cap as cedr 0.9.4
 * fix(council): reject text reports that never finished or drop findings
 * fix(mcp): publish council_merge reports as report objects
 * fix(doctor): warn on harnesses with no model list and skip an unneeded key
@@ -53,8 +55,9 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 * fix(council): reject decorated severity prefixes before merging
 * fix(cli): reject incomplete findings and explain route setup errors
 * fix(council): group findings when only the filename is marked up
+* fix(council): reject labelled severity findings and normalize underscores
 
-**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.9.4...v0.10.0
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.9.3...v0.10.0
 </details>
 
 ## v0.9.4 (2026-11-05)
@@ -62,6 +65,8 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.9.4.png" alt="cedr v0.9.4: last review" width="770">
 
 **v0.9.4** · 2 changes from 1 contributor
+
+**Release status:** included in v0.10.0 without a separate release.
 
 ### Highlights
 **A council stops at its last review.** A route's `rounds` counts revisions, so `rounds = 3` allows four reviews. Once the last one blocks, the gate stands: `cedr council merge` and the `council_merge` MCP tool now refuse a later `--round` (exit 2) and record nothing, so a run can no longer pass after its gate stood.
@@ -79,7 +84,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 * fix(council): stop merges past the last review and say rounds counts revisions
 * chore(release): ship the council last review cap as cedr 0.9.4
 
-**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.9.3...v0.9.4
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.9.3...1b97b715c60031f1606a41a787b091d4151d086b
 </details>
 
 ## v0.9.3 (2026-11-05)

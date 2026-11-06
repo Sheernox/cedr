@@ -187,7 +187,7 @@ fn location(s: &str) -> Option<(&str, u64)> {
     } else {
         s
     };
-    let s = s.trim_matches(['`', '*']);
+    let s = s.trim_matches(['`', '*', '_']);
     let (file, line) = s.rsplit_once(':')?;
     let line = line.parse().ok()?;
     // A trailing numeric column belongs to the location, not the filename (including Windows drives).
@@ -195,7 +195,7 @@ fn location(s: &str) -> Option<(&str, u64)> {
         Some((path, row)) if row.parse::<u64>().is_ok() => (path, row.parse().ok()?),
         _ => (file, line),
     };
-    let file = file.trim_matches(['`', '*']);
+    let file = file.trim_matches(['`', '*', '_']);
     (!file.is_empty()).then_some((file, line))
 }
 
@@ -225,8 +225,8 @@ fn text_severities(line: &str) -> impl Iterator<Item = (usize, Severity)> + '_ {
 /// an error rather than a search through the claim for another possible finding.
 fn text_fields(line: &str) -> Option<(&str, Severity, &str)> {
     text_severities(line).find_map(|(i, severity)| {
-        let before = line[..i].trim_end_matches(['*', '`', '[']);
-        let after = line[i + 2..].trim_start_matches(['*', '`', ']']);
+        let before = line[..i].trim_end_matches(['*', '_', '`', '[']);
+        let after = line[i + 2..].trim_start_matches(['*', '_', '`', ']']);
         let location = SEPARATORS.iter().find_map(|sep| before.strip_suffix(sep))?;
         let claim = SEPARATORS.iter().find_map(|sep| after.strip_prefix(sep))?;
         Some((location, severity, claim))
@@ -247,7 +247,7 @@ fn parse_line(line: &str) -> Option<Finding> {
         ),
         None => (rest, None),
     };
-    let claim = claim.trim().trim_matches('*').trim().to_string();
+    let claim = claim.trim().trim_matches(['*', '_']).trim().to_string();
     (!claim.is_empty()).then(|| Finding {
         file: file.into(),
         line: line_no,
@@ -263,6 +263,12 @@ fn looks_like_finding(line: &str) -> bool {
     if text_fields(line).is_some() {
         return true;
     }
+    // A location after a severity signals a finding regardless of the prose label before it.
+    // Find it once so repeated severity tokens cannot make detection quadratic.
+    let last_location = line
+        .as_bytes()
+        .windows(2)
+        .rposition(|pair| pair[0] == b':' && pair[1].is_ascii_digit());
     text_severities(line).any(|(i, _)| {
         let trim = |c: char| !c.is_alphanumeric();
         let mut before = line[..i].trim_end_matches(trim);
@@ -276,6 +282,7 @@ fn looks_like_finding(line: &str) -> bool {
         let stem = before.trim_end_matches(|c: char| c.is_ascii_digit());
         (stem.len() < before.len() && stem.ends_with(':') && location(before).is_some())
             || before.is_empty()
+            || last_location.is_some_and(|at| at > i)
     })
 }
 
@@ -1000,6 +1007,10 @@ mod tests {
             assert!(r.findings.is_empty() && r.score.is_none(), "{text}");
         }
         assert!(Report::from_text("Checked the parser.\nScore: 9/10", "a").is_ok());
+        // Findings-only text is supported; unlike JSON, it cannot prove a reply was not truncated.
+        let findings_only = Report::from_text("src/a.rs:12 - P3 - naming", "a").unwrap();
+        assert!(findings_only.score.is_none());
+        assert_eq!(findings_only.findings.len(), 1);
         assert_eq!(
             err("Looks fine.\nsrc/a.rs:12 - P1 -\nScore: 9/10"),
             "line 2: cannot read this finding; write `<file>:<line> - <P0|P1|P2|P3> - <claim>`"
@@ -1032,6 +1043,10 @@ mod tests {
             "- Severity: P1",
             "src/a.rs:12, P1, unbounded",
             "src/a.rs:12 \u{00b7} P1 \u{00b7} unbounded",
+            "Finding P1: src/a.rs:12 - leaks",
+            "Finding: P1 src/a.rs:12 - leaks",
+            "Issue P1: src/a.rs:12 - leaks",
+            "- `src/a.rs:12` P1: fixed and verified.",
         ] {
             assert!(
                 err(&format!("{line}\nScore: 9/10")).starts_with("line 1:"),
@@ -1053,6 +1068,8 @@ mod tests {
             ("`src/my file.rs:12` - P1 - broken", "src/my file.rs", 12),
             ("`src/a.rs`:12 - P1 - broken", "src/a.rs", 12),
             ("**src/a.rs**:12 - P1 - broken", "src/a.rs", 12),
+            ("__src/a.rs__:12 - P1 - broken", "src/a.rs", 12),
+            ("src/a.rs:12 - __P1__ - broken", "src/a.rs", 12),
             ("src/a.rs:12 - p1 - broken", "src/a.rs", 12),
             ("src/my - file.rs:12 - P1 - broken", "src/my - file.rs", 12),
             ("src/a.rs:12 - P1 | broken", "src/a.rs", 12),
@@ -1079,7 +1096,7 @@ mod tests {
             assert_eq!(merge(&[r], q(1)).gate, Gate::Block);
         }
         let r = Report::from_text(
-            "`src/a.rs`:12 - P1 - same issue\nsrc/a.rs:12 - P1 - same issue",
+            "`src/a.rs`:12 - P1 - same issue\nsrc/a.rs:12 - P1 - same issue\n__src/a.rs__:12 - P1 - same issue",
             "a",
         )
         .unwrap();
