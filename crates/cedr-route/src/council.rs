@@ -103,7 +103,10 @@ impl Report {
                 no_findings = true;
             } else if let Some(f) = parse_line(line) {
                 findings.push(f);
-            } else if looks_like_finding(line) {
+            } else if looks_like_finding(line)
+                && !(raw.trim_start().starts_with("> #")
+                    && !SEPARATORS.iter().any(|sep| line.contains(sep)))
+            {
                 return Err(Error::Usage(format!(
                     "line {}: cannot read this finding; write `<file>:<line> - <P0|P1|P2|P3> - <claim>`",
                     i + 1
@@ -227,6 +230,10 @@ fn text_severities(line: &str) -> impl Iterator<Item = (usize, Severity)> + '_ {
         if !matches!(pair[0], b'P' | b'p')
             || (i > 0 && bytes[i - 1].is_ascii_alphanumeric())
             || bytes.get(i + 2).is_some_and(u8::is_ascii_alphanumeric)
+            || (i > 0 && matches!(bytes[i - 1], b'/' | b'\\' | b'.'))
+            || bytes.get(i + 2).is_some_and(|c| matches!(c, b'/' | b'\\'))
+            || (bytes.get(i + 2) == Some(&b'.')
+                && bytes.get(i + 3).is_some_and(u8::is_ascii_alphanumeric))
         {
             return None;
         }
@@ -284,12 +291,17 @@ fn looks_like_finding(line: &str) -> bool {
     if text_fields(line).is_some() {
         return true;
     }
-    // A location after a severity signals a finding regardless of the prose label before it.
-    // Find it once so repeated severity tokens cannot make detection quadratic.
+    // A short finding label or fields following a location signal a finding. Longer verification
+    // prose is commentary. Find the location once to keep repeated severity tokens linear.
     let last_location = line
         .as_bytes()
         .windows(2)
         .rposition(|pair| pair[0] == b':' && pair[1].is_ascii_digit());
+    let fields_after_location = last_location.is_some_and(|at| {
+        let tail = line[at + 1..].trim_start_matches(|c: char| c.is_ascii_digit());
+        SEPARATORS.iter().any(|sep| tail.contains(sep))
+    });
+    let first_space = line.find(char::is_whitespace).unwrap_or(line.len());
     text_severities(line).any(|(i, _)| {
         let trim = |c: char| !c.is_alphanumeric();
         let mut before = line[..i].trim_end_matches(trim);
@@ -303,7 +315,15 @@ fn looks_like_finding(line: &str) -> bool {
         let stem = before.trim_end_matches(|c: char| c.is_ascii_digit());
         (stem.len() < before.len() && stem.ends_with(':') && location(before).is_some())
             || before.is_empty()
-            || last_location.is_some_and(|at| at > i)
+            || last_location.is_some_and(|at| {
+                if at <= i {
+                    return false;
+                }
+                let verification = ["verified", "checked", "fixed", "rechecked"]
+                    .iter()
+                    .any(|word| before.eq_ignore_ascii_case(word));
+                fields_after_location || (before.len() <= first_space && !verification)
+            })
     })
 }
 
@@ -1136,6 +1156,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(merge(&[r], q(1)).groups.len(), 2);
+        let path = Report::from_text("src/p1/a.rs:12 - P2 - broken", "a").unwrap();
+        assert_eq!(
+            (path.findings[0].file.as_str(), path.findings[0].severity),
+            ("src/p1/a.rs", Severity::P2)
+        );
+        for prose in [
+            "The round-6 P1 at src/a.rs:12 is fixed.",
+            "Round 1 found a P1 in src/a.rs:12; it is fixed.",
+            "Verified P1 fix in src/a.rs:12.",
+            "Previous: - codex/sol P1 :12 unbounded read is fixed.",
+            "> ## P1 src/a.rs:12 (codex/sol)",
+            "src/a.rs:12 fixed - bounded read added",
+            "See src/p1/a.rs:12 for context.",
+            "See src/p1.rs:12 for context.",
+            "See src\\p1\\a.rs:12 for context.",
+        ] {
+            let report =
+                Report::from_text(&format!("{prose}\nNo findings.\nScore: 9/10"), "a").unwrap();
+            assert!(report.findings.is_empty(), "{prose}");
+        }
         // Prose that mentions a location without opening on one is not a finding.
         assert!(
             Report::from_text("I checked src/a.rs:12 for P1 issues.\nNo findings.", "a").is_ok()

@@ -6,7 +6,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.10.0.png" alt="cedr v0.10.0: polish" width="770">
 
-**v0.10.0** · 25 changes from 1 contributor
+**v0.10.0** · 26 changes from 1 contributor
 
 ### Highlights
 **Start locally without an account.** `cedr doctor` skips the optional API key when no organization is configured and skips Monitor sources absent from the machine and push scheduling without an organization. Route parse errors include the loader's path and reason. Missing model lists and misspelled efforts now get actionable Route diagnostics, and the README's Route quick start includes Claude's model list.
@@ -57,6 +57,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 * fix(council): group findings when only the filename is marked up
 * fix(council): reject labelled severity findings and normalize underscores
 * fix(council): preserve literal filename characters in marked locations
+* fix(council): distinguish verification prose from finding labels
 
 **Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.9.3...v0.10.0
 </details>
