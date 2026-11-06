@@ -50,6 +50,8 @@ impl Scratch {
             .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
             // The Claude reader also reads Claude Code's own config, never the real one in tests.
             .env("CLAUDE_CONFIG_DIR", self.dir.path().join("claude"))
+            // T3 Code's provider homes decide presence: never the real ones.
+            .env("T3CODE_HOME", self.dir.path().join("t3"))
             .env_remove("CEDR_ROUTES")
             .env_remove("CEDR_API_KEY");
         c

@@ -284,3 +284,55 @@ fn doctor_says_why_claude_has_no_reading_and_when_no_orchestrator_is_set() {
         ("ok".to_string(), "claude/opus".to_string())
     );
 }
+
+/// Runs doctor in `home` with an empty PATH and returns one check's state and message.
+fn doctor_check(home: &std::path::Path, id: &str) -> (String, String) {
+    let root = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_cedr"))
+        .args(["doctor", "--format", "json"])
+        .arg(root.path())
+        .env_clear()
+        .env("CEDR_TELEMETRY", "0")
+        .env("CEDR_NO_AUTO_UPDATE", "1")
+        .env("HOME", home)
+        .env("PATH", "")
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let c = v["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == id)
+        .cloned()
+        .unwrap();
+    (
+        c["state"].as_str().unwrap().to_string(),
+        c["message"].as_str().unwrap().to_string(),
+    )
+}
+
+#[test]
+fn doctor_lists_only_the_stale_readers_a_pick_warns_about() {
+    let home = tempfile::tempdir().unwrap();
+    let cfg = home.path().join(".config/cedr");
+    fs::create_dir_all(&cfg).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    fs::write(
+        cfg.join("feed.json"),
+        format!(
+            r#"{{"harnesses": [{{"harness": "codex", "fetchedAt": "{now}", "windows": []}}]}}"#
+        ),
+    )
+    .unwrap();
+    // grok is not installed; codex has no built-in reader here, but a feed covers it; muse neither.
+    let routes = "version = 1\n[harnesses.grok]\ncommand = \"grok\"\nreader = \"grok\"\n[harnesses.codex]\nreader = \"codex\"\n[harnesses.muse]\nreader = \"muse\"\n[[readings]]\nkind = \"file\"\npath = \"feed.json\"\n";
+    fs::write(cfg.join("routes.toml"), routes).unwrap();
+    assert_eq!(
+        doctor_check(home.path(), "route.readers"),
+        (
+            "warn".to_string(),
+            "absent harnesses: [grok]; stale readers: [muse]".to_string()
+        )
+    );
+}

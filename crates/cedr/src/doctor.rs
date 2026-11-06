@@ -78,10 +78,35 @@ pub fn checks(root: &Path) -> Vec<Check> {
                     .join("; "),
                 "Move repository machine settings to the user routes.toml or explicitly select a trusted file with --config; point [orchestrator] at a harness the routes define",
             );
+            // The readings and machine checks a pick builds, so doctor and picks agree on which
+            // harnesses are stale: absent ones and ones a feed already covers are not. The account
+            // probes are left out: a harness with its own built-in reader is never stale, and
+            // doctor starts no agent programs.
+            let mut feeds = c.clone();
+            feeds.readings.retain(|s| {
+                !matches!(
+                    s,
+                    config::ReadingsSource::Codex { .. }
+                        | config::ReadingsSource::Muse { .. }
+                        | config::ReadingsSource::Grok { .. }
+                )
+            });
+            let (mut readings, _) =
+                cedr_route::readings::collect(&feeds, &loaded.readings_dir, chrono::Utc::now());
             let (absent, _) = cedr_route::machine::absent(c);
-            let stale = cedr_route::machine::stale(c, &Default::default());
+            readings.absent = absent.clone();
+            let stale = cedr_route::machine::stale(c, &readings);
             let mut missing = absent.keys().cloned().collect::<Vec<_>>();
             missing.sort();
+            let message = format!(
+                "absent harnesses: [{}]; stale readers: [{}]",
+                missing.join(", "),
+                stale
+                    .iter()
+                    .map(|s| s.harness.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             add(
                 &mut out,
                 "route.readers",
@@ -90,15 +115,7 @@ pub fn checks(root: &Path) -> Vec<Check> {
                 } else {
                     "warn"
                 },
-                format!(
-                    "absent harnesses: [{}]; stale readers: [{}]",
-                    missing.join(", "),
-                    stale
-                        .iter()
-                        .map(|s| s.harness.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
+                message,
                 "Install missing harnesses and configure their usage readers",
             );
             add(

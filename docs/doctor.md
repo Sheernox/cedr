@@ -11,7 +11,7 @@ Each check is `{"id", "area", "state": "ok" | "warn" | "fail" | "skip", "message
 | `key.valid` | account | `GET /me` with the key answers 200; names the key's owner, never the key |
 | `org.member` | account | The configured org (monitor config, then `[sync] org`) is one the key's owner belongs to (`GET /me` lists them) |
 | `route.config` | route | A routes config is found and parses; names its path |
-| `route.readers` | route | Route's machine checks: harnesses skipped or whose program is missing (and T3 Code does not run), and stale usage readers |
+| `route.readers` | route | Route's machine checks, judged on the readings a pick builds (the `file`, `http`, `command` and `claude-statusline` sources; no account probe is started): harnesses skipped or whose program is missing (and T3 Code does not run), and stale usage readers, never an absent harness or one an earlier source covers |
 | `route.orchestrator` | route | The routes in use set an `[orchestrator]` (names it; warn when none is set, since route tags then leave out the delegating plan's use) |
 | `route.statusline` | route | Claude's plan reading: `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json` when set) has a status line running `cedr route statusline`, or Claude Code has cached its plan usage (docs/route.md, Built-in readers); warn when Claude is present (on `PATH` or run by T3 Code) and neither holds, or there is no status line and the cache cannot be read or the routes do not have exactly one `claude-statusline` source |
 | `route.sync` | route | The last background sync error, if any |
