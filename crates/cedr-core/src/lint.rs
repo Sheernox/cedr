@@ -593,8 +593,7 @@ fn broad_permissions(root: &Path) -> Result<Vec<Finding>> {
     let rel = ".claude/settings.json";
     let path = root.join(rel);
     if let Some(text) = read_optional(&path)? {
-        let value: serde_json::Value =
-            serde_json::from_str(&text).map_err(|e| parse_err(&path, e))?;
+        let value = discovery::json_object(&path, &text)?;
         let allows = value
             .pointer("/permissions/allow")
             .and_then(|a| a.as_array())

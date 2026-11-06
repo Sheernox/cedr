@@ -81,7 +81,7 @@ paths = [".agents/skills/security-audit/**"]   # globs over the finding's path, 
 | Gemini | | | `.agents/mcp_config.json` (`mcpServers`; `serverUrl` is remote) | |
 | Grok | | `.grok/skills/<name>/SKILL.md` | `.grok/config.toml` (`[mcp_servers.<name>]`) | |
 
-A server entry is stdio (`command`, `args`, `env`) or remote (`url`, `httpUrl`, `serverUrl`, or `type`/`transport` of `http`/`sse`). Clients are `claude`, `codex`, `cursor`, `gemini`, `copilot`, `opencode`, `antigravity` and `grok`. The same server name in two clients is two lock entries keyed by `client` and `name`.
+Each JSON file in this table must hold a JSON object: an array, scalar or `null` file is an error naming it (exit 2, and `cedr guard lock` writes nothing), while an object without the MCP section has no servers. A server entry is stdio (`command`, `args`, `env`) or remote (`url`, `httpUrl`, `serverUrl`, or `type`/`transport` of `http`/`sse`). Clients are `claude`, `codex`, `cursor`, `gemini`, `copilot`, `opencode`, `antigravity` and `grok`. The same server name in two clients is two lock entries keyed by `client` and `name`.
 
 Skill directories and the files in them are read only when their canonical path stays inside the canonical root (a `.claude/skills` link into `.agents/skills` is fine). A file symlink inside a skill is never followed: lint sees its target text; hashing uses its raw target bytes with a symlink type tag. A skill directory whose canonical path escapes the root is skipped, never read: `cedr guard lint` reports it as CG010, and `cedr guard lock` and `cedr guard verify` print `skipped <path>: links outside the repo` on stderr and carry on with the rest.
 

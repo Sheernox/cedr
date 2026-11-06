@@ -957,3 +957,54 @@ fn help_lists_guard_but_not_its_old_top_level_names() {
         assert!(cedr(&[old, "--help"]).status.success(), "{old} still runs");
     }
 }
+
+#[test]
+fn json_configs_that_are_not_objects_fail_naming_the_file_and_lock_nothing() {
+    for rel in [
+        ".mcp.json",
+        ".cursor/mcp.json",
+        ".gemini/settings.json",
+        ".vscode/mcp.json",
+        ".github/mcp.json",
+        "opencode.json",
+        ".agents/mcp_config.json",
+        ".claude/settings.json",
+    ] {
+        for body in ["[]", "3", "null", "\"x\""] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, body).unwrap();
+            let root = dir.path().to_str().unwrap();
+            // Lock reads only the MCP files; lint reads Claude's settings too.
+            let lock = rel != ".claude/settings.json";
+            let runs = [
+                &["guard", "lint", root][..],
+                &["guard", "lock", "--offline", root],
+            ];
+            for args in &runs[..if lock { 2 } else { 1 }] {
+                let o = cedr(args);
+                let err = String::from_utf8_lossy(&o.stderr);
+                assert_eq!(code(&o), 2, "{rel} {body} {args:?}: {err}");
+                assert!(
+                    err.contains(&format!("{rel}: the file must hold a JSON object")),
+                    "{err}"
+                );
+            }
+            assert!(
+                !dir.path().join(".cedr").exists(),
+                "{rel} {body}: lock written"
+            );
+        }
+        // An object with no MCP section is a valid, empty config.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "{\"theme\": \"dark\"}").unwrap();
+        assert_eq!(
+            code(&cedr(&["guard", "lint", dir.path().to_str().unwrap()])),
+            0,
+            "{rel}"
+        );
+    }
+}

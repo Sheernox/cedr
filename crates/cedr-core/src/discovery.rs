@@ -376,8 +376,18 @@ impl RawServer {
     }
 }
 
-fn json_servers(client: Client, rel: &str, text: &str, path: &Path) -> Result<Vec<Server>> {
+/// An agent's JSON config: it must be an object before any section is looked up, so an array,
+/// scalar or null file is an error naming it rather than a config with nothing in it.
+pub(crate) fn json_object(path: &Path, text: &str) -> Result<serde_json::Value> {
     let value: serde_json::Value = serde_json::from_str(text).map_err(|e| parse_err(path, e))?;
+    if !value.is_object() {
+        return Err(parse_err(path, "the file must hold a JSON object"));
+    }
+    Ok(value)
+}
+
+fn json_servers(client: Client, rel: &str, text: &str, path: &Path) -> Result<Vec<Server>> {
+    let value = json_object(path, text)?;
     let section_name = match rel {
         ".vscode/mcp.json" => "servers",
         "opencode.json" => "mcp",
