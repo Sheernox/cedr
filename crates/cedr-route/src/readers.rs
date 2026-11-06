@@ -423,16 +423,15 @@ pub fn from_usage_cache(config: &Value, harness: &str) -> Result<Option<Value>, 
         }
         // The family is spelled like model ids ("Opus 4.5" -> "opus-4-5", found in
         // "claude-opus-4-5"); the window id like the status line's ("seven_day_opus_4_5").
-        let family: String = model
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() {
-                    c.to_ascii_lowercase()
-                } else {
-                    '-'
-                }
-            })
-            .collect();
+        let family = model
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join("-")
+            .to_ascii_lowercase();
+        if family.is_empty() {
+            continue;
+        }
         let mut w = window(
             format!("seven_day_{}", family.replace('-', "_")),
             "weekly",
@@ -523,7 +522,7 @@ mod tests {
                     {"kind": "weekly_scoped", "percent": 2, "resets_at": "2026-11-09T04:00:00+00:00",
                      "scope": {"model": {"id": null, "display_name": "Fable"}}},
                     {"kind": "weekly_scoped", "percent": 7, "resets_at": "2026-11-09T04:00:00+00:00",
-                     "scope": {"model": {"id": null, "display_name": "Opus 4.5"}}}]}}})
+                     "scope": {"model": {"id": null, "display_name": " Opus (4.5) "}}}]}}})
     }
 
     #[test]

@@ -204,7 +204,7 @@ fn doctor_says_why_claude_has_no_reading_and_when_no_orchestrator_is_set() {
     fs::create_dir_all(&cfg).unwrap();
     let routes = "version = 1\n[harnesses.claude]\nexpect = [\"five_hour\", \"seven_day\"]\n";
     fs::write(cfg.join("routes.toml"), routes).unwrap();
-    let check = |id: &str| {
+    let check_with = |id: &str, path: &std::path::Path| {
         let out = Command::new(env!("CARGO_BIN_EXE_cedr"))
             .args(["doctor", "--format", "json"])
             .arg(root.path())
@@ -212,7 +212,7 @@ fn doctor_says_why_claude_has_no_reading_and_when_no_orchestrator_is_set() {
             .env("CEDR_TELEMETRY", "0")
             .env("CEDR_NO_AUTO_UPDATE", "1")
             .env("HOME", home.path())
-            .env("PATH", &bin)
+            .env("PATH", path)
             .output()
             .unwrap();
         let v: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -228,6 +228,7 @@ fn doctor_says_why_claude_has_no_reading_and_when_no_orchestrator_is_set() {
             c["message"].as_str().unwrap().to_string(),
         )
     };
+    let check = |id: &str| check_with(id, &bin);
     let (state, message) = check("route.statusline");
     assert_eq!(state, "warn");
     assert!(
@@ -244,6 +245,11 @@ fn doctor_says_why_claude_has_no_reading_and_when_no_orchestrator_is_set() {
     .unwrap();
     let (state, message) = check("route.statusline");
     assert_eq!(state, "ok");
+    // A Claude the routes count as present (T3 Code runs it with nothing on PATH) is not skipped.
+    assert_eq!(
+        check_with("route.statusline", std::path::Path::new("")).0,
+        "ok"
+    );
     assert!(message.contains("usage cache"), "{message}");
     fs::write(
         cfg.join("routes.toml"),

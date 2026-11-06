@@ -37,6 +37,8 @@ pub struct Window {
     pub resets_at: Option<DateTime<Utc>>,
     /// The family the source says this window is limited to (docs/route.md, Pool state).
     pub model: Option<String>,
+    /// When this window was read, when that is earlier than its entry's `fetched_at`.
+    pub fetched_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +115,7 @@ impl Readings {
                         .and_then(Value::as_str)
                         .filter(|m| !m.is_empty())
                         .map(str::to_string),
+                    fetched_at: w.get("fetchedAt").and_then(parse_ts),
                 })
                 .collect();
             self.entries.insert(
@@ -185,7 +188,7 @@ pub fn collect(config: &Config, config_dir: &Path, now: DateTime<Utc>) -> (Readi
         if covered(config, &readings, source) {
             continue;
         }
-        match fetch(source, config_dir, now, claude_cache.then_some(config)) {
+        match fetch(source, config_dir, now, claude_cache) {
             Ok(Fetched { doc, warning }) => {
                 readings.merge(config, &doc);
                 warnings.extend(warning);
@@ -265,7 +268,7 @@ fn fetch(
     source: &ReadingsSource,
     config_dir: &Path,
     now: DateTime<Utc>,
-    claude_cache: Option<&Config>,
+    claude_cache: bool,
 ) -> Result<Fetched, String> {
     match source {
         ReadingsSource::File { path } => {
@@ -318,22 +321,14 @@ fn fetch(
             crate::readers::grok(harness, COMMAND_TIMEOUT)
                 .map_err(|e| format!("grok readings unavailable ({e})"))
         }),
-        ReadingsSource::ClaudeStatusline { harness } => {
-            // A window kept from the older reading must itself still be fresh (see `claude`).
-            let fresh = claude_cache.map(|c| c.limits(c.harness_for(harness), None).fresh_seconds);
-            claude(harness, fresh, now)
-        }
+        ReadingsSource::ClaudeStatusline { harness } => claude(harness, claude_cache),
     }
 }
 
 /// The newer of the status line capture and Claude Code's own usage cache. Hosts that run Claude
-/// Code through its SDK (no status line) only have the cache. Either one failing is an error only
-/// when the other has no reading.
-fn claude(
-    harness: &str,
-    cache_fresh_seconds: Option<i64>,
-    now: DateTime<Utc>,
-) -> Result<Fetched, String> {
+/// Code through its SDK (no status line) only have the cache. A capture that fails is an error only
+/// without a cache; a cache that fails beside a capture is a warning, since it alone has model windows.
+fn claude(harness: &str, use_cache: bool) -> Result<Fetched, String> {
     let path = crate::readers::statusline_path(harness);
     let capture = match read_file(&path, MAX_BYTES) {
         Ok(bytes) => parse_doc(&bytes)
@@ -342,7 +337,7 @@ fn claude(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("readings {}: {e}", path.display())),
     };
-    let cache = if cache_fresh_seconds.is_some() {
+    let cache = if use_cache {
         crate::readers::claude_usage(harness)
             .map_err(|e| format!("claude readings unavailable ({e})"))
     } else {
@@ -357,10 +352,9 @@ fn claude(
                 (c, u)
             };
             // The capture has no model windows, so the newer document keeps the other's windows
-            // it lacks rather than dropping a limit. They take the newer one's `fetchedAt`, so
-            // once the older reading is stale their use is unknown, never its old percent.
-            let fresh = cache_fresh_seconds.unwrap_or(0);
-            let older_fresh = fetched(&older).is_some_and(|at| (now - at).num_seconds() <= fresh);
+            // it lacks rather than dropping a limit. Each keeps its own `fetchedAt`, so it ages
+            // into unknown under whatever freshness threshold the pick applies.
+            let older_at = older["harnesses"][0]["fetchedAt"].clone();
             let extra: Vec<Value> = older["harnesses"][0]["windows"]
                 .as_array()
                 .into_iter()
@@ -372,9 +366,7 @@ fn claude(
                 })
                 .map(|w| {
                     let mut w = w.clone();
-                    if !older_fresh {
-                        w["percent"] = Value::Null;
-                    }
+                    w["fetchedAt"] = older_at.clone();
                     w
                 })
                 .collect();
@@ -383,6 +375,11 @@ fn claude(
             }
             Ok(newer.into())
         }
+        // Model windows come only from the cache, so losing it is worth saying.
+        (Ok(Some(c)), Err(e)) => Ok(Fetched {
+            doc: c,
+            warning: Some(format!("{e}; model windows are missing")),
+        }),
         (Ok(Some(d)), _) | (_, Ok(Some(d))) => Ok(d.into()),
         // Neither a capture nor a cache yet: no reading (`cedr doctor` says why).
         (Ok(None), Ok(None)) => Ok(json!({}).into()),

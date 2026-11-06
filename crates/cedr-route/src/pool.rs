@@ -232,7 +232,12 @@ pub fn pool_with(
         }
         seen.insert(w.id.as_str());
         let session = w.kind == WindowKind::Session;
+        // A window read earlier than its entry (carried over from an older reading) ages on its own.
+        let stale = w.fetched_at.is_some_and(|at| {
+            (now - at).num_milliseconds() as f64 / 1000.0 > t.fresh_seconds as f64
+        });
         let here = match (w.percent, w.resets_at) {
+            _ if stale => State::Unknown,
             (None, _) => State::Unknown,
             (Some(_), Some(reset)) if reset <= now => State::Unknown,
             (Some(p), _) if p >= if session { t.session_out } else { t.weekly_out } => State::Out,
@@ -257,7 +262,13 @@ pub fn pool_with(
             }
         };
         let label = family.unwrap_or(if session { "s" } else { "w" });
-        shown.push(format!("{label}{pct}%"));
+        // A family ending in a digit ("opus-4-5") would run into its percent.
+        let sep = if label.ends_with(|c: char| c.is_ascii_digit()) {
+            ":"
+        } else {
+            ""
+        };
+        shown.push(format!("{label}{sep}{pct}%"));
     }
     let missing: Vec<&str> = expect.difference(&seen).copied().collect();
     if !missing.is_empty() {
@@ -391,6 +402,24 @@ model = "fable"
             pool("claude", "claude-fable-5-1", &r, &config, now()).summary,
             "claude s39% w45% fable95%"
         );
+    }
+
+    #[test]
+    fn a_window_read_earlier_than_its_entry_ages_under_the_picks_own_threshold() {
+        let r = readings(
+            json!({"harnesses": [{"harness": "claude", "fetchedAt": "2026-10-29T01:59:00Z", "windows": [
+                {"id": "five_hour", "kind": "session", "percent": 10, "resetsAt": "2026-10-29T05:00:00Z"},
+                {"id": "seven_day", "kind": "weekly", "percent": 20, "resetsAt": "2026-11-02T00:00:00Z"},
+                {"id": "seven_day_fable", "kind": "weekly", "percent": 30, "resetsAt": "2026-11-02T00:00:00Z",
+                 "fetchedAt": "2026-10-29T01:55:00Z"}
+            ]}]}),
+        );
+        let c = config();
+        let mut t = c.limits(Some("claude"), None);
+        let fable = |t: &Limits| pool_with("claude", "claude-fable-5-1", &r, &c, now(), t).summary;
+        assert_eq!(fable(&t), "claude s10% w20% fable30%");
+        t.fresh_seconds = 60;
+        assert_eq!(fable(&t), "claude s10% w20% fable?%");
     }
 
     #[test]

@@ -339,7 +339,15 @@ pub fn checks(root: &Path) -> Vec<Check> {
         });
     // Claude Code run through its SDK (T3 Code and other orchestrators) renders no status line,
     // so its own usage cache is the reading there.
-    let installed_claude = installed("claude");
+    // T3 Code runs Claude Code from a provider profile with no program on PATH; Route's machine
+    // check counts that as present, so this check does too.
+    let installed_claude = installed("claude")
+        || routes.as_ref().is_ok_and(|l| {
+            l.config.harnesses.contains_key("claude")
+                && !cedr_route::machine::absent(&l.config)
+                    .0
+                    .contains_key("claude")
+        });
     let cache = if installed_claude && !statusline {
         cedr_route::readers::claude_usage("claude")
     } else {

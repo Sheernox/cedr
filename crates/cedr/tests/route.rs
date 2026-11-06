@@ -772,6 +772,17 @@ fn the_newer_of_the_status_line_capture_and_the_usage_cache_wins() {
         out.contains(r#""summary": "claude s10% w11% fable?%""#),
         "{out}"
     );
+
+    // A broken cache beside a capture keeps the capture and says the model windows are gone.
+    write(now, now);
+    std::fs::write(claude.join(".claude.json"), "{cut").unwrap();
+    let o = s.cedr(&["route", "pools", "--config", &cfg]);
+    assert!(stdout(&o).contains("claude s10% w11%"), "{}", stdout(&o));
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("model windows are missing"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
 }
 
 #[test]
@@ -941,5 +952,5 @@ fn pools_list_a_scoped_limit_for_the_version_a_family_target_resolves_to() {
         .find(|r| r["family"] == "opus-4-5")
         .unwrap_or_else(|| panic!("{pools}"));
     assert_eq!(opus["state"], "out");
-    assert_eq!(opus["summary"], "claude s39% w45% opus-4-5100%");
+    assert_eq!(opus["summary"], "claude s39% w45% opus-4-5:100%");
 }
