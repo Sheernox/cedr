@@ -2,6 +2,40 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.9.2 (2026-11-05)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.9.2.png" alt="cedr v0.9.2: t3 aware" width="770">
+
+**v0.9.2** · 2 changes from 1 contributor
+
+### Highlights
+**Picks ask each model only for an effort it offers.** When T3 Code (or any readings source) lists a model's effort option, an effort the model lacks becomes the nearest it offers (Grok's `max` becomes `xhigh`), the reason says so, and a harness whose routes name no effort option still gets its effort through T3 Code.
+
+**T3 Code decides which plans can take work.** On a machine that reads T3 Code, a provider disabled or signed out there counts as absent, and one T3 Code reports installed counts as present, even with nothing on `PATH`.
+
+**Doctor finds routes and skills that went astray.** `route.targets` names route targets no offered model matches, and `sync.shadowed` names Sync skills that an agent also loads from its user folder under the same name.
+
+This patch adds readings fields (`efforts`, `plans`), a machine snapshot field and two doctor checks, which `docs/versioning.md` would make a minor; the maintainers chose to ship them in 0.9.2.
+
+### Features
+- **Model options:** readings may carry `efforts` (each model's effort option id and values) and `plans` (the subscription a harness is signed in with); the `t3` reader fills both from T3 Code. A delegate's effort, tag and T3 target use the effort the model offers.
+- **T3 Code's view:** with a `t3` readings source, T3 Code's provider cache, when checked within the hour, makes a disabled or signed-out plan absent and an installed one present.
+- **Machine snapshot:** `cedr route sync` sends `plans`, so the app can show which subscription each machine's plans use.
+- **Doctor:** new `route.targets` and `sync.shadowed` checks.
+
+### Fixes
+- **Antigravity pools:** model families are capped after they are deduplicated, so many versions of one family cannot crowd out another.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* feat(route): use t3 code's model options, provider health and skill lists
+* chore(release): ship t3 code model options as cedr 0.9.2
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.9.1...v0.9.2
+</details>
+
 ## v0.9.1 (2026-11-05)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.9.1.png" alt="cedr v0.9.1: t3 first" width="770">
