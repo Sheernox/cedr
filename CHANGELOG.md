@@ -2,6 +2,47 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.9.0 (2026-11-05)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.9.0.png" alt="cedr v0.9.0: readings" width="770">
+
+**v0.9.0** · 8 changes from 1 contributor
+
+### Highlights
+**Route sees your Claude plan when Claude Code runs headless.** The `claude-statusline` reader also reads the plan usage Claude Code keeps for itself, so orchestrators that run Claude Code through its SDK, T3 Code among them, get Claude readings with no status line. Only that usage cache is read, never credentials, and nothing leaves your machine. `cedr doctor` says why Claude has no reading when it still has none.
+
+**Model limits only limit their own models.** A weekly limit that applies to one model family, such as Fable's, is labelled by its family in pools and route tags (`claude s39% w45% fable2%`) and no longer counts against every other model.
+
+**Your orchestrator shows in every tag again.** A `[orchestrator]` in your own `routes.toml` now applies over your organization's shared routes, so tags keep the delegating plan's use.
+
+**Upgrade step:** if your routes come from your organization and tags show no orchestrator, add `[orchestrator]` with `harness` and `model` (for example `harness = "claude"`, `model = "opus"`) to `~/.config/cedr/routes.toml`. Run `cedr doctor` and check `route.orchestrator`.
+
+### Features
+- **Claude usage cache:** `claude-statusline` takes the newer of the status line capture and Claude Code's own usage cache, and keeps the model windows only the cache has. `cedr monitor limits` stores the cache too.
+- **Model windows:** a readings window may name its family with `model` and its own read time with `fetchedAt`. A family ending in a version matches only that version (`opus-4-5:7%`).
+- **Machine orchestrator:** a machine's `[orchestrator]` applies over shared routes, and over a repository routes file that sets none. The new `route.orchestrator` doctor check warns when no orchestrator is set.
+- **T3 Code agents:** a harness whose program is not on `PATH` is present when T3 Code runs it from a provider profile, Antigravity among them. `docs/route.md` describes the readings an Antigravity source should report.
+
+### Fixes
+- **Quiet readers:** a built-in reader no longer runs or warns for a plan an earlier readings source already read.
+- **Pools:** `cedr route pools` and the sync snapshot list a row for every model window family a route can pick, including versions an evaluation holds back.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* feat(route): count agents that t3 code runs as present on the machine
+* fix(route): read claude plan usage without a status line
+* fix(route): keep claude model windows scoped and listed
+* fix(route): age carried claude windows and match scoped families by id
+* fix(route): age carried claude windows per window and warn when they are lost
+* fix(route): match versioned families exactly and keep source-scoped feeds shared
+* fix(route): list pool rows for model versions an evaluation holds
+* chore(release): ship route readings as cedr 0.9.0
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.8.4...v0.9.0
+</details>
+
 ## v0.8.4 (2026-11-05)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.8.4.png" alt="cedr v0.8.4: boundaries" width="770">
