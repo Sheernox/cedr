@@ -102,6 +102,30 @@ fn verdicts_on_recorded_picks_show_in_stats() {
         json!([{"route": "review.code", "target": "codex/gpt-6.1-sol", "picks": 1, "accepted": 1, "reworked": 0,
                 "redone": 0, "rejected": 0, "verdicts": 1, "accepted_pct": 100.0, "provisional": true, "preview": false, "median_minutes": 0.0, "judged": null, "escalated": null}])
     );
+    let text = stdout(&s.cedr(&[
+        "route",
+        "stats",
+        "--config",
+        &config().display().to_string(),
+    ]));
+    let (header, row) = text.split_once('\n').unwrap();
+    // Every value after the target ends under the end of its column's name.
+    let ends = |line: &str| -> Vec<usize> {
+        let mut at = 0;
+        line.split_whitespace()
+            .map(|w| {
+                at = line[at..].find(w).unwrap() + at + w.len();
+                at
+            })
+            .collect()
+    };
+    let (header, row) = (ends(header), ends(row));
+    assert_eq!(header.len(), 11, "{text}");
+    assert_eq!(header[2..], row[2..11], "{text}");
+    assert!(
+        row.len() == 12 && text.ends_with(" (provisional)\n"),
+        "{text}"
+    );
 }
 
 #[test]

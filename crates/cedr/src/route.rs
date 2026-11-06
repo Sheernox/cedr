@@ -710,45 +710,55 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
                     serde_json::to_string_pretty(&rows).expect("rows serialize")
                 ),
                 ListFormat::Text => {
-                    println!(
-                        "{:16} {:32} {:>5} {:>8} {:>8} {:>6} {:>8} {:>9}",
-                        "route",
-                        "target",
-                        "picks",
-                        "accepted",
-                        "reworked",
-                        "redone",
-                        "rejected",
-                        "accepted%   median_minutes judged escalated"
-                    );
-                    for r in rows {
-                        let pct = r
-                            .accepted_pct
-                            .map(|p| format!("{p:.1}"))
-                            .unwrap_or_else(|| "-".into());
-                        let details = format!(
-                            " {} {} {}",
-                            r.median_minutes
-                                .map(|n| format!("{n:.1}"))
-                                .unwrap_or_else(|| "-".into()),
-                            r.judged
-                                .map(|n| n.to_string())
-                                .unwrap_or_else(|| "-".into()),
-                            r.escalated
-                                .map(|n| n.to_string())
-                                .unwrap_or_else(|| "-".into())
-                        );
-                        let mark = if r.provisional { " (provisional)" } else { "" };
+                    // Every column has a fixed width, so the header sits over its values.
+                    let row = |cells: [&str; 11], mark: &str| {
                         println!(
-                            "{:16} {:32} {:>5} {:>8} {:>8} {:>6} {:>8} {:>9}{details}{mark}",
-                            r.route,
-                            format!("{}{}", r.target, if r.preview { " (preview)" } else { "" }),
-                            r.picks,
-                            r.accepted,
-                            r.reworked,
-                            r.redone,
-                            r.rejected,
-                            pct
+                            "{:16} {:32} {:>5} {:>8} {:>8} {:>6} {:>8} {:>9} {:>14} {:>6} {:>9}{mark}",
+                            cells[0],
+                            cells[1],
+                            cells[2],
+                            cells[3],
+                            cells[4],
+                            cells[5],
+                            cells[6],
+                            cells[7],
+                            cells[8],
+                            cells[9],
+                            cells[10],
+                        )
+                    };
+                    row(
+                        [
+                            "route",
+                            "target",
+                            "picks",
+                            "accepted",
+                            "reworked",
+                            "redone",
+                            "rejected",
+                            "accepted%",
+                            "median_minutes",
+                            "judged",
+                            "escalated",
+                        ],
+                        "",
+                    );
+                    let dash = |v: Option<String>| v.unwrap_or_else(|| "-".into());
+                    for r in rows {
+                        let target =
+                            format!("{}{}", r.target, if r.preview { " (preview)" } else { "" });
+                        let counts = [r.picks, r.accepted, r.reworked, r.redone, r.rejected]
+                            .map(|n| n.to_string());
+                        let pct = dash(r.accepted_pct.map(|p| format!("{p:.1}")));
+                        let median = dash(r.median_minutes.map(|n| format!("{n:.1}")));
+                        let judged = dash(r.judged.map(|n| n.to_string()));
+                        let escalated = dash(r.escalated.map(|n| n.to_string()));
+                        row(
+                            [
+                                &r.route, &target, &counts[0], &counts[1], &counts[2], &counts[3],
+                                &counts[4], &pct, &median, &judged, &escalated,
+                            ],
+                            if r.provisional { " (provisional)" } else { "" },
                         );
                     }
                 }
