@@ -876,7 +876,8 @@ fn files_in(h: &str, c: &Config, home: &str) -> Result<Vec<PathBuf>> {
 /// Readers whose attribution changed, with the revision a store must have read their files at. A store behind it
 /// rereads every file of that harness once from the start, so stored rows move to the corrected identity (rows are
 /// keyed by response, so nothing is counted twice). Codex 2: responses take their own `thread_id` as session.
-const REREADS: &[(&str, i64)] = &[("codex", 2)];
+/// Antigravity 2: interrupted generations no longer count as malformed.
+const REREADS: &[(&str, i64)] = &[("codex", 2), ("antigravity", 2)];
 
 pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
     for &h in crate::HARNESSES {
@@ -896,6 +897,7 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
         let mut count = 0;
         let mut malformed = 0u64;
         let mut error = None;
+        let mut unsupported = None;
         match files(h, c) {
             Ok(paths) => {
                 count = paths.len();
@@ -977,8 +979,10 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
                         if path.extension().is_some_and(|x| x == "db") {
                             if h == "antigravity" {
                                 cursor.malformed = protobuf::collect(&path, c, db)?;
-                            } else {
-                                opencode_sqlite(&path, c, db)?;
+                            } else if let Some(reason) = opencode_sqlite(&path, c, db)? {
+                                unsupported = Some(reason);
+                                db.db.execute_batch("ROLLBACK")?;
+                                return Ok(0);
                             }
                         } else if path.extension().is_some_and(|x| x == "json") {
                             if std::fs::metadata(&path)?.len() > cursors::MAX_LINE as u64 {
@@ -1057,14 +1061,14 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
             t.and_then(|t| chrono::DateTime::from_timestamp(t, 0))
                 .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
         };
-        let reason = error.or(if h == "cursor" {
+        let reason = error.or(unsupported).or(if h == "cursor" {
             Some("no documented local token log")
         } else if count > 0 && responses == 0 {
             Some("usage unknown; no completed usage records found")
         } else {
             None
         });
-        let v = json!({"harness":h,"state":if h=="cursor"{"unsupported"}else if error.is_some(){"error"}else if count==0{"absent"}else{"ok"},"files":count,"responses":responses,"first":stamp(first),"last":stamp(last),"malformed":malformed,"message":reason});
+        let v = json!({"harness":h,"state":if error.is_some(){"error"}else if h=="cursor" || unsupported.is_some(){"unsupported"}else if count==0{"absent"}else{"ok"},"files":count,"responses":responses,"first":stamp(first),"last":stamp(last),"malformed":malformed,"message":reason});
         db.db.execute(
             "INSERT OR REPLACE INTO sources VALUES(?,?)",
             params![h, v.to_string()],
@@ -1081,9 +1085,26 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
     Ok(())
 }
 /// Compatibility adapter for the documented legacy SQLite message layout.
-fn opencode_sqlite(path: &Path, c: &Config, db: &Store) -> Result<()> {
+fn opencode_sqlite(path: &Path, c: &Config, db: &Store) -> Result<Option<&'static str>> {
     let conn =
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let legacy: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='message')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !legacy {
+        let v2: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name IN ('session_message','session_v2'))",
+            [],
+            |r| r.get(0),
+        )?;
+        return Ok(Some(if v2 {
+            "unsupported opencode session_v2/session_message schema; usage is not read"
+        } else {
+            "unsupported opencode schema: missing legacy message table"
+        }));
+    }
     let mut q = conn.prepare("SELECT id,session_id,data FROM message")?;
     for item in q.query_map([], |r| {
         Ok((
@@ -1098,7 +1119,7 @@ fn opencode_sqlite(path: &Path, c: &Config, db: &Store) -> Result<()> {
         let mut state = json!({"session":session});
         parse("opencode", &v, 0, &mut state, c, db)?;
     }
-    Ok(())
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -1328,6 +1349,44 @@ mod tests {
     fn copilot_shutdown_last_wins() {
         let (_d, db) = fixture("copilot", "copilot.jsonl");
         assert_eq!(usage(&db), (1, 80, 30));
+    }
+    #[test]
+    fn opencode_missing_message_table_is_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opencode.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session_message(id TEXT, data TEXT); CREATE TABLE session_v2(id TEXT);",
+        )
+        .unwrap();
+        drop(conn);
+        let mut db = Store::open(&dir.path().join("monitor.sqlite")).unwrap();
+        let mut c = Config {
+            harnesses: vec!["opencode".into()],
+            ..Config::default()
+        };
+        c.paths
+            .insert("opencode".into(), path.display().to_string());
+        for _ in 0..2 {
+            collect(&c, &mut db).unwrap();
+            let source: String = db
+                .db
+                .query_row(
+                    "SELECT data FROM sources WHERE harness='opencode'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let source: Value = serde_json::from_str(&source).unwrap();
+            assert_eq!(source["state"], "unsupported");
+            assert!(
+                source["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("session_message")
+            );
+            assert_eq!(source["malformed"], 0);
+        }
     }
     #[test]
     fn opencode_disjoint_counts() {

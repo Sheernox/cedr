@@ -31,8 +31,9 @@ pub fn project(mut v: Value, now: i64) -> Value {
         .zip(minutes)
         .zip(reset)
         .filter(|(((u, e), _), r)| *u > 0.0 && *e >= 0.03 && *r > now)
-        .map(|(((u, e), m), r)| {
-            crate::report::stamp((r as f64 - m * 60.0 + m * 60.0 * e * 100.0 / u) as i64)
+        .and_then(|(((u, e), m), r)| {
+            let at = r as f64 - m * 60.0 + m * 60.0 * e * 100.0 / u;
+            (at < r as f64).then(|| crate::report::stamp(at as i64))
         });
     v["elapsedShare"] = json!(elapsed);
     v["projectedPercent"] = json!(projection);
@@ -105,6 +106,14 @@ mod tests {
         let v = json!({"percent":50,"resetsAt":"1970-01-01T01:40:00Z","windowMinutes":100});
         assert_eq!(project(v.clone(), 100)["outlook"], "early");
         assert_eq!(project(v.clone(), 3000)["outlook"], "limit risk");
-        assert_eq!(project(v, 4500)["outlook"], "on track");
+        assert_eq!(project(v.clone(), 4500)["outlook"], "on track");
+        assert!(
+            project(v.clone(), 3000)["runsOutAt"].is_null(),
+            "run-out at reset is not exhaustion within the window"
+        );
+        let mut low = v.clone();
+        low["percent"] = json!(4);
+        assert!(project(low, 1800)["runsOutAt"].is_null());
+        assert!(project(v, 2400)["runsOutAt"].is_string());
     }
 }

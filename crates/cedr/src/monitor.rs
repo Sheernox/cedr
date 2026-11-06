@@ -402,7 +402,10 @@ fn print_rows(v: &Value, format: &str) {
             println!(
                 "  reset={} elapsed={} runout={}",
                 display(&r["resetsAt"]),
-                display(&r["elapsedShare"]),
+                r["elapsedShare"]
+                    .as_f64()
+                    .map(|share| format!("{:.0}%", share * 100.0))
+                    .unwrap_or_else(|| "unknown".into()),
                 display(&r["runsOutAt"])
             );
         }

@@ -85,7 +85,7 @@ pub fn collect(path: &Path, c: &Config, db: &Store) -> Result<u64> {
     )?;
     // A generation is written before its step, so a conversation with more generations than steps is either being
     // written (retry next run) or was cut off (an interrupted turn, never completed). Only a recent change means the
-    // first; a settled one is read as far as its steps go and the unfinished generations count as malformed.
+    // first; a settled one is read as far as its steps go, ignoring unfinished generations.
     let settled = [path.to_path_buf(), path.with_extension("db-wal")]
         .iter()
         .filter_map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
@@ -95,7 +95,6 @@ pub fn collect(path: &Path, c: &Config, db: &Store) -> Result<u64> {
     if generations != steps && !settled {
         return Err("mid-write".into());
     }
-    let unfinished = (generations - steps).max(0) as u64;
     let cwd = std::fs::read(path.with_extension("meta"))
         .ok()
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
@@ -150,7 +149,7 @@ pub fn collect(path: &Path, c: &Config, db: &Store) -> Result<u64> {
             Err(_) => malformed += 1,
         }
     }
-    Ok(malformed + unfinished)
+    Ok(malformed)
 }
 /// How long a conversation must go unchanged before a missing step means an interrupted turn, not one being written.
 const SETTLED: std::time::Duration = std::time::Duration::from_secs(600);
@@ -263,14 +262,29 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(
             collect(&path, &Config::default(), &db).unwrap(),
-            1,
-            "the unfinished generation counts as malformed"
+            0,
+            "an interrupted generation is not malformed"
         );
         let n: i64 = db
             .db
             .query_row("SELECT count(*) FROM responses", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute("UPDATE gen_metadata SET data=? WHERE idx=0", [vec![0xffu8]])
+            .unwrap();
+        drop(conn);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(hour_ago)
+            .unwrap();
+        assert_eq!(
+            collect(&path, &Config::default(), &db).unwrap(),
+            1,
+            "a decode failure still counts as malformed"
+        );
     }
     #[test]
     fn decode_and_reject_truncated() {

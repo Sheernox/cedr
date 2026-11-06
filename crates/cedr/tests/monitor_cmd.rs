@@ -1,4 +1,5 @@
 //! Monitor subprocesses use isolated synthetic homes and never need network access.
+mod common;
 use std::process::Command;
 #[test]
 fn empty_sources_and_json_report() {
@@ -86,4 +87,50 @@ fn limits_include_claude_codes_usage_cache_without_a_status_line() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(v.to_string().contains(r#""harness":"claude""#), "{v}");
     assert!(v.to_string().contains(r#""percent":39.0"#), "{v}");
+}
+
+#[test]
+fn limits_text_rounds_elapsed_share_but_json_keeps_number() {
+    let scratch = common::Scratch::new(20.0, 40.0);
+    let db =
+        cedr_monitor::store::Store::open(&scratch.dir.path().join("state/cedr/monitor.sqlite"))
+            .unwrap();
+    let now = chrono::Utc::now();
+    db.db.execute("INSERT INTO readings(harness,window,at,data) VALUES(?1,?2,?3,?4)", [
+        "test".to_string(), "window".to_string(), now.to_rfc3339(), serde_json::json!({"harness":"test","window":"window","percent":4,"windowMinutes":300,"resetsAt":(now + chrono::Duration::minutes(207)).to_rfc3339()}).to_string()
+    ]).unwrap();
+    let run = |format| {
+        scratch
+            .command(&["monitor", "limits", "--format", format])
+            .env("HOME", scratch.dir.path())
+            .env("CODEX_HOME", scratch.dir.path().join("codex"))
+            .env("COPILOT_HOME", scratch.dir.path().join("copilot"))
+            .env("GROK_HOME", scratch.dir.path().join("grok"))
+            .env("OPENCODE_DB", scratch.dir.path().join("missing.db"))
+            .env("PATH", scratch.dir.path().join("empty-bin"))
+            .output()
+            .unwrap()
+    };
+    let text = run("text");
+    assert!(
+        text.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text.stderr)
+    );
+    assert!(
+        common::stdout(&text).contains("elapsed=31%"),
+        "{}",
+        common::stdout(&text)
+    );
+    let out = run("json");
+    assert!(out.status.success());
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let row = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["harness"] == "test")
+        .unwrap();
+    assert!((row["elapsedShare"].as_f64().unwrap() - 0.31).abs() < 0.001);
+    assert!(row["runsOutAt"].is_null());
 }
