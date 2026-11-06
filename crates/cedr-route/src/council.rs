@@ -168,7 +168,13 @@ fn unwrap_line(line: &str) -> &str {
 
 /// `<file>:<line>` with the backticks or bold a reply wraps it in removed.
 fn location(s: &str) -> Option<(&str, u64)> {
-    let s = s.trim().trim_matches(['`', '*']);
+    let s = s.trim();
+    let s = if s.starts_with("**") {
+        s.split_once(":** ").map(|(_, path)| path).unwrap_or(s)
+    } else {
+        s
+    };
+    let s = s.trim_matches(['`', '*']);
     let (file, line) = s.rsplit_once(':')?;
     let line = line.parse().ok()?;
     // A trailing numeric column belongs to the location, not the filename (including Windows drives).
@@ -179,45 +185,80 @@ fn location(s: &str) -> Option<(&str, u64)> {
     (!file.is_empty()).then_some((file, line))
 }
 
-fn parse_line(line: &str) -> Option<Finding> {
-    SEPARATORS.iter().find_map(|sep| {
-        let mut parts = line.splitn(4, sep);
-        let (file, line_no) = location(parts.next()?)?;
-        let severity = Severity::parse(
-            &parts
-                .next()?
-                .trim()
-                .trim_matches(['*', '`', '[', ']'])
-                .to_ascii_uppercase(),
-        )?;
-        let claim = parts.next()?.trim().trim_matches('*').trim().to_string();
-        let scenario = parts
-            .next()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-        (!claim.is_empty()).then(|| Finding {
-            file: file.to_string(),
-            line: line_no,
-            severity,
-            claim,
-            scenario,
-        })
+/// Standalone severity tokens, with byte offsets for slicing the surrounding UTF-8 text.
+fn text_severities(line: &str) -> impl Iterator<Item = (usize, Severity)> + '_ {
+    let bytes = line.as_bytes();
+    bytes.windows(2).enumerate().filter_map(move |(i, pair)| {
+        if !matches!(pair[0], b'P' | b'p')
+            || (i > 0 && bytes[i - 1].is_ascii_alphanumeric())
+            || bytes.get(i + 2).is_some_and(u8::is_ascii_alphanumeric)
+        {
+            return None;
+        }
+        let severity = match pair[1] {
+            b'0' => Severity::P0,
+            b'1' => Severity::P1,
+            b'2' => Severity::P2,
+            b'3' => Severity::P3,
+            _ => return None,
+        };
+        Some((i, severity))
     })
 }
 
-/// A severity in the finding's second field signals intent even when its location is malformed.
-/// Prose about an earlier finding has no such field and remains commentary.
+/// Locate the severity before splitting fields: delimiters may occur in a filename, and the two
+/// field separators may differ. Only the first delimited severity is used; an invalid location is
+/// an error rather than a search through the claim for another possible finding.
+fn text_fields(line: &str) -> Option<(&str, Severity, &str)> {
+    text_severities(line).find_map(|(i, severity)| {
+        let before = line[..i].trim_end_matches(['*', '`', '[']);
+        let after = line[i + 2..].trim_start_matches(['*', '`', ']']);
+        let location = SEPARATORS.iter().find_map(|sep| before.strip_suffix(sep))?;
+        let claim = SEPARATORS.iter().find_map(|sep| after.strip_prefix(sep))?;
+        Some((location, severity, claim))
+    })
+}
+
+fn parse_line(line: &str) -> Option<Finding> {
+    let (at, severity, rest) = text_fields(line)?;
+    let (file, line_no) = location(at)?;
+    let split = SEPARATORS
+        .iter()
+        .filter_map(|sep| rest.find(sep).map(|i| (i, sep.len())))
+        .min();
+    let (claim, scenario) = match split {
+        Some((i, len)) => (
+            &rest[..i],
+            Some(rest[i + len..].trim().to_string()).filter(|s| !s.is_empty()),
+        ),
+        None => (rest, None),
+    };
+    let claim = claim.trim().trim_matches('*').trim().to_string();
+    (!claim.is_empty()).then(|| Finding {
+        file: file.into(),
+        line: line_no,
+        severity,
+        claim,
+        scenario,
+    })
+}
+
+/// Malformed finding-like lines fail closed. Commentary mentioning an earlier severity has words
+/// between its location and severity (for example `round-1` or `for`), so it is not rejected.
 fn looks_like_finding(line: &str) -> bool {
-    SEPARATORS.iter().any(|sep| {
-        line.split(sep).nth(1).is_some_and(|field| {
-            Severity::parse(
-                &field
-                    .trim()
-                    .trim_matches(['*', '`', '[', ']', ' ', '-', '|'])
-                    .to_ascii_uppercase(),
-            )
-            .is_some()
-        })
+    if text_fields(line).is_some() {
+        return true;
+    }
+    text_severities(line).any(|(i, _)| {
+        let decoration = ['*', '`', '[', ']', '(', ')', ':', '-', '|', ' '];
+        let mut before = line[..i].trim_end_matches(decoration);
+        if let Some(prefix) = before.strip_suffix("Severity") {
+            before = prefix.trim_end_matches(decoration);
+        }
+        // Check the numeric suffix first, avoiding repeated scans of prose prefixes without locations.
+        let stem = before.trim_end_matches(|c: char| c.is_ascii_digit());
+        (stem.len() < before.len() && stem.ends_with(':') && location(before).is_some())
+            || (before.is_empty() && SEPARATORS.iter().any(|sep| line[i + 2..].starts_with(sep)))
     })
 }
 
@@ -951,6 +992,13 @@ mod tests {
             "src/a.rs#L120 - P0 - leaks",
             "[a.rs](src/a.rs:120) - P1 - broken",
             "src/my file.rs:12 - P1",
+            "1. **src/a.rs:12**: P1: reads until EOF",
+            "src/a.rs:12 - P1: reads until EOF",
+            "src/a.rs:12: P1 - reads until EOF",
+            "src/a.rs:12 (P1) - reads until EOF",
+            "P1 - src/a.rs:12 - reads until EOF",
+            "src/a.rs:12 - P1 (high) - reads until EOF",
+            "src/a.rs:12 - Severity P1 - reads",
         ] {
             assert!(
                 err(&format!("{line}\nScore: 9/10")).starts_with("line 1:"),
@@ -970,6 +1018,9 @@ mod tests {
             ("src/my file.rs:12 - P1 - broken", "src/my file.rs", 12),
             ("`src/my file.rs:12` - P1 - broken", "src/my file.rs", 12),
             ("src/a.rs:12 - p1 - broken", "src/a.rs", 12),
+            ("src/my - file.rs:12 - P1 - broken", "src/my - file.rs", 12),
+            ("src/a.rs:12 - P1 | broken", "src/a.rs", 12),
+            ("**Finding 1:** src/a.rs:12 - P1 - broken", "src/a.rs", 12),
             ("src/a.rs:12:5 - P1 - broken", "src/a.rs", 12),
             (
                 "C:\\project\\a.rs:12:5 - P1 - broken",
