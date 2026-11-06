@@ -264,14 +264,21 @@ fn looks_like_finding(line: &str) -> bool {
     }
     text_severities(line).any(|(i, _)| {
         let decoration = ['*', '`', '[', ']', '(', ')', ':', '-', '|', ' '];
-        let mut before = line[..i].trim_end_matches(decoration);
-        if let Some(prefix) = before.strip_suffix("Severity") {
-            before = prefix.trim_end_matches(decoration);
+        let trim = |c: char| c.is_whitespace() || decoration.contains(&c);
+        let mut before = line[..i].trim_end_matches(trim);
+        if before
+            .get(before.len().saturating_sub(8)..)
+            .is_some_and(|s| s.eq_ignore_ascii_case("severity"))
+        {
+            before = before[..before.len() - 8].trim_end_matches(trim);
         }
         // Check the numeric suffix first, avoiding repeated scans of prose prefixes without locations.
         let stem = before.trim_end_matches(|c: char| c.is_ascii_digit());
         (stem.len() < before.len() && stem.ends_with(':') && location(before).is_some())
-            || (before.is_empty() && SEPARATORS.iter().any(|sep| line[i + 2..].starts_with(sep)))
+            || (before.is_empty()
+                && line.as_bytes()[i + 2..]
+                    .windows(2)
+                    .any(|pair| pair[0] == b':' && pair[1].is_ascii_digit()))
     })
 }
 
@@ -1016,6 +1023,12 @@ mod tests {
             "src/a.rs:12 - P1: - reads",
             "src/a.rs:12 - **P1**: - reads",
             "src/a.rs:12 - (P1) - reads",
+            "**P1** - src/a.rs:12 - broken",
+            "`P1` - src/a.rs:12 - broken",
+            "- **P1** - src/a.rs:12 - broken",
+            "1. `P1` - src/a.rs:12 - broken",
+            "**P1:** src/a.rs:12 - broken",
+            "src/a.rs:12\tP1\tbroken",
         ] {
             assert!(
                 err(&format!("{line}\nScore: 9/10")).starts_with("line 1:"),
