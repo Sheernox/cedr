@@ -16,13 +16,13 @@ Several agents review a change on their own, and `cedr` merges their findings in
    - If you changed code and rounds remain, review again from step 2 with the next `--round`, adding your reply lines to each brief. A pass describes the code that ships.
    - `next: done` after a block, or `stalled: true`: stop. The change does not ship until a person decides.
    - `incomplete`: say which members were missing.
-6. **Record the scores.** Each full review is one round. Keep this section in the pull request's description, not a comment; with no pull request, put it in your final reply. Write `no score` for a member that gave none, and never invent one.
+6. **Record the scores.** Each full review is one column; a route's `rounds` counts revisions, so it allows `rounds + 1` reviews. Keep this section in the pull request's description, not a comment; with no pull request, put it in your final reply. Write `no score` for a member that gave none, and never invent one.
 
    ## Council review
 
-   Rounds: 2
+   Reviews: 2
 
-   | Member | Round 1 | Round 2 |
+   | Member | Review 1 | Review 2 |
    | --- | --- | --- |
    | codex/sol | 7/10 | 9/10 |
 

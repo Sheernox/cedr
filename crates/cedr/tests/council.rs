@@ -269,13 +269,13 @@ fn a_blocked_merge_prints_the_revision_brief_until_the_rounds_run_out() {
     let arg = format!("codex/sol={}", path.display());
     let text = s.cedr(&["council", "merge", &arg, "--quorum", "1"]);
     assert!(stdout(&text).ends_with(
-        "next: revise (round 1 of 1): give the author the revision brief (--format brief), then review again with --round 2\n"
+        "next: revise (revision 1 of 1): give the author the revision brief (--format brief), then review again with --round 2\n"
     ), "{}", stdout(&text));
     let brief = s.cedr(&[
         "council", "merge", &arg, "--quorum", "1", "--format", "brief",
     ]);
     assert_eq!(brief.status.code(), Some(1));
-    assert!(stdout(&brief).starts_with("# Council revision brief (round 1 of 1)\n"));
+    assert!(stdout(&brief).starts_with("# Council revision brief (revision 1 of 1)\n"));
     assert!(
         stdout(&brief)
             .ends_with("## P1 src/a.rs:12 (codex/sol)\n- codex/sol P1 :12 reads until EOF\n")
@@ -333,7 +333,24 @@ fn plan_shares_run_and_merge_records_counts_or_opts_out() {
     assert_eq!(history[0]["run"], run);
     assert!(history[0]["route"].is_null());
     assert_eq!(history[0]["findings"], json!({"codex/sol":0}));
+    let text = stdout(&s.cedr(&["route", "history", "--limit", "1"]));
+    assert!(
+        text.ends_with(&format!(
+            " - council pass review 1 of 2 {}\n",
+            merge["id"].as_str().unwrap()
+        )),
+        "{text}"
+    );
     let before = std::fs::read(&path).unwrap();
+    let past = s.cedr(&[
+        "council", "merge", &report, "--run", run, "--quorum", "1", "--round", "3",
+    ]);
+    assert_eq!(past.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&past.stderr)
+            .contains("round 3 is past the last review (2) for rounds = 1")
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
     let o = s.cedr(&[
         "council",
         "merge",
@@ -443,8 +460,8 @@ fn unlimited_merges_stop_on_previous_locations_and_record_only_metadata() {
         args.extend_from_slice(extra);
         s.cedr(&args)
     };
-    assert!(stdout(&run(&[])).contains("round 1 of unlimited"));
-    assert!(stdout(&run(&["--format", "brief"])).contains("(round 1 of unlimited)"));
+    assert!(stdout(&run(&[])).contains("revision 1 of unlimited"));
+    assert!(stdout(&run(&["--format", "brief"])).contains("(revision 1 of unlimited)"));
     let first = run(&["--format", "json"]);
     assert_eq!(first.status.code(), Some(1));
     let first: Value = serde_json::from_slice(&first.stdout).unwrap();

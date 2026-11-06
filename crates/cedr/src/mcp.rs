@@ -72,7 +72,7 @@ pub struct MergeArgs {
     block: Option<String>,
     /// Revision rounds instead of the route's (default 1, at most 3)
     rounds: Option<u32>,
-    /// The review being merged: 1 (default) for the first, 2 after one revision
+    /// The review being merged: 1 (default) for the first, 2 after one revision, at most rounds + 1
     round: Option<u32>,
     /// Previous round merge JSON, required from round 2 with unlimited rounds
     previous: Option<Value>,

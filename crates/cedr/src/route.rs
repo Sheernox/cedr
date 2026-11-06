@@ -789,14 +789,15 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
                             );
                         } else {
                             println!(
-                                "{} {} council {} round {}/{} {}",
+                                "{} {} council {} review {} of {} {}",
                                 text("at"),
                                 text("route"),
                                 text("gate"),
                                 r["round"],
+                                // `rounds` counts revisions, so the last review is one more.
                                 r["rounds"]
                                     .as_u64()
-                                    .map(|n| n.to_string())
+                                    .map(|n| (n + 1).to_string())
                                     .unwrap_or_else(|| "unlimited".into()),
                                 text("id")
                             );

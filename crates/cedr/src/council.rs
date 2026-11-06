@@ -65,10 +65,10 @@ pub enum CouncilCommand {
         /// Least severe finding that blocks, instead of the route's (default P1)
         #[arg(long, value_parser = ["P0", "P1", "P2", "P3"])]
         block: Option<String>,
-        /// Revision rounds instead of the route's (default 1)
+        /// Revision rounds instead of the route's (default 1); the last review is rounds + 1
         #[arg(long)]
         rounds: Option<u32>,
-        /// The review being merged: 1 for the first, 2 after one revision
+        /// The review being merged: 1 for the first, 2 after one revision, at most rounds + 1
         #[arg(long)]
         round: Option<u32>,
         /// JSON output of the previous round
@@ -202,7 +202,7 @@ pub fn print_merged(m: &Merged, format: MergeFormat) {
     }
     match m.next {
         Next::Revise => println!(
-            "next: revise (round {} of {}): give the author the revision brief (--format brief), then review again with --round {}",
+            "next: revise (revision {} of {}): give the author the revision brief (--format brief), then review again with --round {}",
             m.round,
             m.rounds
                 .map(|n| n.to_string())
@@ -249,7 +249,7 @@ pub fn run(command: CouncilCommand, config: &route::ConfigArg) -> Result<ExitCod
                 route::ListFormat::Text => {
                     for r in rows {
                         println!(
-                            "{} merges {} pass {} block {} incomplete {} revised {} passed_after_revision {} blocking_findings_per_merge {:.1}",
+                            "{} merges {} pass {} block {} incomplete {} revised_runs {} passed_after_revision_runs {} blocking_findings_per_merge {:.1}",
                             r.route.as_deref().unwrap_or("-"),
                             r.merges,
                             r.pass,

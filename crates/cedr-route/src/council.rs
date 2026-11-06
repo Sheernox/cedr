@@ -270,7 +270,7 @@ fn brief(groups: &[Group], block: Severity, round: u32, rounds: Option<u32>) -> 
         .map(|n| n.to_string())
         .unwrap_or_else(|| "unlimited".into());
     let mut out = format!(
-        "# Council revision brief (round {round} of {rounds})\n\n\
+        "# Council revision brief (revision {round} of {rounds})\n\n\
          Blocking: {block:?} and above. Fix each blocking group or rebut it with evidence; the others are advisory.\n\
          Fix only what this change needs; anything else goes on a follow-up list, not into this revision.\n\
          Reply with one line per group: `<file>:<line> fixed|rebutted - <reason>`.\n"
@@ -463,7 +463,8 @@ pub struct Settings {
 }
 
 /// Merge settings: given values first, then the council route's, then quorum 2, P1 and 1 round.
-/// `round` defaults to 1. `config` is read only when a route is named.
+/// `round` defaults to 1 and, with numbered rounds, is at most `rounds + 1`, the review after the
+/// last revision. `config` is read only when a route is named.
 pub fn settings(
     quorum: Option<usize>,
     block: Option<Severity>,
@@ -493,14 +494,25 @@ pub fn settings(
         }
         None => None,
     };
+    let rounds = rounds
+        .map(Some)
+        .or(from_route.map(|r| r.2))
+        .unwrap_or(Some(1));
+    let round = round.unwrap_or(1);
+    // The review after the last revision decides; a later round would reopen a gate that stood.
+    if let Some(n) = rounds
+        && round > n + 1
+    {
+        return Err(Error::Usage(format!(
+            "round {round} is past the last review ({}) for rounds = {n}: the gate already stood",
+            n + 1
+        )));
+    }
     Ok(Settings {
         quorum: quorum.or(from_route.map(|r| r.0)).unwrap_or(2),
         block: block.or(from_route.map(|r| r.1)).unwrap_or(Severity::P1),
-        rounds: rounds
-            .map(Some)
-            .or(from_route.map(|r| r.2))
-            .unwrap_or(Some(1)),
-        round: round.unwrap_or(1),
+        rounds,
+        round,
     })
 }
 
@@ -754,7 +766,7 @@ mod tests {
         assert_eq!(
             first.brief.as_deref(),
             Some(
-                "# Council revision brief (round 1 of 1)\n\n\
+                "# Council revision brief (revision 1 of 1)\n\n\
                  Blocking: P1 and above. Fix each blocking group or rebut it with evidence; the others are advisory.\n\
                  Fix only what this change needs; anything else goes on a follow-up list, not into this revision.\n\
                  Reply with one line per group: `<file>:<line> fixed|rebutted - <reason>`.\n\n\
@@ -790,10 +802,34 @@ mod tests {
         let s = settings(None, None, None, None, Some("c"), config).unwrap();
         assert_eq!((s.rounds, s.round), (Some(2), 1));
         assert_eq!(
-            settings(None, None, Some(0), Some(3), Some("c"), config)
+            settings(None, None, Some(0), Some(1), Some("c"), config)
                 .unwrap()
                 .rounds,
             Some(0)
+        );
+        assert_eq!(
+            settings(None, None, None, Some(3), Some("c"), config)
+                .unwrap()
+                .round,
+            3
+        );
+        let past = settings(None, None, None, Some(4), Some("c"), config).unwrap_err();
+        assert!(
+            past.to_string()
+                .contains("round 4 is past the last review (3) for rounds = 2")
+        );
+        assert!(settings(None, None, Some(0), Some(2), Some("c"), config).is_err());
+        let unlimited = || {
+            crate::config::Config::parse(
+                "version = 1\n[harnesses.codex]\n[routes.c]\ncouncil = true\nrounds = \"unlimited\"\ncandidates = [{ target = \"codex/sol\" }]\n",
+                std::path::Path::new("t.toml"),
+            )
+        };
+        assert_eq!(
+            settings(None, None, None, Some(50), Some("c"), unlimited)
+                .unwrap()
+                .round,
+            50
         );
         assert_eq!(
             settings(None, None, None, None, None, config)
@@ -897,7 +933,12 @@ mod tests {
                 },
             );
             assert_eq!(m.next, Next::Revise);
-            assert!(m.brief.as_ref().unwrap().contains("(round 2 of unlimited)"));
+            assert!(
+                m.brief
+                    .as_ref()
+                    .unwrap()
+                    .contains("(revision 2 of unlimited)")
+            );
             assert!(apply_previous(&mut m, None).is_err());
             let mut p = prev.clone();
             if previous_pass {

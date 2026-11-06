@@ -8,7 +8,7 @@ The frozen contract for `cedr council` and its MCP tools. A change to any shape 
 
 ## Config
 
-A council is a route with `council = true`. It may set `quorum`, the fewest members whose reports must be merged before the council can pass: default 2, or the number of regular members when there are fewer; `block`, the least severe finding that blocks: `P0`, `P1` (default), `P2` or `P3`; and `rounds`, how many times a blocked change goes back to its author for revision before the gate stands: 0 to 3 or `"unlimited"`, default 1. Validation fails when a council's candidates are all spares, when `quorum` is below 1 or above the number of regular members, when `rounds` is outside 0-3 or `"unlimited"`, or when any of them is set on a route that is not a council.
+A council is a route with `council = true`. It may set `quorum`, the fewest members whose reports must be merged before the council can pass: default 2, or the number of regular members when there are fewer; `block`, the least severe finding that blocks: `P0`, `P1` (default), `P2` or `P3`; and `rounds`, how many times a blocked change goes back to its author for revision before the gate stands: 0 to 3 or `"unlimited"`, default 1. `rounds` counts revisions, not reviews: the first review plus `rounds` revisions makes `rounds + 1` reviews at most. Validation fails when a council's candidates are all spares, when `quorum` is below 1 or above the number of regular members, when `rounds` is outside 0-3 or `"unlimited"`, or when any of them is set on a route that is not a council.
 
 Like any route, a council may set its own `thresholds` and `harness_thresholds` (route.md, Thresholds), which decide which members are eligible, and a member may set `sizes`, the work sizes it reviews, so large changes can get more reviewers than small ones. `sizes` must leave at least the quorum of members for every size; validation fails otherwise, since a council with too few members could never pass that work.
 
@@ -57,7 +57,7 @@ One report per member, in either form:
 
 ## Merge
 
-`cedr council merge [--route R] [--run RUN] [--quorum N] [--block P0|P1|P2|P3] [--rounds N] [--round N] [--previous FILE] [--no-record] [--format text|json|brief] <report>...`, where each report is `<path>` (JSON) or `<member>=<path>` (text, or JSON whose own `member` is then overridden). `-` reads one report from stdin. The quorum, blocking severity and rounds come from the flags, else the route's `quorum`, `block` and `rounds`, else 2, P1 and 1. `--round` is the review being merged: 1 (the default) for the first, 2 after one revision, and so on.
+`cedr council merge [--route R] [--run RUN] [--quorum N] [--block P0|P1|P2|P3] [--rounds N] [--round N] [--previous FILE] [--no-record] [--format text|json|brief] <report>...`, where each report is `<path>` (JSON) or `<member>=<path>` (text, or JSON whose own `member` is then overridden). `-` reads one report from stdin. The quorum, blocking severity and rounds come from the flags, else the route's `quorum`, `block` and `rounds`, else 2, P1 and 1. `--round` is the review being merged: 1 (the default) for the first, 2 after one revision, and so on, up to `rounds + 1`. With numbered rounds, a later `--round` is a usage error (exit 2) and nothing is recorded, because the gate already stood; a new review of the change starts a new run.
 
 1. Findings are grouped by file. Within a file, sorted by line, a finding joins the previous group when its line is at most 3 after that group's last line; otherwise it starts a new group.
 2. A group's severity is the most severe of its findings, its line the lowest, and its members the distinct members that reported in it. Every finding is kept with its member, severity, line, claim and scenario: dissent is shown, never voted away.
@@ -68,7 +68,7 @@ One report per member, in either form:
 
 Exit codes: 0 pass, 1 block, 3 incomplete, 2 error.
 
-Text output starts with `council: <gate> (<reviewers> of quorum <n> reviewed, <block> and above block: <members>)`, then, when any member gave a score, `scores: <member> <n>/10, <member> no score`, then one line per group, most severe first, then by file and line: `<severity> <file>:<line> [<members>] <claim of the most severe finding>`, followed by an indented `<member> <severity> :<line> <claim>` line for every finding when the group holds more than one. It ends with `next: revise (round <round> of <rounds>): give the author the revision brief (--format brief), then review again with --round <round + 1>` or `next: done`.
+Text output starts with `council: <gate> (<reviewers> of quorum <n> reviewed, <block> and above block: <members>)`, then, when any member gave a score, `scores: <member> <n>/10, <member> no score`, then one line per group, most severe first, then by file and line: `<severity> <file>:<line> [<members>] <claim of the most severe finding>`, followed by an indented `<member> <severity> :<line> <claim>` line for every finding when the group holds more than one. It ends with `next: revise (revision <round> of <rounds>): give the author the revision brief (--format brief), then review again with --round <round + 1>` or `next: done`.
 
 JSON output:
 
@@ -85,7 +85,7 @@ JSON output:
 - The last line that looks like a score is the only candidate: an off-scale last line gives no score, never an earlier one. Accept `Score: 7/10`, `**Score:** 7/10`, `## Score: 7/10`, `> Score: 7/10`, `Score: 7/10 (solid)`, `Score: **7**/10`, `Overall score: 7/10`, `| Score | 7/10 |`, `SCORE 7 / 10.`. Reject `score: 8/10 once the tests pass`, `score/a.rs:1 - P1 - x`, `score.rs:12 - P1 - 3/10 of the time`, and a list item `- Score: 7/10` only when it is not the last non-empty line of the reply (a quoted example). Normalize -0 to 0.
 - `cedr council merge --previous <file>` (MCP `previous`): the JSON output of the previous round's merge. Stall: the gate blocks, the previous gate blocked, and every blocking group now matches a blocking group then (same file, lines at most 10 apart). A stalled merge has `next: done` and `"stalled": true` (false otherwise; always present in JSON), text `next: done (stalled: the same blocking findings returned, so this goes to a person)`, no brief.
 - With `rounds = "unlimited"`, a merge at round 2 or later without `--previous` is a usage error (exit 2), because nothing could ever stop it. Numbered rounds without `--previous` just skip the check.
-- Unlimited: `rounds` in merge JSON and in the history record is null, `next` is `revise` while blocked and not stalled, text says `round <n> of unlimited`, the brief title says `(round <n> of unlimited)`.
+- Unlimited: `rounds` in merge JSON and in the history record is null, `next` is `revise` while blocked and not stalled, text says `revision <n> of unlimited`, the brief title says `(revision <n> of unlimited)`.
 - JSON report gains optional `spare_for`. Merge JSON gains `"spares": {"<spare member>": "<member it stood in for>"}`: from report fields, plus, with `--run`, from that run's picks in local history (the pick record gains optional `spare_for`).
 - Council history records carry optional `scores` (non-null only), `spares`, and `stalled` (written only when true), and sync them. Numbers and member names only: never files, lines or claims. `rounds` becomes nullable.
 
@@ -97,14 +97,14 @@ JSON output:
 
 Unless `--no-record`, every merge that produces a gate appends a `council` record to Route's history (route.md, History) and prints nothing extra; `--run` names the plan's run (the `run` of `council plan`), and a run not in this machine's history is an error (exit 2). The merge JSON gains `"id": "c-..."` when recorded, null otherwise. Council records sync with picks and verdicts.
 
-`cedr council stats [--route R] [--since YYYY-MM-DD] [--format text|json]` summarises recorded merges per route: `{"route", "merges", "pass", "block", "incomplete", "revised", "passed_after_revision", "blocking_findings_per_merge"}`, where `revised` counts runs with a round 2 or later, `passed_after_revision` those whose last merge passed, and `blocking_findings_per_merge` the mean number of groups at or above each merge's `block`, rounded to 0.1.
+`cedr council stats [--route R] [--since YYYY-MM-DD] [--format text|json]` summarises recorded merges per route: `{"route", "merges", "pass", "block", "incomplete", "revised", "passed_after_revision", "blocking_findings_per_merge"}`, where `merges`, `pass`, `block` and `incomplete` count merges, `revised` counts runs (not revisions) with a round 2 or later, `passed_after_revision` those runs whose last merge passed, and `blocking_findings_per_merge` the mean number of groups at or above each merge's `block`, rounded to 0.1. Text prints one line per route with the same counts, labelling the run counts `revised_runs` and `passed_after_revision_runs`.
 
 ## Critique and revise
 
 When `next` is `revise`, the orchestrator gives the change's author (the delegate that wrote it, or itself) the revision brief, the Markdown that `--format brief` prints and JSON carries as `brief`:
 
 ```markdown
-# Council revision brief (round 1 of 1)
+# Council revision brief (revision 1 of 1)
 
 Blocking: P1 and above. Fix each blocking group or rebut it with evidence; the others are advisory.
 Fix only what this change needs; anything else goes on a follow-up list, not into this revision.
