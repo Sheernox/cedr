@@ -130,6 +130,19 @@ pub fn in_family(model: &str, family: &str) -> bool {
     })
 }
 
+/// Whether a window limited to `family` applies to a pick of `model`: `model` is in the family, or
+/// `model` is a bare family name that no model list resolved ("opus") and `family` one of its
+/// versions ("opus-4-5"), since the pick may run any of them.
+fn applies(model: &str, family: &str) -> bool {
+    in_family(model, family)
+        || (!model.is_empty()
+            && !model.ends_with(|c: char| c.is_ascii_digit())
+            && family
+                .strip_prefix(model)
+                .and_then(|rest| rest.strip_prefix('-'))
+                .is_some_and(|v| v.starts_with(|c: char| c.is_ascii_digit())))
+}
+
 /// A harness's model windows as `(window id, family)`: those `[model_windows]` names, then those
 /// its reading limits to a `model` itself, then those `inferred_family` places.
 pub fn model_windows<'a>(
@@ -239,7 +252,7 @@ pub fn pool_with(
     expect.extend(
         families
             .iter()
-            .filter(|(_, f)| in_family(model, f))
+            .filter(|(_, f)| applies(model, f))
             .map(|(w, _)| *w),
     );
     let mut state = State::Ready;
@@ -249,7 +262,7 @@ pub fn pool_with(
     for w in &entry.windows {
         let family = families.iter().find(|(id, _)| *id == w.id).map(|(_, f)| *f);
         if let Some(f) = family
-            && !in_family(model, f)
+            && !applies(model, f)
         {
             continue;
         }
@@ -425,6 +438,37 @@ model = "fable"
             pool("claude", "claude-fable-5-1", &r, &config, now()).summary,
             "claude s39% w45% fable95%"
         );
+    }
+
+    #[test]
+    fn a_family_name_without_a_model_list_takes_the_limits_of_its_versions() {
+        let config = Config::parse(
+            "version = 1\n[harnesses.claude]\nexpect = [\"five_hour\", \"seven_day\"]\n",
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        let mut r = Readings::default();
+        r.merge(
+            &config,
+            &json!({"harnesses": [{"harness": "claude", "fetchedAt": "2026-10-29T01:59:00Z", "windows": [
+                {"id": "five_hour", "kind": "session", "percent": 39, "resetsAt": "2026-10-29T05:00:00Z"},
+                {"id": "seven_day", "kind": "weekly", "percent": 45, "resetsAt": "2026-11-02T00:00:00Z"},
+                {"id": "seven_day_opus_4_5", "kind": "weekly", "percent": 100, "resetsAt": "2026-11-02T00:00:00Z", "model": "opus-4-5"}
+            ]}]}),
+        );
+        let opus = pool("claude", "opus", &r, &config, now());
+        assert_eq!(
+            (opus.state, opus.summary.as_str()),
+            (State::Out, "claude s39% w45% opus-4-5:100%")
+        );
+        // Another family, and another version of this one, keep only the shared windows.
+        for model in ["sonnet", "opus-4", "opus-4-6"] {
+            assert_eq!(
+                pool("claude", model, &r, &config, now()).summary,
+                "claude s39% w45%",
+                "{model}"
+            );
+        }
     }
 
     #[test]

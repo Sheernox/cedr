@@ -208,6 +208,7 @@ A model window is one that applies only to some of the harness's models, and its
 
 - A window named in `[model_windows]` applies to models whose id contains its `model`, which is its family. Throughout, a family ending in a digit must not run on into a longer version: `opus-4` matches `claude-opus-4` but not `claude-opus-4-5`.
 - A window the config does not name and `expect` does not list, with a `model` from its source, applies to models whose id contains that `model`, which is its family.
+- A model name that no model list resolved and that does not end in a digit is a bare family name (`opus`, often the orchestrator's), which a pick may run in any of its versions: every model window of that family's versions (`opus-4-5`, the family name, `-`, then a version number) applies to it as well. `opus-4` and `sonnet` still take only their own.
 - Otherwise, when no window of the reading carries a `model` (a source that scopes some windows has said which), such a window is a model window when exactly one word of its id (split on `_` and `-`) is a family word (see Model resolution) of some, but not all, of the harness's offered models: `seven_day_fable` with `claude-opus-5-5` and `claude-fable-5-1` is family `fable`. It applies to models whose id contains that word. Any other window applies to every model.
 
 ## Model resolution
