@@ -171,6 +171,28 @@ pub fn checks(root: &Path) -> Vec<Check> {
                 .collect();
             missing_targets.sort();
             missing_targets.dedup();
+            // An effort off the ladder is passed on as written (docs/route.md, Model options), so
+            // it is a typo unless the model's readings offer it.
+            let mut efforts: Vec<String> = c
+                .routes
+                .iter()
+                .filter(|(_, r)| r.enabled)
+                .flat_map(|(id, r)| r.candidates.iter().map(move |cand| (id, cand)))
+                .filter(|(_, cand)| {
+                    !cand.effort.is_empty()
+                        && !cedr_route::t3::EFFORT_LADDER.contains(&cand.effort.as_str())
+                })
+                .filter(|(_, cand)| {
+                    let offered = cand.target.split_once('/').and_then(|(h, m)| {
+                        let id = cedr_route::pool::resolve(h, m, &readings)?;
+                        readings.efforts.get(h)?.get(&id).cloned()
+                    });
+                    !offered.is_some_and(|e| e.values.contains(&cand.effort))
+                })
+                .map(|(id, cand)| format!("{id} {}={}", cand.target, cand.effort))
+                .collect();
+            efforts.sort();
+            efforts.dedup();
             let mut problems = vec![];
             if !unlisted.is_empty() {
                 problems.push(format!(
@@ -184,6 +206,12 @@ pub fn checks(root: &Path) -> Vec<Check> {
                     missing_targets.join(", ")
                 ));
             }
+            if !efforts.is_empty() {
+                problems.push(format!(
+                    "efforts off the ladder that no model reading offers: [{}]",
+                    efforts.join(", ")
+                ));
+            }
             add(
                 &mut out,
                 "route.targets",
@@ -193,7 +221,7 @@ pub fn checks(root: &Path) -> Vec<Check> {
                 } else {
                     problems.join("; ")
                 },
-                "Add models = [\"<model id>\", ...] to each listed [harnesses.<id>] in routes.toml, or configure a readings source that lists models (kind = \"t3\" under T3 Code); point the targets at models the harness offers (cedr route models lists them)",
+                "Add models = [\"<model id>\", ...] to each listed [harnesses.<id>] in routes.toml, or configure a readings source that lists models (kind = \"t3\" under T3 Code); point the targets at models the harness offers (cedr route models lists them); use an effort from minimal, low, medium, high, xhigh, max, ultra, ultrathink unless the model offers your own",
             );
         }
         Err(_) => {

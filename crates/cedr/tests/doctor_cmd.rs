@@ -428,6 +428,26 @@ fn doctor_names_targets_no_model_matches_and_sync_skills_agents_also_load_elsewh
     )
     .unwrap();
     assert_eq!(doctor_check(home.path(), "route.targets").0, "ok");
+    // An effort off the ladder passes as written: a warning unless the model offers it.
+    fs::write(
+        caches.join("codex.json"),
+        r#"{"driver": "codex", "enabled": true, "models": [{"slug": "gpt-6.1-sol", "capabilities": {"optionDescriptors": [
+            {"id": "reasoningEffort", "options": [{"id": "high"}, {"id": "turbo"}]}]}}],
+            "skills": [{"name": "council", "scope": "user"}, {"name": "other", "scope": "user"}]}"#,
+    )
+    .unwrap();
+    fs::write(
+        cfg.join("routes.toml"),
+        "version = 1\n[harnesses.codex]\n[harnesses.claude]\nmodels = [\"claude-opus-5-5\"]\n[routes.r]\ncandidates = [{ target = \"codex/sol\", effort = \"turbo\" }, { target = \"codex/sol\", effort = \"hgih\" }, { target = \"claude/opus\", effort = \"ultrathink\" }, { target = \"claude/opus\", effort = \"fast\" }]\n[[readings]]\nkind = \"t3\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        doctor_check(home.path(), "route.targets"),
+        (
+            "warn".to_string(),
+            "efforts off the ladder that no model reading offers: [r claude/opus=fast, r codex/sol=hgih]".to_string()
+        )
+    );
     // A repo whose Sync writes `council` to the shared skills folder Codex reads.
     let root = tempfile::tempdir().unwrap();
     fs::create_dir_all(root.path().join(".cedr/skills/council")).unwrap();

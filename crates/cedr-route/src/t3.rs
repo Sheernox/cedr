@@ -228,23 +228,25 @@ impl Provider {
     }
 }
 
+/// The efforts Route orders, lowest first (docs/route.md, Model options).
+pub const EFFORT_LADDER: [&str; 8] = [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+    "ultrathink",
+];
+
 /// The effort a model takes for `wanted`: `wanted` when offered, else the highest offered effort
 /// below it, else the lowest offered. Efforts outside the known ladder match only exactly.
 pub fn clamp_effort<'a>(wanted: &str, offered: &'a [String]) -> Option<&'a str> {
-    const LADDER: [&str; 8] = [
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max",
-        "ultra",
-        "ultrathink",
-    ];
     if let Some(v) = offered.iter().find(|v| *v == wanted) {
         return Some(v);
     }
-    let rank = |e: &str| LADDER.iter().position(|l| *l == e);
+    let rank = |e: &str| EFFORT_LADDER.iter().position(|l| *l == e);
     let want = rank(wanted)?;
     let ranked = || offered.iter().filter_map(|v| Some((rank(v)?, v.as_str())));
     ranked()
