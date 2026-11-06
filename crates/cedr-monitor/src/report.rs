@@ -71,11 +71,16 @@ pub(crate) fn hourly_range(db: &Store, start: i64, end: i64) -> Result<Vec<Value
     }
     Ok(out)
 }
+fn session_key(v: &Value) -> (String, String) {
+    let field = |k: &str| v[k].as_str().unwrap_or("").to_string();
+    (field("harness"), field("session"))
+}
 #[derive(Default)]
 struct Group {
     values: BTreeMap<String, i64>,
     known: BTreeSet<String>,
-    sessions: BTreeSet<String>,
+    /// A session is its harness and id together, as everywhere in Monitor.
+    sessions: BTreeSet<(String, String)>,
     cost: f64,
     saving: f64,
     wall: i64,
@@ -102,8 +107,7 @@ impl Group {
                 self.known.insert(k.into());
             }
         }
-        self.sessions
-            .insert(v["session"].as_str().unwrap_or("").into());
+        self.sessions.insert(session_key(v));
         self.wall += v["wallMs"].as_i64().unwrap_or(0);
         self.samples += v["wallSamples"].as_i64().unwrap_or(0);
         if let Some(p) = pricing::price(v["model"].as_str().unwrap_or("")) {
@@ -211,14 +215,11 @@ pub fn report(db: &Store, o: Options<'_>) -> Result<Value> {
 pub fn sessions(db: &Store, start: &str, limit: usize) -> Result<Value> {
     let mut q=db.db.prepare("SELECT session,harness,project,group_concat(DISTINCT model),min(at),max(at),count(*),sum(input+coalesce(read,0)+coalesce(write5,0)+coalesce(write1,0)+coalesce(output,0)) FROM responses WHERE at>=? GROUP BY harness,session")?;
     let mut out = vec![];
-    let mut costs: BTreeMap<String, Group> = BTreeMap::new();
+    let mut costs: BTreeMap<(String, String), Group> = BTreeMap::new();
     for row in hourly(db, since(start, false)?)? {
-        costs
-            .entry(row["session"].as_str().unwrap_or("").to_string())
-            .or_default()
-            .add(&row);
+        costs.entry(session_key(&row)).or_default().add(&row);
     }
-    for row in q.query_map([since(start,false)?],|r|Ok(json!({"session":r.get::<_,String>(0)?,"harness":r.get::<_,String>(1)?,"project":r.get::<_,Option<String>>(2)?,"models":r.get::<_,String>(3)?.split(',').collect::<Vec<_>>(),"first":stamp(r.get(4)?),"last":stamp(r.get(5)?),"responses":r.get::<_,i64>(6)?,"tokens":r.get::<_,Option<i64>>(7)?})))?{let mut v=row?;let cost=costs.get(v["session"].as_str().unwrap_or("")).map(|g|g.cost).unwrap_or(0.0);v["costUsd"]=json!(cost);out.push(v);}
+    for row in q.query_map([since(start,false)?],|r|Ok(json!({"session":r.get::<_,String>(0)?,"harness":r.get::<_,String>(1)?,"project":r.get::<_,Option<String>>(2)?,"models":r.get::<_,String>(3)?.split(',').collect::<Vec<_>>(),"first":stamp(r.get(4)?),"last":stamp(r.get(5)?),"responses":r.get::<_,i64>(6)?,"tokens":r.get::<_,Option<i64>>(7)?})))?{let mut v=row?;let cost=costs.get(&session_key(&v)).map(|g|g.cost).unwrap_or(0.0);v["costUsd"]=json!(cost);out.push(v);}
     out.sort_by(|a, b| {
         b["costUsd"]
             .as_f64()
@@ -274,5 +275,41 @@ mod tests {
                 .abs()
                 < 1e-10
         );
+    }
+
+    #[test]
+    fn one_session_id_under_two_harnesses_is_two_sessions() {
+        let d = tempfile::tempdir().unwrap();
+        let db = Store::open(&d.path().join("db")).unwrap();
+        let at = Utc::now().timestamp() - 3600;
+        // $2 and $4 of fresh input at $4 per million.
+        for (harness, input) in [("claude", 500_000), ("codex", 1_000_000)] {
+            db.upsert(&Row {
+                id: harness.into(),
+                at,
+                harness: harness.into(),
+                session: "s-same".into(),
+                model: "claude-opus-5-5".into(),
+                input: Some(input),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        let v = report(&db, Options::default()).unwrap();
+        assert_eq!(v["totals"]["sessions"], 2);
+        assert!((v["totals"]["costUsd"].as_f64().unwrap() - 6.0).abs() < 1e-9);
+        let rows = sessions(&db, "7d", 15).unwrap();
+        let costs: Vec<(&str, f64)> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["harness"].as_str().unwrap(),
+                    r["costUsd"].as_f64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(costs, [("codex", 4.0), ("claude", 2.0)]);
     }
 }

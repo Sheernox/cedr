@@ -30,7 +30,7 @@ Monitor sends counts only: never prompts, responses, tool arguments or results, 
 - A field that is missing stays null (unknown), never zero. Counters must be non-negative integers; a record with cache plus writes above its input or reasoning above its output is skipped and counted as malformed.
 - Paths come from the table, the environment variables named, or `[paths]` in the config. A source that is not on the machine is `absent`, not an error.
 - Project: the name of the git repository holding the record's working directory (the directory holding `.git` above it, or the directory itself when there is none), after `projects` in the config (see Config). Records whose working directory matches an `exclude` glob are not stored at all.
-- Session ids are stored as `s-` and the first 12 hex characters of SHA-256 over `<harness>:<native session id>`.
+- Session ids are stored as `s-` and the first 12 hex characters of SHA-256 over `<harness>:<native session id>`. Reports count sessions and total a session's cost by harness and id together, so the same id under two harnesses is two sessions.
 
 ## Store
 
