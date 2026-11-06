@@ -176,6 +176,10 @@ fn unwrap_line(line: &str) -> &str {
                 .unwrap_or(line)
         });
     let line = line.trim();
+    let line = ["[ ] ", "[x] ", "[X] "]
+        .iter()
+        .find_map(|marker| line.strip_prefix(marker))
+        .unwrap_or(line);
     match line.strip_prefix('|') {
         Some(inner) => inner.strip_suffix('|').unwrap_or(inner).trim(),
         None => line,
@@ -291,10 +295,33 @@ fn parse_line(line: &str) -> Option<Finding> {
     })
 }
 
-/// Malformed finding-like lines fail closed. Commentary mentioning an earlier severity has words
-/// between its location and severity (for example `round-1` or `for`), so it is not rejected.
+/// Explicit finding labels and location-led severity prose fail closed; documented verification
+/// replies remain commentary. A severity in ordinary prose is not itself a finding.
 fn looks_like_finding(line: &str) -> bool {
     if text_fields(line).is_some() {
+        return true;
+    }
+    let (first, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+    let label = first.trim_matches(['*', '_', '`', ':']);
+    let named = ["finding", "issue", "severity", "bug", "defect"]
+        .iter()
+        .any(|word| label.eq_ignore_ascii_case(word));
+    let reply = rest.trim_start();
+    let reply = if reply.starts_with("(round-") {
+        reply
+            .split_once(')')
+            .map(|(_, tail)| tail.trim_start_matches([':', ' ']))
+            .unwrap_or("")
+    } else {
+        reply
+    };
+    let prior_fix = reply.split_whitespace().next().is_some_and(|word| {
+        let word = word.trim_end_matches(|c: char| !c.is_alphanumeric());
+        word.eq_ignore_ascii_case("fixed") || word.eq_ignore_ascii_case("rebutted")
+    });
+    if (named || (location(first.trim_end_matches(':')).is_some() && !prior_fix))
+        && text_severities(line).next().is_some()
+    {
         return true;
     }
     // A short finding label or fields following a location signal a finding. Longer verification
@@ -1094,6 +1121,10 @@ mod tests {
             "Finding: P1 src/a.rs:12 - leaks",
             "Issue P1: src/a.rs:12 - leaks",
             "- `src/a.rs:12` P1: fixed and verified.",
+            "`src/a.rs:12` is a P0: the key is logged.",
+            "src/a.rs:12 has a P1 problem: it leaks the token.",
+            "Finding 1: P1 src/a.rs:12: reads until EOF",
+            "### Finding 1: P1\nFile: src/a.rs:12",
         ] {
             assert!(
                 err(&format!("{line}\nScore: 9/10")).starts_with("line 1:"),
@@ -1131,6 +1162,8 @@ mod tests {
             ("**Finding 1:** src/a.rs:12 - P1 - broken", "src/a.rs", 12),
             ("### src/a.rs:12 - P1 - broken", "src/a.rs", 12),
             ("> src/a.rs:12 - P1 - broken", "src/a.rs", 12),
+            ("- [ ] src/a.rs:12 - P1 - broken", "src/a.rs", 12),
+            ("- [x] src/a.rs:12 - P1 - broken", "src/a.rs", 12),
             ("src/a.rs:12:5 - P1 - broken", "src/a.rs", 12),
             (
                 "C:\\project\\a.rs:12:5 - P1 - broken",

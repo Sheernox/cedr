@@ -420,14 +420,22 @@ pub fn checks(root: &Path) -> Vec<Check> {
                 "key.valid",
                 "skip",
                 "no key",
-                "Configure an API key",
+                if no_key && org.is_none() {
+                    ""
+                } else {
+                    "Configure an API key"
+                },
             );
             add(
                 &mut out,
                 "org.member",
                 "skip",
                 "no key",
-                "Configure an API key",
+                if no_key && org.is_none() {
+                    ""
+                } else {
+                    "Configure an API key"
+                },
             );
         }
     }
@@ -717,7 +725,11 @@ pub fn checks(root: &Path) -> Vec<Check> {
         } else {
             "no push watermark".into()
         },
-        "Run cedr monitor push",
+        if org.is_none() {
+            ""
+        } else {
+            "Run cedr monitor push"
+        },
     );
     let schedule = cedr_monitor::schedule::files(std::env::consts::OS, "cedr", 60)
         .ok()
