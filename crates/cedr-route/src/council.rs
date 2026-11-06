@@ -195,6 +195,7 @@ fn location(s: &str) -> Option<(&str, u64)> {
         Some((path, row)) if row.parse::<u64>().is_ok() => (path, row.parse().ok()?),
         _ => (file, line),
     };
+    let file = file.trim_matches(['`', '*']);
     (!file.is_empty()).then_some((file, line))
 }
 
@@ -1050,6 +1051,8 @@ mod tests {
         for (line, file, row) in [
             ("src/my file.rs:12 - P1 - broken", "src/my file.rs", 12),
             ("`src/my file.rs:12` - P1 - broken", "src/my file.rs", 12),
+            ("`src/a.rs`:12 - P1 - broken", "src/a.rs", 12),
+            ("**src/a.rs**:12 - P1 - broken", "src/a.rs", 12),
             ("src/a.rs:12 - p1 - broken", "src/a.rs", 12),
             ("src/my - file.rs:12 - P1 - broken", "src/my - file.rs", 12),
             ("src/a.rs:12 - P1 | broken", "src/a.rs", 12),
@@ -1075,6 +1078,12 @@ mod tests {
             );
             assert_eq!(merge(&[r], q(1)).gate, Gate::Block);
         }
+        let r = Report::from_text(
+            "`src/a.rs`:12 - P1 - same issue\nsrc/a.rs:12 - P1 - same issue",
+            "a",
+        )
+        .unwrap();
+        assert_eq!(merge(&[r], q(1)).groups.len(), 1);
         // Prose that mentions a location without opening on one is not a finding.
         assert!(
             Report::from_text("I checked src/a.rs:12 for P1 issues.\nNo findings.", "a").is_ok()
