@@ -2,6 +2,44 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.9.1 (2026-11-05)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.9.1.png" alt="cedr v0.9.1: t3 first" width="770">
+
+**v0.9.1** · 5 changes from 1 contributor
+
+### Highlights
+**Under T3 Code, plan usage comes from T3 Code first.** A new `t3` readings source reads what T3 Code last read of every plan it runs, Antigravity included, from its own provider caches, running nothing and reading no credentials. Each plan it has no current reading for falls through to the next source, so the vendor readers stay as fallbacks. `cedr monitor limits` reads it first too, so Antigravity's limits now appear there.
+
+**Upgrade step:** on a machine running T3 Code, add `[[readings]]` with `kind = "t3"` as the first readings source in `~/.config/cedr/routes.toml`, or rerun "Set up this machine" in the app. `cedr doctor` (`route.readers`) warns while it is missing.
+
+This patch adds a config value (`kind = "t3"`), which `docs/versioning.md` would make a minor; the maintainers chose to ship it in 0.9.1. An older cedr refuses a routes file that uses it.
+
+### Features
+- **T3 Code readings:** `kind = "t3"` reads `$T3CODE_HOME/caches/<instance>.json` for each plan harness (its `t3` id), taking usage windows, reset times and the offered models. Claude's model windows, Antigravity's Argon pool and its pools for other vendors' models are scoped to their families; Grok's window keeps the `grok` reader's id. A reading older than `fresh_seconds` is skipped, so the next source supplies it.
+- **Doctor:** `route.readers` warns when T3 Code runs on the machine and no source reads it, and `route.statusline` is ok when T3 Code supplies Claude's reading.
+
+### Fixes
+- **Stale readers:** `cedr doctor` lists only the stale readers a pick warns about, never a harness missing from the machine or one a feed already covers.
+- **Family-named orchestrator:** an orchestrator or manual pick named by family (`opus`) with no model list takes the limits scoped to its versions (`opus-4-5`).
+- **Monitor schedule:** a timer installed after boot now runs two minutes after install on Linux and Windows, and at load on macOS, instead of waiting for a reboot.
+- **opencode:** a database in opencode's newer schema is reported as `unsupported`, naming the schema, instead of an error.
+- **Monitor limits:** a run-out time at or after the window's reset is shown as none, and text output rounds the elapsed share to a whole percent.
+- **Antigravity:** interrupted generations no longer count as malformed, so `monitor.sources` warns only on records Cedr cannot decode.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* fix(monitor): start schedules on install and stop counting normal use as errors
+* fix(doctor): list only the stale readers a pick warns about
+* fix(route): apply version-scoped limits to a model named by family
+* feat(route): read plan usage from T3 Code first
+* chore(release): ship t3 code readings as cedr 0.9.1
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.9.0...v0.9.1
+</details>
+
 ## v0.9.0 (2026-11-05)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.9.0.png" alt="cedr v0.9.0: readings" width="770">
