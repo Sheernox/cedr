@@ -2,6 +2,28 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.9.3 (2026-11-05)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.9.3.png" alt="cedr v0.9.3: shadows" width="770">
+
+**v0.9.3** · 2 changes from 1 contributor
+
+### Highlights
+**`sync.shadowed` checks the shared skills folder in every repo.** Sync writes every skill into `.agents/skills/` whatever `targets` names, so `cedr doctor` now reports a skill there that Codex, Antigravity, Cursor or opencode also loads from elsewhere, even when `targets` names only another agent.
+
+### Fixes
+- **Doctor:** `sync.shadowed` counts the shared `.agents/skills/` folder for the agents that read it in every repo with Sync skills, and still checks Claude's and Grok's own folders only when `targets` names them.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* fix(doctor): count shared skills sync writes whatever its targets
+* chore(release): ship shared skill shadow checks as cedr 0.9.3
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.9.2...v0.9.3
+</details>
+
 ## v0.9.2 (2026-11-05)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.9.2.png" alt="cedr v0.9.2: t3 aware" width="770">
