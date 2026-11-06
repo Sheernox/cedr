@@ -201,7 +201,10 @@ pub fn plan(root: &Path) -> Result<Plan> {
                 Severity::Error,
                 &path,
                 None,
-                "generated file was edited by hand",
+                format!(
+                    "generated file was edited by hand; copy the edits into {} and run cedr sync, or run cedr sync --force to discard them",
+                    source_of(&path)
+                ),
             ));
         }
         if current != bytes && state == "ok" {
@@ -299,14 +302,50 @@ pub fn check(root: &Path) -> Report {
         )]),
     }
 }
-pub fn apply(root: &Path, p: &Plan, force: bool) -> Result<bool> {
-    read_lock(root)?;
-    for f in &p.files {
-        if !force && f.state == "edited" {
-            return Ok(false);
+/// Where a generated file's content comes from, for telling a person where hand edits belong.
+pub fn source_of(path: &str) -> &'static str {
+    if path == "AGENTS.md" {
+        ".cedr/rules/10-agents.md"
+    } else if path.contains("/skills/") {
+        ".cedr/skills/"
+    } else if path.ends_with(".md") || path.ends_with(".mdc") {
+        ".cedr/rules/"
+    } else {
+        ".cedr/sync.toml"
+    }
+}
+
+/// Why `apply` without `--force` would not overwrite a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// A generated file edited by hand since the last sync (CS002).
+    Edited,
+    /// Markdown cedr did not generate and whose content no source holds.
+    Unmanaged,
+}
+
+impl Refusal {
+    /// The line `cedr sync` prints for a refused file: where its content belongs and what `--force` loses.
+    pub fn message(self, path: &str) -> String {
+        let source = source_of(path);
+        match self {
+            Refusal::Edited => format!(
+                "refused {path}: edited by hand since the last cedr sync; copy the edits into {source} and run cedr sync, or run cedr sync --force to discard them"
+            ),
+            Refusal::Unmanaged => format!(
+                "refused {path}: not written by cedr sync; move its content into {source} and run cedr sync, or run cedr sync --force to replace it and lose that content"
+            ),
         }
-        if !force
-            && emit::owned_entry(&f.path).is_some_and(|owned| owned.generated)
+    }
+}
+
+/// The files `apply` would refuse to overwrite without `--force`.
+pub fn refusals(root: &Path, p: &Plan) -> Result<Vec<(String, Refusal)>> {
+    let mut out = vec![];
+    for f in &p.files {
+        if f.state == "edited" {
+            out.push((f.path.clone(), Refusal::Edited));
+        } else if emit::owned_entry(&f.path).is_some_and(|owned| owned.generated)
             && !p
                 .lock
                 .files
@@ -315,8 +354,16 @@ pub fn apply(root: &Path, p: &Plan, force: bool) -> Result<bool> {
             && io::read(root, &f.path)?.is_some_and(|b| !is_generated(&b))
             && !imported(root, &f.path, &p.config.targets)?
         {
-            return Ok(false);
+            out.push((f.path.clone(), Refusal::Unmanaged));
         }
+    }
+    Ok(out)
+}
+
+pub fn apply(root: &Path, p: &Plan, force: bool) -> Result<bool> {
+    read_lock(root)?;
+    if !force && !refusals(root, p)?.is_empty() {
+        return Ok(false);
     }
     // Validate every destination before the first mutation.
     for f in &p.files {

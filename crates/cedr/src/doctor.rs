@@ -680,12 +680,28 @@ pub fn checks(root: &Path) -> Vec<Check> {
     );
     if config.is_ok() {
         let r = cedr_sync::check(root);
+        let edited = r
+            .findings
+            .iter()
+            .filter(|f| f.rule == cedr_core::finding::Rule::Cs002)
+            .count();
         add(
             &mut out,
             "sync.check",
             if r.is_empty() { "ok" } else { "fail" },
-            format!("{} Sync findings", r.findings.len()),
-            "Run cedr sync check, then cedr sync",
+            if edited == 0 {
+                format!("{} Sync findings", r.findings.len())
+            } else {
+                format!(
+                    "{} Sync findings, {edited} of them generated files edited by hand (CS002)",
+                    r.findings.len()
+                )
+            },
+            if edited == 0 {
+                "Run cedr sync check, then cedr sync"
+            } else {
+                "Run cedr sync check to see which files; copy their edits into the .cedr/ sources it names (rules in .cedr/rules/, AGENTS.md from .cedr/rules/10-agents.md) and run cedr sync, or run cedr sync --force to discard the edits"
+            },
         );
     } else {
         add(

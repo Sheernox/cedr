@@ -80,10 +80,8 @@ pub fn run(args: Args) -> Result<ExitCode, String> {
                     print!("{}", f.diff);
                 }
             } else if !cedr_sync::apply(&args.path, &p, args.force)? {
-                for f in &p.files {
-                    if f.state != "ok" {
-                        eprintln!("refused {}: import first or use --force", f.path);
-                    }
+                for (path, refusal) in cedr_sync::refusals(&args.path, &p)? {
+                    eprintln!("{}", refusal.message(&path));
                 }
                 return Ok(ExitCode::from(1));
             } else {

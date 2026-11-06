@@ -111,7 +111,7 @@ JSON and TOML files are merged, not replaced: `cedr sync` owns only the keys in 
 
 - Output is deterministic: the same sources and org rules give byte-identical files on every machine and OS (LF line endings, keys sorted where the format allows, a trailing newline).
 - `.cedr/sync.lock` records each generated path, its target and the SHA-256 of what was written (of the owned keys only, for merged JSON and TOML). A path in the old lock that the new run no longer generates is removed (a merged file only loses its owned keys).
-- `cedr sync` refuses to overwrite a Markdown file it did not generate (no generated header line, even when listed in the lock) unless `--force`: run `cedr sync init` first so its content is imported, not lost. It refuses to overwrite a generated file someone edited by hand (its hash differs from the lock) unless `--force`, and names the file.
+- `cedr sync` refuses to overwrite a Markdown file it did not generate (no generated header line, even when listed in the lock) unless `--force`: before the first sync, `cedr sync init` imports its content; after that, move the content into its source. It refuses to overwrite a generated file someone edited by hand (its hash differs from the lock, CS002) unless `--force`. Each refused file gets a line on stderr naming its source (`AGENTS.md` comes from `.cedr/rules/10-agents.md`, other instructions and rules from `.cedr/rules/`, skills from `.cedr/skills/`, settings from `.cedr/sync.toml`) and saying that `--force` discards the hand edits.
 - `--dry-run` writes nothing and prints what would change as a unified diff.
 - Exit 0 written (or nothing to change), 1 refused (with the files named), 2 usage or I/O failure (including invalid sources).
 

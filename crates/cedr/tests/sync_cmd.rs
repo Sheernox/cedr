@@ -72,6 +72,13 @@ fn reports_source_drift_edits_missing_and_invalid_config() {
     fs::write(d.path().join("AGENTS.md"), "hand edit\n").unwrap();
     assert!(cedr_sync::check(d.path()).to_text().contains("CS002"));
     assert!(!cedr_sync::apply(d.path(), &cedr_sync::plan(d.path()).unwrap(), false).unwrap());
+    // The refusal says where the edit belongs and what --force loses; drifted files are not refused.
+    let o = run(d.path(), &["sync"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        "refused AGENTS.md: edited by hand since the last cedr sync; copy the edits into .cedr/rules/10-agents.md and run cedr sync, or run cedr sync --force to discard them\n"
+    );
     fs::remove_file(d.path().join("AGENTS.md")).unwrap();
     assert!(cedr_sync::check(d.path()).to_text().contains("CS003"));
     fs::write(d.path().join(".cedr/sync.toml"), "version=2").unwrap();
@@ -146,8 +153,14 @@ fn refuses_unmanaged_markdown_and_init_adopts_existing_files() {
     assert!(cedr_sync::check(r).is_empty());
     let d = fixture();
     fs::write(d.path().join("AGENTS.md"), "unmanaged\n").unwrap();
+    fs::write(d.path().join("CLAUDE.md"), "unmanaged\n").unwrap();
     let p = cedr_sync::plan(d.path()).unwrap();
     assert!(!cedr_sync::apply(d.path(), &p, false).unwrap());
+    assert_eq!(
+        String::from_utf8_lossy(&run(d.path(), &["sync"]).stderr),
+        "refused AGENTS.md: not written by cedr sync; move its content into .cedr/rules/10-agents.md and run cedr sync, or run cedr sync --force to replace it and lose that content\n\
+         refused CLAUDE.md: not written by cedr sync; move its content into .cedr/rules/ and run cedr sync, or run cedr sync --force to replace it and lose that content\n"
+    );
     assert!(cedr_sync::apply(d.path(), &p, true).unwrap());
 }
 #[test]
