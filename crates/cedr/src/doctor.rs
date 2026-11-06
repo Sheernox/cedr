@@ -240,12 +240,12 @@ pub fn checks(root: &Path) -> Vec<Check> {
                 "Add models = [\"<model id>\", ...] to each listed [harnesses.<id>] in routes.toml, or configure a readings source that lists models (kind = \"t3\" under T3 Code); point the targets at models the harness offers (cedr route models lists them); use an effort from minimal, low, medium, high, xhigh, max, ultra, ultrathink unless the model offers your own",
             );
         }
-        Err(_) => {
+        Err(error) => {
             add(
                 &mut out,
                 "route.config",
                 "warn",
-                "routes config missing or invalid",
+                format!("Route configuration unavailable: {error}"),
                 "Create or repair routes.toml",
             );
             add(
@@ -721,8 +721,16 @@ pub fn checks(root: &Path) -> Vec<Check> {
     add(
         &mut out,
         "monitor.schedule",
-        if schedule { "ok" } else { "warn" },
-        if schedule {
+        if org.is_none() {
+            "skip"
+        } else if schedule {
+            "ok"
+        } else {
+            "warn"
+        },
+        if org.is_none() {
+            "no organization configured; a push timer is optional"
+        } else if schedule {
             "push timer installed"
         } else {
             "push timer absent"

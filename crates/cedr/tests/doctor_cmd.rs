@@ -590,3 +590,19 @@ fn doctor_skips_absent_monitor_sources_but_warns_for_empty_configured_ones() {
         }
     }
 }
+
+#[test]
+fn doctor_names_invalid_route_fields_and_skips_optional_push_scheduling() {
+    let home = tempfile::tempdir().unwrap();
+    let cfg = home.path().join(".config/cedr");
+    fs::create_dir_all(&cfg).unwrap();
+    let path = cfg.join("routes.toml");
+    fs::write(&path, "version=1\n[routes.r]\ncandidatez=[]\n").unwrap();
+    let (_, message) = doctor_check(home.path(), "route.config");
+    for detail in [path.to_str().unwrap(), "candidatez", "line 3"] {
+        assert!(message.contains(detail), "{message}");
+    }
+    assert_eq!(doctor_check(home.path(), "monitor.schedule").0, "skip");
+    fs::write(cfg.join("monitor.toml"), "org='org-fixture'\n").unwrap();
+    assert_eq!(doctor_check(home.path(), "monitor.schedule").0, "warn");
+}

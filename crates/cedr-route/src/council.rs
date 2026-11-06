@@ -263,8 +263,7 @@ fn looks_like_finding(line: &str) -> bool {
         return true;
     }
     text_severities(line).any(|(i, _)| {
-        let decoration = ['*', '`', '[', ']', '(', ')', ':', '-', '|', ' '];
-        let trim = |c: char| c.is_whitespace() || decoration.contains(&c);
+        let trim = |c: char| !c.is_alphanumeric();
         let mut before = line[..i].trim_end_matches(trim);
         if before
             .get(before.len().saturating_sub(8)..)
@@ -275,10 +274,7 @@ fn looks_like_finding(line: &str) -> bool {
         // Check the numeric suffix first, avoiding repeated scans of prose prefixes without locations.
         let stem = before.trim_end_matches(|c: char| c.is_ascii_digit());
         (stem.len() < before.len() && stem.ends_with(':') && location(before).is_some())
-            || (before.is_empty()
-                && line.as_bytes()[i + 2..]
-                    .windows(2)
-                    .any(|pair| pair[0] == b':' && pair[1].is_ascii_digit()))
+            || before.is_empty()
     })
 }
 
@@ -1028,13 +1024,20 @@ mod tests {
             "- **P1** - src/a.rs:12 - broken",
             "1. `P1` - src/a.rs:12 - broken",
             "**P1:** src/a.rs:12 - broken",
+            "__P1__ - src/a.rs:12 - broken",
+            "(P1): src/a.rs:12 - broken",
             "src/a.rs:12\tP1\tbroken",
+            "### P1: Unbounded read\n- File: `src/a.rs:12`",
+            "- Severity: P1",
+            "src/a.rs:12, P1, unbounded",
+            "src/a.rs:12 \u{00b7} P1 \u{00b7} unbounded",
         ] {
             assert!(
                 err(&format!("{line}\nScore: 9/10")).starts_with("line 1:"),
                 "{line}"
             );
         }
+        assert!(err("- **src/a.rs:12**\n  - Severity: P1\nScore: 9/10").starts_with("line 2:"));
         assert!(
             Report::from_text(
                 "- src/a.rs:12 (round-1 P1): fixed and verified.\nNo findings.",

@@ -2,14 +2,14 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
-## v0.10.0 (2026-11-05)
+## v0.10.0 (2026-11-06)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.10.0.png" alt="cedr v0.10.0: polish" width="770">
 
-**v0.10.0** · 19 changes from 1 contributor
+**v0.10.0** · 20 changes from 1 contributor
 
 ### Highlights
-**Start locally without an account.** `cedr doctor` skips the optional API key when no organization is configured and skips Monitor sources absent from the machine. Missing model lists and misspelled efforts now get actionable Route diagnostics, and the README's Route quick start includes Claude's model list.
+**Start locally without an account.** `cedr doctor` skips the optional API key when no organization is configured and skips Monitor sources absent from the machine and push scheduling without an organization. Route parse errors name the path, field and line. Missing model lists and misspelled efforts now get actionable Route diagnostics, and the README's Route quick start includes Claude's model list.
 
 **Keep shared instructions and hand edits under control.** Sync accepts direct `CLAUDE.md` and `GEMINI.md` links to the repo's `AGENTS.md`, preserves file permissions, and says which source needs a hand edit and what `--force` discards.
 
@@ -51,6 +51,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 * fix(cli): normalize review containers and scope effort diagnostics
 * chore(release): prepare cli feature polish as cedr 0.10.0
 * fix(council): reject decorated severity prefixes before merging
+* fix(cli): reject incomplete findings and explain route setup errors
 
 **Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.9.4...v0.10.0
 </details>
