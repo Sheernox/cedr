@@ -179,7 +179,19 @@ fn unwrap_line(line: &str) -> &str {
     }
 }
 
-/// `<file>:<line>` with the backticks or bold a reply wraps it in removed.
+/// Remove a paired bold wrapper while preserving unmatched filename characters.
+fn without_bold(s: &str) -> &str {
+    ["**", "__"]
+        .iter()
+        .find_map(|mark| {
+            s.strip_prefix(mark)
+                .and_then(|s| s.strip_suffix(mark))
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or(s)
+}
+
+/// Code quotes protect literal filename characters; only matched wrappers are formatting.
 fn location(s: &str) -> Option<(&str, u64)> {
     let s = s.trim();
     let s = if s.starts_with("**") {
@@ -187,7 +199,9 @@ fn location(s: &str) -> Option<(&str, u64)> {
     } else {
         s
     };
-    let s = s.trim_matches(['`', '*', '_']);
+    let s = without_bold(s);
+    let quoted = s.strip_prefix('`').and_then(|s| s.strip_suffix('`'));
+    let s = quoted.unwrap_or(s);
     let (file, line) = s.rsplit_once(':')?;
     let line = line.parse().ok()?;
     // A trailing numeric column belongs to the location, not the filename (including Windows drives).
@@ -195,7 +209,14 @@ fn location(s: &str) -> Option<(&str, u64)> {
         Some((path, row)) if row.parse::<u64>().is_ok() => (path, row.parse().ok()?),
         _ => (file, line),
     };
-    let file = file.trim_matches(['`', '*', '_']);
+    let file = if quoted.is_some() {
+        file
+    } else {
+        let file = without_bold(file);
+        file.strip_prefix('`')
+            .and_then(|s| s.strip_suffix('`'))
+            .unwrap_or(file)
+    };
     (!file.is_empty()).then_some((file, line))
 }
 
@@ -1070,6 +1091,14 @@ mod tests {
             ("**src/a.rs**:12 - P1 - broken", "src/a.rs", 12),
             ("__src/a.rs__:12 - P1 - broken", "src/a.rs", 12),
             ("src/a.rs:12 - __P1__ - broken", "src/a.rs", 12),
+            ("__init__.py:12 - P1 - broken", "__init__.py", 12),
+            ("`__init__.py`:12 - P1 - broken", "__init__.py", 12),
+            ("**__init__.py:12** - P1 - broken", "__init__.py", 12),
+            ("_private/a.rs:12 - P1 - broken", "_private/a.rs", 12),
+            ("`_private/a.rs:12` - P1 - broken", "_private/a.rs", 12),
+            ("**_private/a.rs**:12 - P1 - broken", "_private/a.rs", 12),
+            ("`__literal__`:12 - P1 - broken", "__literal__", 12),
+            ("`__literal__:12` - P1 - broken", "__literal__", 12),
             ("src/a.rs:12 - p1 - broken", "src/a.rs", 12),
             ("src/my - file.rs:12 - P1 - broken", "src/my - file.rs", 12),
             ("src/a.rs:12 - P1 | broken", "src/a.rs", 12),
@@ -1101,6 +1130,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(merge(&[r], q(1)).groups.len(), 1);
+        let r = Report::from_text(
+            "_private/a.rs:12 - P1 - first\nprivate/a.rs:12 - P1 - second",
+            "a",
+        )
+        .unwrap();
+        assert_eq!(merge(&[r], q(1)).groups.len(), 2);
         // Prose that mentions a location without opening on one is not a finding.
         assert!(
             Report::from_text("I checked src/a.rs:12 for P1 issues.\nNo findings.", "a").is_ok()
