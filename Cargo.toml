@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/cedr-sync", "crates/cedr-monitor", "crates/cedr-core", "crates/cedr-route", "crates/cedr-bench", "crates/cedr"]
 
 [workspace.package]
-version = "0.9.4"
+version = "0.10.0"
 edition = "2024"
 license = "Apache-2.0"
 publish = false

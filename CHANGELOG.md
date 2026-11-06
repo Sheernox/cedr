@@ -2,6 +2,58 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.10.0 (2026-11-05)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.10.0.png" alt="cedr v0.10.0: polish" width="770">
+
+**v0.10.0** · 18 changes from 1 contributor
+
+### Highlights
+**Start locally without an account.** `cedr doctor` skips the optional API key when no organization is configured and skips Monitor sources absent from the machine. Missing model lists and misspelled efforts now get actionable Route diagnostics, and the README's Route quick start includes Claude's model list.
+
+**Keep shared instructions and hand edits under control.** Sync accepts direct `CLAUDE.md` and `GEMINI.md` links to the repo's `AGENTS.md`, preserves file permissions, and says which source needs a hand edit and what `--force` discards.
+
+**Review reports must contain a review.** Council refuses empty and failed text replies, accepts common Markdown formatting, and reports malformed findings instead of silently losing them. Its MCP tool now publishes the report objects clients should send.
+
+### Breaking
+- **Text review completion:** a text report without findings must include a valid `Score: <n>/10` or `No findings.` line. Empty, failed and malformed finding reports return exit 2. JSON reports with `"findings": []` remain valid.
+  **Upgrade step:** have reviewers use the format from `cedr council skill`, or submit JSON reports. Fix any finding line the merge names before retrying.
+- **Doctor's optional account:** without an organization configured, a missing API key is `skip` and no longer makes the command exit 1. Invalid keys still fail, as do missing keys when hosted features require one.
+  **Upgrade step:** account-health scripts should inspect `key.present` and `key.valid` in `--format json` instead of using Doctor's exit code as proof of an account.
+
+### Fixes
+- **Council:** preserves findings for filenames containing spaces and delimiters, handles mixed separators, lowercase severity and line-column locations, normalizes list markers, headings, blockquotes and bold labels, and ignores prose confirming earlier fixes.
+- **Sync:** imports Claude's `Bash(git:*)` and `Bash(rm:*)` as command prefixes for every supported target; existing generated instruction files can become shared links without stale lock ownership blocking the change. New Unix files follow the umask; replaced files keep their permissions.
+- **Monitor:** counts and costs sessions by harness and session id together, keeping separate sessions separate without changing stored data or push shapes.
+- **Guard:** rejects non-object JSON MCP configuration roots before writing a lock. Clean text lint output names the number of instruction files, skills and servers checked; JSON and GitHub output keep their shapes.
+- **CLI guidance:** hides the legacy top-level `remote` command while keeping it working, aligns help examples and Route statistics, groups Doctor checks by product, and explains the steps after `cedr bench init`.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* fix(council): reject text reports that never finished or drop findings
+* fix(mcp): publish council_merge reports as report objects
+* fix(doctor): warn on harnesses with no model list and skip an unneeded key
+* fix(cli): hide the legacy remote command and align help examples
+* fix(route): give every route stats column a fixed width
+* fix(sync): say where hand edits belong when refusing a file
+* fix(sync): keep a CLAUDE.md or GEMINI.md link to AGENTS.md
+* fix(sync): import Claude's Bash(git:*) permissions as shell:git
+* fix(monitor): count and cost sessions by harness and id
+* fix(guard): reject JSON agent configs that are not objects
+* fix(cli): say what comes next after bench init and a clean guard lint
+* feat(doctor): warn on route efforts off the ladder that no model offers
+* style: satisfy clippy in the doctor key check and sync link test
+* fix(doctor): trust the codex reader's model list in route.targets
+* fix(cli): preserve review findings and reduce setup friction
+* fix(council): locate finding fields by severity and reject lost formats
+* fix(cli): normalize review containers and scope effort diagnostics
+* chore(release): prepare cli feature polish as cedr 0.10.0
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.9.4...v0.10.0
+</details>
+
 ## v0.9.4 (2026-11-05)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.9.4.png" alt="cedr v0.9.4: last review" width="770">
