@@ -448,6 +448,9 @@ fn doctor_names_targets_no_model_matches_and_sync_skills_agents_also_load_elsewh
             "efforts off the ladder that no model reading offers: [r claude/opus=fast, r codex/sol=hgih]".to_string()
         )
     );
+    // Absent providers and self have no model options to judge. Account readers are deferred.
+    fs::write(cfg.join("routes.toml"), "version=1\n[harnesses.codex]\n[harnesses.gone]\ncommand='gone'\nmodels=['x']\n[harnesses.cx]\nmodels=['gpt-6.1-sol']\n[[readings]]\nkind='codex'\nharness='cx'\n[[readings]]\nkind='t3'\n[routes.r]\ncandidates=[{target='codex/sol',effort='turbo'},{target='gone/x',effort='hgih'},{target='self',effort='hgih'},{target='cx/sol',effort='turbo'}]\n").unwrap();
+    assert_eq!(doctor_check(home.path(), "route.targets").0, "ok");
     // A repo whose Sync writes `council` to the shared skills folder Codex reads.
     let root = tempfile::tempdir().unwrap();
     fs::create_dir_all(root.path().join(".cedr/skills/council")).unwrap();

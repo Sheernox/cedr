@@ -145,9 +145,22 @@ impl Report {
 /// table's pipe.
 const SEPARATORS: [&str; 4] = [" - ", " \u{2013} ", " \u{2014} ", " | "];
 
-/// The line without the list marker (`-`, `*`, `+`, `1.`, `1)`) or table pipes around it.
+/// Remove Markdown containers before reading a finding's location.
 fn unwrap_line(line: &str) -> &str {
-    let line = line.trim();
+    let mut line = line.trim();
+    loop {
+        if let Some(inner) = line.strip_prefix("> ") {
+            line = inner.trim_start();
+        } else if line.starts_with('#') {
+            let inner = line.trim_start_matches('#');
+            if !inner.starts_with(char::is_whitespace) {
+                break;
+            }
+            line = inner.trim_start();
+        } else {
+            break;
+        }
+    }
     let line = ["- ", "* ", "+ "]
         .iter()
         .find_map(|m| line.strip_prefix(m))
@@ -999,6 +1012,10 @@ mod tests {
             "P1 - src/a.rs:12 - reads until EOF",
             "src/a.rs:12 - P1 (high) - reads until EOF",
             "src/a.rs:12 - Severity P1 - reads",
+            "src/a.rs:12 - P1. - reads",
+            "src/a.rs:12 - P1: - reads",
+            "src/a.rs:12 - **P1**: - reads",
+            "src/a.rs:12 - (P1) - reads",
         ] {
             assert!(
                 err(&format!("{line}\nScore: 9/10")).starts_with("line 1:"),
@@ -1021,6 +1038,8 @@ mod tests {
             ("src/my - file.rs:12 - P1 - broken", "src/my - file.rs", 12),
             ("src/a.rs:12 - P1 | broken", "src/a.rs", 12),
             ("**Finding 1:** src/a.rs:12 - P1 - broken", "src/a.rs", 12),
+            ("### src/a.rs:12 - P1 - broken", "src/a.rs", 12),
+            ("> src/a.rs:12 - P1 - broken", "src/a.rs", 12),
             ("src/a.rs:12:5 - P1 - broken", "src/a.rs", 12),
             (
                 "C:\\project\\a.rs:12:5 - P1 - broken",

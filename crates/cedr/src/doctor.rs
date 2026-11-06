@@ -189,10 +189,20 @@ pub fn checks(root: &Path) -> Vec<Check> {
                         && !cedr_route::t3::EFFORT_LADDER.contains(&cand.effort.as_str())
                 })
                 .filter(|(_, cand)| {
-                    let offered = cand.target.split_once('/').and_then(|(h, m)| {
-                        let id = cedr_route::pool::resolve(h, m, &readings)?;
-                        readings.efforts.get(h)?.get(&id).cloned()
-                    });
+                    let Some((h, m)) = cand.target.split_once('/') else {
+                        return false;
+                    };
+                    if readings.absent.contains_key(h) {
+                        return false;
+                    }
+                    let Some(id) = cedr_route::pool::resolve(h, m, &readings) else {
+                        return false;
+                    };
+                    let offered = readings.efforts.get(h).and_then(|models| models.get(&id));
+                    // A Codex account reader may supply custom efforts only when a pick starts it.
+                    if reader_lists(h) && offered.is_none() {
+                        return false;
+                    }
                     !offered.is_some_and(|e| e.values.contains(&cand.effort))
                 })
                 .map(|(id, cand)| format!("{id} {}={}", cand.target, cand.effort))
