@@ -792,7 +792,8 @@ fn other_instruction_links_are_refused_with_a_way_out() {
     use std::os::unix::fs::symlink;
     let outside = tempfile::tempdir().unwrap();
     fs::write(outside.path().join("AGENTS.md"), "Elsewhere.\n").unwrap();
-    let cases: [(&str, fn(&Path, &Path)); 4] = [
+    type Setup = fn(&Path, &Path);
+    let cases: [(&str, Setup); 4] = [
         ("outside", |r, o| {
             fs::write(r.join("AGENTS.md"), "Here.\n").unwrap();
             symlink(o.join("AGENTS.md"), r.join("CLAUDE.md")).unwrap();

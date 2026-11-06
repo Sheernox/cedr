@@ -274,14 +274,12 @@ pub fn checks(root: &Path) -> Vec<Check> {
             if std::env::var("CEDR_API_KEY")
                 .ok()
                 .is_none_or(|s| s.trim().is_empty())
-            {
-                if std::fs::metadata(&key_path)
+                && std::fs::metadata(&key_path)
                     .is_ok_and(|m| m.permissions().mode() & 0o777 != 0o600)
-                {
-                    return Err(cedr_route::Error::Usage(
-                        "API key file requires mode 600".into(),
-                    ));
-                }
+            {
+                return Err(cedr_route::Error::Usage(
+                    "API key file requires mode 600".into(),
+                ));
             }
         }
         if key.is_empty() {
