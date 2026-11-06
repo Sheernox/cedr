@@ -829,3 +829,54 @@ fn other_instruction_links_are_refused_with_a_way_out() {
         assert!(!d.path().join(".cedr").exists(), "{name}: nothing written");
     }
 }
+#[test]
+fn claude_colon_star_permissions_import_as_plain_prefixes() {
+    let d = tempfile::tempdir().unwrap();
+    let r = d.path();
+    fs::create_dir_all(r.join(".claude")).unwrap();
+    fs::write(
+        r.join(".claude/settings.json"),
+        r#"{"permissions":{"allow":["Bash(git:*)","Bash(git commit:*)","Bash(ls *)","Bash(npm test)"],"deny":["Bash(rm:*)"]}}"#,
+    )
+    .unwrap();
+    let targets = ["claude", "codex", "copilot", "opencode", "grok"];
+    cedr_sync::import::init(r, Some(targets.map(String::from).to_vec())).unwrap();
+    let c = cedr_sync::load_config(r).unwrap();
+    assert_eq!(
+        c.permissions.allow,
+        [
+            "shell:git",
+            "shell:git commit",
+            "shell:ls",
+            "shell:npm test"
+        ]
+    );
+    assert_eq!(c.permissions.deny, ["shell:rm"]);
+    let p = cedr_sync::plan(r).unwrap();
+    assert!(cedr_sync::apply(r, &p, true).unwrap());
+    let read = |path: &str| fs::read_to_string(r.join(path)).unwrap();
+    let claude: Value = serde_json::from_str(&read(".claude/settings.json")).unwrap();
+    assert_eq!(
+        claude["permissions"]["deny"],
+        json!(["Bash(rm *)", "Bash(rm)"])
+    );
+    assert!(
+        claude["permissions"]["allow"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Bash(git *)"))
+    );
+    assert!(!read(".claude/settings.json").contains(":*"));
+    let codex = read(".codex/rules/cedr.rules");
+    assert!(
+        codex.contains("prefix_rule(pattern = [\"git\"], decision = \"allow\")"),
+        "{codex}"
+    );
+    assert!(
+        codex.contains("prefix_rule(pattern = [\"rm\"], decision = \"forbidden\")"),
+        "{codex}"
+    );
+    assert!(read(".vscode/settings.json").contains("\"rm\": false"));
+    assert!(read("opencode.json").contains("\"rm *\": \"deny\""));
+    assert!(read(".grok/config.toml").contains("pattern = \"rm *\""));
+}

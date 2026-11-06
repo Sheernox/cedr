@@ -124,7 +124,7 @@ JSON and TOML files are merged, not replaced: `cedr sync` owns only the keys in 
 - Skills from `.agents/skills/`, `.claude/skills/` and the other targets' skill folders, once per name (the first found, in that order; a different copy under the same name is reported).
 - Rules in `.grok/rules/*.md` become rules scoped to `grok`.
 - MCP servers from every target's MCP file, once per name. The same name with a different launch in two files is reported, and the first (in target order) is kept. Literal secret values in `env` or `headers` are replaced by `${NAME}` references named after the key, and listed so the person can set them.
-- Permissions and hooks from `.claude/settings.json` (and other targets where they translate, including `.grok/config.toml` `[permission]` and `.grok/hooks/*.json`); entries with no translation, such as Grok's `ask` rules, are listed.
+- Permissions and hooks from `.claude/settings.json` (`Bash(<prefix>)`, `Bash(<prefix> *)` and the older `Bash(<prefix>:*)` all become `shell:<prefix>`) (and other targets where they translate, including `.grok/config.toml` `[permission]` and `.grok/hooks/*.json`); entries with no translation, such as Grok's `ask` rules, are listed.
 - `targets` is `--targets`, else `agents` plus every target whose files were found.
 
 It refuses to run when `.cedr/sync.toml` exists. It writes sources only; run `cedr sync` next to regenerate the native files from them (and review the diff).

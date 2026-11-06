@@ -48,8 +48,11 @@ fn permission(s: &str) -> Option<Vec<String>> {
         if let Some(t) = s.strip_prefix(prefix).and_then(|s| s.strip_suffix(')')) {
             return Some(vec![format!(
                 "{kind}:{}",
+                // Claude Code's legacy `git:*` means the same prefix as `git *`.
                 if kind == "shell" {
-                    t.strip_suffix(" *").unwrap_or(t)
+                    t.strip_suffix(" *")
+                        .or_else(|| t.strip_suffix(":*"))
+                        .unwrap_or(t)
                 } else {
                     t
                 }
