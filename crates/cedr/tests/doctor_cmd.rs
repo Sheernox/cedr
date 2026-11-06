@@ -447,10 +447,17 @@ fn doctor_names_targets_no_model_matches_and_sync_skills_agents_also_load_elsewh
                 .to_string()
         )
     );
-    // Sync writing only Claude's folder leaves Codex's skills alone.
+    // Sync writes the shared folder Codex reads whatever its targets name.
     fs::write(
         root.path().join(".cedr/sync.toml"),
         "version = 1\ntargets = [\"claude\"]\n",
+    )
+    .unwrap();
+    assert_eq!(shadowed(root.path()).0, "warn");
+    // A Sync skill no agent also loads elsewhere is fine.
+    fs::rename(
+        root.path().join(".cedr/skills/council"),
+        root.path().join(".cedr/skills/review"),
     )
     .unwrap();
     assert_eq!(shadowed(root.path()).0, "ok");

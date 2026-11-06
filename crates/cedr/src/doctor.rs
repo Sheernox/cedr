@@ -815,7 +815,7 @@ pub fn run(args: Args) -> Result<ExitCode, String> {
 }
 
 /// The agent each T3 Code driver is, under Sync's target names, and whether it reads the shared
-/// `.agents/skills/` folder (docs/sync.md, the target table).
+/// `.agents/skills/` folder (docs/sync.md, the target table), which Sync writes whatever the targets.
 fn sync_target(driver: &str) -> Option<(&'static str, bool)> {
     Some(match driver {
         "claudeAgent" => ("claude", false),
@@ -871,9 +871,7 @@ fn add_shadowed(out: &mut Vec<Check>, root: &Path, configured: bool) {
         let Some((target, shared)) = sync_target(&p.driver) else {
             continue;
         };
-        let written = targets
-            .iter()
-            .any(|t| t == target || (shared && t == "agents"));
+        let written = shared || targets.iter().any(|t| t == target);
         if !p.enabled || !written {
             continue;
         }

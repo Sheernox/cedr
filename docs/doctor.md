@@ -23,7 +23,7 @@ Each check is `{"id", "area", "state": "ok" | "warn" | "fail" | "skip", "message
 | `monitor.schedule` | monitor | The push timer is installed |
 | `sync.config` | sync | In a repo: `.cedr/sync.toml` exists and parses (skip outside a repo) |
 | `sync.check` | sync | `cedr sync check` findings, summarised |
-| `sync.shadowed` | sync | With T3 Code on the machine and `.cedr/skills/` in the repo: skills an agent T3 Code runs loads from outside the repo (its user folder, a bundle; T3 Code's provider cache lists them) under the name of a skill Sync writes for that agent's target (`.agents/skills/` for `agents`). Warn, naming agent, skill and scope; skip without either |
+| `sync.shadowed` | sync | With T3 Code on the machine and `.cedr/skills/` in the repo: skills an agent T3 Code runs loads from outside the repo (its user folder, a bundle; T3 Code's provider cache lists them) under the name of a skill Sync writes for it: into its own folder when `targets` names it, and always into `.agents/skills/` for the agents that read it. Warn, naming agent, skill and scope; skip without either |
 | `sync.rules` | sync | `.cedr/org-rules.json` is current (warn when the app has a newer version) |
 | `guard.lock` | guard | `.cedr/guard.lock` exists and `cedr guard verify` is clean |
 | `bench.budget` | bench | The Bench cap in force and where it comes from; fail when `bench_budget_usd` is broken |
