@@ -24,7 +24,8 @@ fn serve(replies: Vec<(u16, String)>) -> (String, Seen) {
 fn serve_all(replies: Vec<(u16, String)>, machine_status: u16) -> (String, Seen, Seen) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!(
-        "http://localhost:{}/api/v1",
+        // Name the bound address: `localhost` can resolve to ::1 first, where nothing listens.
+        "http://127.0.0.1:{}/api/v1",
         listener.local_addr().unwrap().port()
     );
     let seen: Seen = Arc::default();
