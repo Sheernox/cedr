@@ -45,7 +45,7 @@ The usual defect here is a change that works where you tested it and is missing 
 - **GitHub Action.** `action.yml` wraps the CLI and has its own inputs.
 - **Platforms.** Releases target Linux, macOS and Windows, but CI tests only Linux. Take care with paths, permissions and process handling.
 - **Contracts.** Change the contract first, in the same pull request.
-- **The hosted app.** It reads push shapes, keeps an identical copy of `crates/cedr-monitor/src/prices.json`, and must match the org-rules hash in `crates/cedr-core/src/canonical.rs` byte for byte. Say so in the pull request when a change touches these.
+- **The hosted app.** It reads push shapes, keeps an identical copy of `crates/cedr-monitor/prices.json`, and must match the org-rules hash in `crates/cedr-core/src/canonical.rs` byte for byte. Say so in the pull request when a change touches these.
 - **Reverse states.** A way in needs a way out and a way to see it.
 - **Docs.** `--help`, `docs/` and the changelog. Product docs at cedr.dev/docs live elsewhere, so flag any that a change makes wrong.
 
