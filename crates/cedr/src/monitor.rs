@@ -347,6 +347,13 @@ fn print_report(v: &Value, format: &str) {
     if v["unpriced"].as_array().is_some_and(|a| !a.is_empty()) {
         println!("Unpriced: {}", v["unpriced"]);
     }
+    if let Some(m) = v["familyPriced"].as_object().filter(|m| !m.is_empty()) {
+        let pairs: Vec<String> = m
+            .iter()
+            .map(|(model, row)| format!("{model} as {}", row.as_str().unwrap_or("")))
+            .collect();
+        println!("Priced by family (estimate): {}", pairs.join(", "));
+    }
 }
 fn money(v: &Value) -> String {
     v.as_f64()

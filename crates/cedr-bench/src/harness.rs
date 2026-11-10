@@ -238,7 +238,7 @@ fn parse_codex(text: &str, model: &str) -> (AgentEnd, Usage) {
     if cached.is_some() || write.is_some() {
         usage.cached_tokens = Some(read.saturating_add(written));
     }
-    if let (Some(fresh), Some(output), Some(price)) =
+    if let (Some(fresh), Some(output), Some((price, _))) =
         (fresh, output, cedr_monitor::pricing::price(model))
     {
         usage.cost_usd = Some(
@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(end, AgentEnd::Finished);
         assert_eq!(usage.input_tokens, Some(60646 - 51456));
         assert_eq!(usage.cached_tokens, Some(51456));
-        let p = cedr_monitor::pricing::price("gpt-6.1-sol").unwrap();
+        let (p, _) = cedr_monitor::pricing::price("gpt-6.1-sol").unwrap();
         let expected = (9190.0 * p.input + 51456.0 * p.cache_read + 89.0 * p.output) / 1_000_000.0;
         assert!((usage.cost_usd.unwrap() - expected).abs() < 1e-9);
     }

@@ -612,6 +612,13 @@ model = "fable"
             Some("claude-sonnet-5-5")
         );
         assert_eq!(resolve("codex", "astra", &r), None);
+        let point =
+            readings(json!({"models": {"claude": ["claude-fable-5-9", "claude-fable-5-10"]}}));
+        assert_eq!(
+            resolve("claude", "fable", &point).as_deref(),
+            Some("claude-fable-5-10"),
+            "versions compare as numbers"
+        );
         let tie = readings(json!({"models": {"codex": ["gpt-6.1-sol", "gpt-6-1-sol"]}}));
         assert_eq!(
             resolve("codex", "sol", &tie).as_deref(),

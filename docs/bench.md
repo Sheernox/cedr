@@ -121,7 +121,7 @@ Writes a commented starter suite to `.cedr/bench/<name>.toml` (default `suite`) 
 
 ### `cedr bench plan [SUITE] [--task ID]... [--trials N] [--format text|json]`
 
-Validates the suite, resolves the refs and prints what a run would do, starting nothing. JSON: `{"suite", "sha256", "trials_each", "total_trials", "budget_usd", "budget_source", "variants": {"baseline": <variant>, "candidate": <variant>}, "tasks": [{"id", "setup", "test", "test_files"}], "warnings": []}`, where a warning covers a harness that is not installed, `full` permissions and an unpriced variant. Exit 0, or 2 on any error.
+Validates the suite, resolves the refs and prints what a run would do, starting nothing. JSON: `{"suite", "sha256", "trials_each", "total_trials", "budget_usd", "budget_source", "variants": {"baseline": <variant>, "candidate": <variant>}, "tasks": [{"id", "setup", "test", "test_files"}], "warnings": []}`, where a warning covers a harness that is not installed, `full` permissions, an unpriced variant and a `codex` model priced by its family's older version ([monitor.md](monitor.md), Pricing). Exit 0, or 2 on any error.
 
 ### `cedr bench run [SUITE] [--budget-usd N] [--task ID]... [--trials N] [--fail-on never|lower|separated] [--allow-unpriced] [--no-record] [--no-push] [--repo NAME] [--format text|json]`
 

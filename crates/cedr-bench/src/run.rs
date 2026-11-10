@@ -160,6 +160,14 @@ pub fn plan(
             warnings.push(format!(
                 "{name}: unpriced: the budget cannot see what it spends; a run needs --allow-unpriced"
             ));
+        } else if variant.harness == HarnessKind::Codex
+            && let Some((p, cedr_monitor::pricing::Basis::Family)) =
+                cedr_monitor::pricing::price(&variant.model)
+        {
+            warnings.push(format!(
+                "{name}: {} is priced as {}, an estimate until the price table lists it",
+                variant.model, p.prefix
+            ));
         }
     }
     Ok(Plan {

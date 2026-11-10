@@ -110,7 +110,7 @@ impl Group {
         self.sessions.insert(session_key(v));
         self.wall += v["wallMs"].as_i64().unwrap_or(0);
         self.samples += v["wallSamples"].as_i64().unwrap_or(0);
-        if let Some(p) = pricing::price(v["model"].as_str().unwrap_or("")) {
+        if let Some((p, _)) = pricing::price(v["model"].as_str().unwrap_or("")) {
             let n = |k: &str| v[k].as_i64().unwrap_or(0) as f64 / 1e6;
             self.cost += n("input") * p.input
                 + n("cacheWrite5m") * p.cache_write5m
@@ -178,6 +178,7 @@ pub fn report(db: &Store, o: Options<'_>) -> Result<Value> {
     let mut groups: BTreeMap<String, Group> = BTreeMap::new();
     let mut totals = Group::default();
     let mut unpriced = BTreeSet::new();
+    let mut family_priced = BTreeMap::new();
     for v in hourly_range(db, start, end)? {
         let at = DateTime::parse_from_rfc3339(v["hour"].as_str().unwrap_or(""))
             .map(|t| t.timestamp())
@@ -200,16 +201,23 @@ pub fn report(db: &Store, o: Options<'_>) -> Result<Value> {
             "hour" => v["hour"].as_str().unwrap_or("").into(),
             _ => v[by].as_str().unwrap_or("unknown").into(),
         };
-        if v["responses"].as_i64().unwrap_or(0) > 0
-            && pricing::price(v["model"].as_str().unwrap_or("")).is_none()
-        {
-            unpriced.insert(v["model"].clone().as_str().unwrap_or("unknown").to_string());
+        if v["responses"].as_i64().unwrap_or(0) > 0 {
+            let model = v["model"].as_str().unwrap_or("unknown");
+            match pricing::price(model) {
+                None => {
+                    unpriced.insert(model.to_string());
+                }
+                Some((p, pricing::Basis::Family)) => {
+                    family_priced.insert(model.to_string(), p.prefix.clone());
+                }
+                Some((_, pricing::Basis::Exact)) => {}
+            }
         }
         totals.add(&v);
         groups.entry(key).or_default().add(&v);
     }
     Ok(
-        json!({"since":stamp(start),"until":stamp(end),"totals":totals.json("total"),"groups":groups.into_iter().map(|(k,g)|g.json(&k)).collect::<Vec<_>>(),"unpriced":unpriced}),
+        json!({"since":stamp(start),"until":stamp(end),"totals":totals.json("total"),"groups":groups.into_iter().map(|(k,g)|g.json(&k)).collect::<Vec<_>>(),"unpriced":unpriced,"familyPriced":family_priced}),
     )
 }
 pub fn sessions(db: &Store, start: &str, limit: usize) -> Result<Value> {
@@ -311,5 +319,32 @@ mod tests {
             })
             .collect();
         assert_eq!(costs, [("codex", 4.0), ("claude", 2.0)]);
+    }
+
+    #[test]
+    fn a_new_family_version_is_priced_by_family_and_named() {
+        let d = tempfile::tempdir().unwrap();
+        let db = Store::open(&d.path().join("db")).unwrap();
+        let at = Utc::now().timestamp() - 3600;
+        for model in ["claude-fable-5-3", "gpt-7-nova"] {
+            db.upsert(&Row {
+                id: model.into(),
+                at,
+                harness: "claude".into(),
+                session: "s-a".into(),
+                model: model.into(),
+                input: Some(1_000_000),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        let v = report(&db, Options::default()).unwrap();
+        // Fable 5.2's $8 input price; the unknown family costs nothing.
+        assert!((v["totals"]["costUsd"].as_f64().unwrap() - 8.0).abs() < 1e-9);
+        assert_eq!(
+            v["familyPriced"],
+            json!({"claude-fable-5-3": "claude-fable-5-2"})
+        );
+        assert_eq!(v["unpriced"], json!(["gpt-7-nova"]));
     }
 }
