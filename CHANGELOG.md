@@ -2,6 +2,34 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.11.0 (2026-11-10)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.11.0.png" alt="cedr v0.11.0: new models" width="770">
+
+**v0.11.0** · 3 changes from 1 contributor
+
+### Highlights
+**A new model version is priced the day it ships.** Monitor and Bench price a model with no row of its own by its family's newest older version (`claude-fable-5-3` as `claude-fable-5-2`, `gpt-6.2-sol` as `gpt-6.1-sol`), so a point release no longer waits for a cedr release to show a cost. A row now matches only its own version, so `claude-opus-5-6` takes `claude-opus-5-5`'s price, not `claude-opus-5`'s.
+
+**Estimates are named.** `cedr monitor --format json` adds `familyPriced`, mapping each model priced this way to the row it was priced by, and the text report lists them as estimates. `cedr bench plan` warns when a `codex` variant's price is one. Models such as `claude-sonnet-4-5` and `claude-opus-4-6`, which the table covered through a shorter row, keep the same price and now appear under `familyPriced`.
+
+### Features
+- **Fable 5.2 pricing:** adds `claude-fable-5-2` at Anthropic's list prices.
+
+### Fixes
+- **Sync tests:** pass when `localhost` resolves to IPv6 first.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* test(sync): stop sync tests failing when localhost resolves to ipv6
+* feat(monitor): price new model versions by their family
+* chore(release): prepare model family pricing as cedr 0.11.0
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.10.0...v0.11.0
+</details>
+
 ## v0.10.0 (2026-11-06)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.10.0.png" alt="cedr v0.10.0: polish" width="770">
