@@ -2,6 +2,28 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.11.2 (2026-11-12)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.11.2.png" alt="cedr v0.11.2: gemini 4 carbon" width="770">
+
+**v0.11.2** · 2 changes from 1 contributor
+
+### Highlights
+**Gemini 4 Carbon shows a cost.** Monitor and Bench price `gemini-4-carbon` at Google's list prices instead of reporting it as unpriced.
+
+### Fixes
+- **Gemini 4 Carbon pricing:** adds `gemini-4-carbon` at $2 per million input tokens, $10 output and $0.10 cached input. Google raises Carbon and Argon to $4, $20 and $0.20 on 2026-12-01, and a later release follows.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* feat(monitor): price gemini 4 carbon
+* chore(release): price gemini 4 carbon as cedr 0.11.2
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.11.1...v0.11.2
+</details>
+
 ## v0.11.1 (2026-11-12)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.11.1.png" alt="cedr v0.11.1: gemini 4 hydrogen" width="770">
