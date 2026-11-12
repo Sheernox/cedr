@@ -2,6 +2,29 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.11.1 (2026-11-12)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.11.1.png" alt="cedr v0.11.1: gemini 4 hydrogen" width="770">
+
+**v0.11.1** · 3 changes from 1 contributor
+
+### Highlights
+**Gemini 4 Hydrogen shows a cost.** Monitor and Bench price `gemini-4-hydrogen` at Google's list prices instead of reporting it as unpriced. Route already picks Hydrogen from the models Antigravity lists, so routing needs no update.
+
+### Fixes
+- **Gemini 4 Hydrogen pricing:** adds `gemini-4-hydrogen` at $1.50 per million input tokens, $7.50 output and $0.075 cached input.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* docs(agents): point the hosted app note at the real prices.json path
+* feat(monitor): price gemini 4 hydrogen
+* chore(release): price gemini 4 hydrogen as cedr 0.11.1
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.11.0...v0.11.1
+</details>
+
 ## v0.11.0 (2026-11-10)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.11.0.png" alt="cedr v0.11.0: new models" width="770">
