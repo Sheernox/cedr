@@ -527,6 +527,23 @@ else:
         ];
         Ok(())
     }
+    /// Killing a Docker client does not stop its container (notably app-server RPC).
+    /// Verify absence after removal so no discovery process can overlap a trial.
+    fn clear_task(&self) -> Result<()> {
+        if docker(&["rm", "--force", &self.task]).is_err() {
+            let remaining = docker(&[
+                "ps",
+                "--all",
+                "--quiet",
+                "--filter",
+                &format!("name=^/{}$", self.task),
+            ])?;
+            if !remaining.is_empty() {
+                return Err("cannot remove the previous task/discovery container; stop it before running again".into());
+            }
+        }
+        Ok(())
+    }
     /// Effort must come from the installed agent layer, never the host's version.
     pub fn check_effort(
         &self,
@@ -610,6 +627,7 @@ else:
                 );
             }
         };
+        self.clear_task()?;
         if !levels.iter().any(|level| level == effort) {
             return Err(format!(
                 "{model}: effort not supported by the container agent version"
@@ -678,7 +696,7 @@ else:
             .map_err(|_| "container UID/GID cannot write the bound workspace or home; check ownership and Docker user-namespace mappings".to_string())?;
         cmd.args(args).args(argv);
         let out = exec::run_step(cmd, None, timeout).map_err(|e| e.to_string());
-        let _ = docker(&["rm", "--force", &self.task]);
+        self.clear_task()?;
         out
     }
     pub fn grade(
@@ -726,7 +744,7 @@ else:
         .arg(format!("/graders/{id}/grade"))
         .arg("/workspace");
         let out = exec::run_step(cmd, None, timeout).map_err(|e| e.to_string());
-        let _ = docker(&["rm", "--force", &self.task]);
+        self.clear_task()?;
         out
     }
 }

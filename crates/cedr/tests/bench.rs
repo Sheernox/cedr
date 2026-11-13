@@ -613,3 +613,78 @@ elif args[0]=='run':
     assert_eq!(probe["status"], "reference");
     assert_eq!(probe["tools_ok"], true);
 }
+
+#[cfg(unix)]
+#[test]
+fn codex_discovery_cannot_leave_a_container_running_into_the_probe() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Scratch::new(0.0, 0.0);
+    let bin = s.dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let busy = s.dir.path().join("discovery-container");
+    let docker = bin.join("docker");
+    std::fs::write(&docker, r#"#!/usr/bin/env python3
+import sys,json,pathlib,os
+args=sys.argv[1:];busy=pathlib.Path(os.environ['BENCH_TEST_BUSY'])
+if args[0]=='rm': busy.unlink(missing_ok=True)
+elif args[0]=='ps': print('discovery' if busy.exists() else '')
+elif args[0]=='version': print('29.0.0')
+elif args[0]=='info': print('[]')
+elif args[:2]==['image','inspect']: print('sha256:'+'0'*64)
+elif args[:2]==['network','inspect']:
+    if args[2]=='bridge': print('172.17.0.1')
+    else: print(json.dumps([{'Internal':True,'Options':{'com.docker.network.bridge.gateway_mode_ipv4':'isolated'}}]))
+elif args[0]=='run':
+    if busy.exists(): sys.exit(125)
+    if '--version' in args: print('test')
+    elif 'app-server' in args:
+        busy.write_text('running')
+        for line in sys.stdin:
+            request=json.loads(line)
+            if 'id' not in request: continue
+            result={} if request['method']=='initialize' else {'data':[{'model':'gpt-6-luna','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]}
+            print(json.dumps({'id':request['id'],'result':result}),flush=True)
+    elif '-m' in args:
+        workspace=next(a.split('src=')[1].split(',')[0] for a in args if 'dst=/workspace' in a)
+        pathlib.Path(workspace,'probe.txt').write_text('cedr-bench-probe')
+        pathlib.Path(workspace,'command.txt').write_text('cedr-bench-command')
+        print(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'cached_input_tokens':0,'output_tokens':1}}))
+"#).unwrap();
+    std::fs::set_permissions(docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let codex = bin.join("codex");
+    std::fs::write(&codex, "#!/bin/sh\nexit 17\n").unwrap();
+    std::fs::set_permissions(codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let out = s
+        .command(&[
+            "bench",
+            "probe",
+            "--harness",
+            "codex",
+            "--model",
+            "gpt-6-luna",
+            "--agent-version",
+            "test",
+            "--effort",
+            "low",
+            "--suite",
+            &suite(),
+            "--set-reference",
+            "--format",
+            "json",
+        ])
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("BENCH_TEST_BUSY", &busy)
+        .env("OPENAI_API_KEY", "fake-test-key")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!busy.exists());
+    let probe: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(probe["tools_ok"], true);
+}
