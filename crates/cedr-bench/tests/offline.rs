@@ -515,3 +515,71 @@ signal.pause()
     assert_eq!(usage.tokens.output_tokens, Some(20));
     assert!(usage.cost_usd.is_some());
 }
+
+#[test]
+fn missing_visual_submission_is_graded_but_missing_promised_artifact_is_an_error() {
+    struct MissingVisual {
+        inner: Stub,
+        promised: bool,
+    }
+    impl Backend for MissingVisual {
+        fn invoke(
+            &mut self,
+            prompt: &str,
+            workspace: &Path,
+            timeout: Duration,
+        ) -> Result<Invocation, String> {
+            self.inner.invoke(prompt, workspace, timeout)
+        }
+        fn grade(
+            &mut self,
+            suite: &Suite,
+            task: &Task,
+            workspace: &Path,
+        ) -> Result<Vec<u8>, String> {
+            if task.kind == Kind::Visual {
+                assert!(!workspace.join("chart.svg").exists());
+                Ok(serde_json::to_vec(&serde_json::json!({
+                    "gates":[{"id":"file", "passed":false}],
+                    "artifacts":if self.promised { vec!["chart.svg"] } else { vec![] }
+                }))
+                .unwrap())
+            } else {
+                self.inner.grade(suite, task, workspace)
+            }
+        }
+        fn environment(&self) -> Environment {
+            self.inner.environment()
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let tree = root.path().join("suite");
+    suite::copy(&fixture(), &tree).unwrap();
+    std::fs::write(tree.join("tasks/second/task.toml"),
+        "id = \"second\"\nkind = \"visual\"\nlanguage = \"svg\"\ntimeout_seconds = 10\nartifacts = [\"chart.svg\"]\n").unwrap();
+    let suite = suite::load(&tree).unwrap();
+    for promised in [false, true] {
+        let artifacts = tempfile::tempdir().unwrap();
+        let mut backend = MissingVisual {
+            inner: Stub {
+                calls: 0,
+                unknown: false,
+                unknown_at: None,
+            },
+            promised,
+        };
+        let result = run::run(&suite, &options(), &mut backend, artifacts.path(), |_| {}).unwrap();
+        let task = &result.tasks[1];
+        assert_eq!(
+            task.status,
+            if promised {
+                Status::SetupFailed
+            } else {
+                Status::Graded
+            }
+        );
+        assert_eq!(result.complete, !promised);
+        assert!(!task.gates[0].passed);
+        assert!(task.artifacts.is_empty());
+    }
+}

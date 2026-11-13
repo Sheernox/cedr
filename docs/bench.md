@@ -139,7 +139,7 @@ Five nullable token fields are fresh `input_tokens`, `cache_read_tokens`, `cache
 
 `--stop-at-usd` overrides `bench_stop_usd` in `$XDG_CONFIG_HOME/cedr/cli.toml`. Both must be finite and positive. Check the accumulated known spend before every task; a stop produces `user_stop`. With no stop, print exactly one warning naming `--stop-at-usd`. The goal never stops work. A timed out or interrupted invocation has unknown cost even if partial usage was emitted. Unknown cost stops before another task unless `--allow-unpriced`.
 
-A code grader emits exactly four uniquely named boolean checks. A visual grader emits gates (`id`, `passed`, optional `detail`) and artifacts (relative paths); declared task artifacts plus emitted artifacts are collected after validating regular files within the grader copy. Malformed grader output is `setup_failed`, never a pass. Screenshots are PNG files. Artifact metadata is `{path, sha256, bytes}` with paths relative to the saved result artifact directory; no absolute paths enter results.
+A code grader emits exactly four uniquely named boolean checks. A visual grader emits gates (`id`, `passed`, optional `detail`) and artifacts (relative paths); declared task artifacts plus emitted artifacts are collected after validating regular files within the grader copy. Malformed grader output is `setup_failed`, never a pass. A failed visual `file` gate may omit an uncreated declared submission; it remains a graded failure. Every artifact explicitly emitted by a grader must exist, even when a gate fails. Screenshots are PNG files. Artifact metadata is `{path, sha256, bytes}` with paths relative to the saved result artifact directory; no absolute paths enter results.
 
 ## Persistence and consistency
 

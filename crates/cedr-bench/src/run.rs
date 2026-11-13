@@ -683,11 +683,27 @@ pub fn run<B: Backend>(
                             Some(task.checks.iter().filter(|c| c.passed).count() as f64 / 4.0);
                         task.solved = task.score == Some(1.0);
                     }
+                    let emitted: BTreeSet<String> = g.artifacts.into_iter().collect();
                     let mut names: BTreeSet<String> = t.artifacts.iter().cloned().collect();
-                    names.extend(g.artifacts);
+                    names.extend(emitted.iter().cloned());
+                    let missing_submission = t.kind == Kind::Visual
+                        && task
+                            .gates
+                            .iter()
+                            .any(|gate| gate.id == "file" && !gate.passed);
                     let collected = (|| -> Result<Vec<Artifact>> {
                         let mut collected = Vec::new();
                         for name in names {
+                            // An uncreated submission is a graded failure, not broken infrastructure.
+                            // A grader's explicit artifact claims must still be fulfilled.
+                            if missing_submission
+                                && !emitted.contains(&name)
+                                && std::fs::symlink_metadata(copy.join(&name)).is_err_and(|error| {
+                                    error.kind() == std::io::ErrorKind::NotFound
+                                })
+                            {
+                                continue;
+                            }
                             let (sha256, bytes) = suite::artifact(&copy, &name)?;
                             let path = format!("{}/{name}", t.id);
                             let dest = artifacts.join(&path);
