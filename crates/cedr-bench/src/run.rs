@@ -492,11 +492,12 @@ fn patch(workspace: &Path, metadata: &Path) -> Result<String> {
     )?))
 }
 
-// Never open a link or special file left by an agent, and bound reads to the fixed marker size.
+// Never open links or special files. Allow bounded trailing whitespace from native file writers.
 fn probe_file(workspace: &Path, name: &str, contents: &[u8]) -> bool {
     let path = workspace.join(name);
-    std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file() && m.len() == contents.len() as u64)
-        && std::fs::read(path).is_ok_and(|b| b == contents)
+    std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= 4096)
+        && std::fs::read_to_string(path)
+            .is_ok_and(|text| text.trim_end().as_bytes() == contents.trim_ascii_end())
 }
 
 pub fn probe<B: Backend>(suite: &Suite, options: &Options, backend: &mut B) -> Result<Probe> {
@@ -741,6 +742,27 @@ pub fn run<B: Backend>(
 #[cfg(test)]
 mod live_tests {
     use super::*;
+    #[test]
+    fn readiness_markers_trim_only_trailing_whitespace_and_remain_bounded() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("probe.txt");
+        for bytes in [b"cedr-bench-probe".as_slice(), b"cedr-bench-probe\r\n \t"] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(probe_file(temp.path(), "probe.txt", b"cedr-bench-probe\n"));
+        }
+        for text in [
+            " cedr-bench-probe".to_string(),
+            "cedr-bench-probe-extra".to_string(),
+            format!("cedr-bench-probe{}", " ".repeat(4096)),
+        ] {
+            std::fs::write(&path, text).unwrap();
+            assert!(!probe_file(temp.path(), "probe.txt", b"cedr-bench-probe\n"));
+        }
+        // The supplied printf command must produce a newline, not two literal bytes.
+        assert!(PROBE_PROMPT.contains("printf 'cedr-bench-command\\n'"));
+        assert!(!PROBE_PROMPT.contains("cedr-bench-command\\\\n"));
+    }
+
     #[test]
     #[ignore = "requires Antigravity sign-in, network and paid inference"]
     fn antigravity_local_probe() {
