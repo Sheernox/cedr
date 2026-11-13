@@ -1,4 +1,4 @@
-//! The run loop (docs/bench.md, Trials and Budget): plan what a suite would do, then for each task
+//! The run loop (docs/compare.md, Trials and Budget): plan what a suite would do, then for each task
 //! and trial number run the baseline and the candidate, each in its own fresh clone.
 
 use std::path::Path;
@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 
 use crate::harness::{self, AgentEnd, Usage};
 use crate::report::{
-    BenchResult, Count, Status, Stop, SuiteInfo, Summary, TaskRow, Trial, VERSION, VariantInfo,
+    CompareResult, Count, Status, Stop, SuiteInfo, Summary, TaskRow, Trial, VERSION, VariantInfo,
     VariantName, Variants, separated, summarize,
 };
 use crate::suite::{HarnessKind, Loaded, Task, Variant};
@@ -82,6 +82,7 @@ fn variant_info(root: &Path, variant: &Variant) -> Result<VariantInfo> {
     let commit = exec::resolve_ref(root, &git_ref)?;
     Ok(VariantInfo {
         harness: variant.harness,
+        clean_home: variant.harness != HarnessKind::Command,
         harness_version: harness_version(variant, root),
         model: variant.model.clone(),
         effort: variant.effort.clone(),
@@ -207,7 +208,7 @@ pub fn run(
     loaded: &Loaded,
     options: &RunOptions,
     mut progress: impl FnMut(&str),
-) -> Result<BenchResult> {
+) -> Result<CompareResult> {
     let suite = &loaded.suite;
     let plan = plan(loaded, &options.selection, options.budget_usd, "")?;
     for (name, variant) in [
@@ -340,7 +341,7 @@ struct TrialInput<'a> {
     note: &'a mut dyn FnMut(&str),
 }
 
-/// Removes what a trial's environment must not carry (docs/bench.md, Trust).
+/// Removes what a trial's environment must not carry (docs/compare.md, Trust).
 fn scrub(cmd: &mut Command, secrets_too: bool) {
     const SECRET_WORDS: [&str; 6] = [
         "API_KEY",
@@ -391,7 +392,7 @@ fn run_trial(input: TrialInput) -> Trial {
         models: usage.models,
     };
     let unscored = |status| finish(status, None, Usage::default());
-    let dir = match tempfile::Builder::new().prefix("cedr-bench-").tempdir() {
+    let dir = match tempfile::Builder::new().prefix("cedr-compare-").tempdir() {
         Ok(dir) => dir,
         Err(e) => {
             note(&format!("temporary directory: {e}"));
@@ -422,13 +423,17 @@ fn run_trial(input: TrialInput) -> Trial {
 
     // An agent that never started spent nothing, so it is a setup failure and not an unknown cost.
     let Some((mut agent, stdin)) =
-        harness::command(variant, prompt, &prompt_file, budget_left, root)
+        harness::command(variant, prompt, &prompt_file, budget_left, root, &clone)
     else {
         note("the agent's program is not installed");
         return unscored(Status::SetupFailed);
     };
     agent.current_dir(&clone);
     scrub(&mut agent, false);
+    if let Err(e) = harness::clean_home(variant.harness, &mut agent, &dir.path().join("home")) {
+        note(&format!("cannot prepare the agent's clean home: {e}"));
+        return unscored(Status::SetupFailed);
+    }
     let output = match exec::run_step(agent, stdin.as_deref(), timeout) {
         Ok(output) => output,
         Err(e) => {
@@ -439,7 +444,7 @@ fn run_trial(input: TrialInput) -> Trial {
     let killed = output.status.is_none();
     let (end, mut usage) = harness::parse(variant, &output.stdout, output.succeeded());
     if killed || exec::interrupted() {
-        // What a killed agent printed is not all it spent, so its cost is unknown (docs/bench.md).
+        // What a killed agent printed is not all it spent, so its cost is unknown (docs/compare.md).
         usage.cost_usd = None;
         let status = if exec::interrupted() {
             Status::Interrupted
@@ -484,7 +489,7 @@ fn assemble(
     budget_usd: f64,
     stop: Option<Stop>,
     started_at: String,
-) -> BenchResult {
+) -> CompareResult {
     let baseline = summarize(&trials, VariantName::Baseline);
     let candidate = summarize(&trials, VariantName::Candidate);
     let count = |task: &str, variant: VariantName| -> Count {
@@ -524,7 +529,7 @@ fn assemble(
         _ => None,
     };
     let finished_at = now();
-    BenchResult {
+    CompareResult {
         version: VERSION,
         source: None,
         id: new_id(&started_at),
@@ -555,7 +560,7 @@ fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-/// `b-<UTC time>-<6 hex>`: sorts by time, and is safe in a file name.
+/// `c-<UTC time>-<6 hex>`: sorts by time, and is safe in a file name.
 fn new_id(started_at: &str) -> String {
     let compact: String = started_at
         .chars()
@@ -569,12 +574,13 @@ fn new_id(started_at: &str) -> String {
             .map_or(0, |d| d.as_nanos())
             .to_le_bytes(),
     );
-    format!("b-{compact}-{}", &crate::suite::hex(&hash.finalize())[..6])
+    format!("c-{compact}-{}", &crate::suite::hex(&hash.finalize())[..6])
 }
 
-/// Whether `id` has the shape [`new_id`] gives, so it can name a file under the results directory.
+/// New and migrated result ids are safe file names under the results directory.
 pub fn is_result_id(id: &str) -> bool {
-    id.starts_with("b-") && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    (id.starts_with("c-") || id.starts_with("b-"))
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 #[cfg(test)]
@@ -595,9 +601,9 @@ mod tests {
     #[test]
     fn result_ids_are_safe_file_names() {
         let id = new_id("2026-11-01T19:30:00Z");
-        assert!(id.starts_with("b-20261101T193000Z-"), "{id}");
+        assert!(id.starts_with("c-20261101T193000Z-"), "{id}");
         assert!(is_result_id(&id));
-        for bad in ["../../etc/passwd", "b-../x", "x", "b-a/b"] {
+        for bad in ["../../etc/passwd", "c-../x", "x", "c-a/b"] {
             assert!(!is_result_id(bad), "{bad}");
         }
     }

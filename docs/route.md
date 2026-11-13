@@ -357,7 +357,7 @@ Append-only JSON lines in `$XDG_STATE_HOME/cedr/route-history.jsonl` (default `~
 
 ## Sync
 
-Sync destinations and machine settings come from `--config`, `$CEDR_ROUTES`, or the user file, never an automatically discovered repository file. The same boundary applies to Guard/Sync/Bench pushes, automatic sync and doctor.
+Sync destinations and machine settings come from `--config`, `$CEDR_ROUTES`, or the user file, never an automatically discovered repository file. The same boundary applies to Guard/Sync/Compare pushes, automatic sync and doctor.
 
 `cedr route sync` talks to the cedr.dev app API (`[sync] url`, default `https://api.cedr.dev/v1`; plain `http://` only for `localhost` during development) with a personal API key from `$CEDR_API_KEY` or the file `$XDG_CONFIG_HOME/cedr/api-key` (refused unless mode 600). The key never appears in output, history or errors. `[sync] org` names the organization; the key's owner must be a member.
 

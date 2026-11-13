@@ -53,9 +53,9 @@
 <td><code>cedr monitor limits</code></td>
 </tr>
 <tr valign="top">
-<td align="center"><a href="https://cedr.dev/docs/bench"><img src="assets/products/bench.svg" width="40" height="40" alt=""></a><br><a href="https://cedr.dev/docs/bench"><b>Bench</b></a></td>
+<td align="center"><a href="https://cedr.dev/docs/compare"><img src="assets/products/compare.svg" width="40" height="40" alt=""></a><br><a href="https://cedr.dev/docs/compare"><b>Compare</b></a></td>
 <td>Runs a suite of real tasks against a baseline and a candidate, with tests deciding each trial, inside a budget you set. Reports the pass rates, cost and how much the difference can be trusted, and records every version involved.</td>
-<td><code>cedr bench init</code></td>
+<td><code>cedr compare init</code></td>
 </tr>
 </table>
 
@@ -228,19 +228,19 @@ Configure collection and optional automatic pushes in `~/.config/cedr/monitor.to
 </details>
 
 <details>
-<summary><b>Bench</b></summary>
+<summary><b>Compare</b></summary>
 
 | Command | What it does |
 | --- | --- |
-| `cedr bench init` | Write a starter suite to `.cedr/bench/` |
-| `cedr bench plan` | Validate a suite and show what a run would do, starting nothing |
-| `cedr bench run` | Run the agents and tests within the budget; `--fail-on lower` fails CI when the candidate does worse |
-| `cedr bench push [id]...` | Send unsent results from the current repo to an organization; `--all` explicitly selects every repo, ids with `--repo` supply a missing name, and `--dry-run` prints bodies without sending |
-| `cedr bench history` | Saved runs, newest first |
-| `cedr bench show <id>` | One saved run's report, with its exit code |
-| `cedr bench budget [USD]` | Show or set the cap (default $2.00); `--pull` stores the one set in the app |
+| `cedr compare init` | Write a starter suite to `.cedr/compare/` |
+| `cedr compare plan` | Validate a suite and show what a run would do, starting nothing |
+| `cedr compare run` | Run the agents and tests within the budget; `--fail-on lower` fails CI when the candidate does worse |
+| `cedr compare push [id]...` | Send unsent results from the current repo to an organization; `--all` explicitly selects every repo, ids with `--repo` supply a missing name, and `--dry-run` prints bodies without sending |
+| `cedr compare history` | Saved runs, newest first |
+| `cedr compare show <id>` | One saved run's report, with its exit code |
+| `cedr compare budget [USD]` | Show or set the cap (default $2.00); `--pull` stores the one set in the app |
 
-A suite is code: its `setup` and `test` commands run with your permissions, so run ones you trust. Bench runs the vendors' unmodified CLIs with your own sign-in or keys, in a fresh clone for each trial. With `[sync]` already configured, upgrading starts sending each saved run to that organization: the result, repo name, machine id and name, and GitHub PR number and run URL. Prompts, agent output and paths are never sent. Uploads reduce path-like model names to their final segment and cap bodies at 256 KiB; larger results stay saved locally. Use `--no-push` to skip automatic sending for that run; a later `cedr bench push` can still send it. Set `auto = false` to stop both Bench and Route automatic sending. `--no-record` keeps a run from being saved or sent. Bare pushes select only the current repo; `--all` explicitly selects every repo. See [Bench push](docs/bench.md#push).
+A suite is code: its `setup` and `test` commands run with your permissions, so run ones you trust. Compare runs the vendors' unmodified CLIs with your own sign-in or keys, in a fresh clone for each trial. Claude and Codex use clean temporary homes, excluding your user setup and account connectors while keeping the repo's own agent files. The `command` harness is not isolated. With `[sync]` already configured, upgrading starts sending each saved run to that organization: the result, repo name, machine id and name, and GitHub PR number and run URL. Prompts, agent output and paths are never sent. Uploads reduce path-like model names to their final segment and cap bodies at 256 KiB; larger results stay saved locally. Use `--no-push` to skip automatic sending for that run; a later `cedr compare push` can still send it. Set `auto = false` to stop both Compare and Route automatic sending. `--no-record` keeps a run from being saved or sent. Bare pushes select only the current repo; `--all` explicitly selects every repo. See [Compare push](docs/compare.md#push).
 
 </details>
 
@@ -249,14 +249,14 @@ A suite is code: its `setup` and `test` commands run with your permissions, so r
 
 | Command | What it does |
 | --- | --- |
-| `cedr doctor` | Diagnose account setup, Route, MCP, Monitor, Sync, Guard and Bench; `--format json` for agents. Failures exit 1; warnings alone exit 0 |
-| `cedr mcp` | Serve the Route, Council, Sync, Monitor, Bench and Doctor tools over MCP on stdio |
+| `cedr doctor` | Diagnose account setup, Route, MCP, Monitor, Sync, Guard and Compare; `--format json` for agents. Failures exit 1; warnings alone exit 0 |
+| `cedr mcp` | Serve the Route, Council, Sync, Monitor, Compare and Doctor tools over MCP on stdio |
 | `cedr update` | Install the latest release now; `--check` only reports, `--auto off` stops the daily update |
 | `cedr telemetry status\|off\|on` | Show or change whether cedr sends anonymous usage data |
 
 </details>
 
-Run `cedr <command> --help` for every option, and `cedr completions bash|zsh|fish|powershell|elvish` for a shell completion script. Every config field, output shape and exit code is specified in the design docs for [Route](docs/route.md), [Council](docs/council.md), [Guard](docs/design.md), [Sync](docs/sync.md), [Monitor](docs/monitor.md), [Bench](docs/bench.md) and [Doctor](docs/doctor.md).
+Run `cedr <command> --help` for every option, and `cedr completions bash|zsh|fish|powershell|elvish` for a shell completion script. Every config field, output shape and exit code is specified in the design docs for [Route](docs/route.md), [Council](docs/council.md), [Guard](docs/design.md), [Sync](docs/sync.md), [Monitor](docs/monitor.md), [Compare](docs/compare.md) and [Doctor](docs/doctor.md).
 
 ## 🛡️ Check every pull request
 

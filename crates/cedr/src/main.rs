@@ -2,8 +2,8 @@
 //! verify the skills and MCP servers they load. Exit codes: 0 clean (or delegate), 1 findings,
 //! changes (or keep the work), 2 usage or I/O failure.
 
-mod bench;
 mod common;
+mod compare;
 mod council;
 mod doctor;
 mod mcp;
@@ -40,7 +40,7 @@ Examples:
   cedr guard verify                      fail when the setup no longer matches the lock
   cedr guard outdated --fail-on high     inspect newer npm server surfaces
   cedr guard push --updates              report pins, findings and available updates
-  cedr bench run --budget-usd 5          measure a change with a task suite
+  cedr compare run --budget-usd 5          measure a change with a task suite
   claude mcp add cedr -- cedr mcp        give an agent cedr's tools
   cedr update                            install the latest release
   cedr telemetry off                     stop sending anonymous usage data
@@ -51,7 +51,7 @@ Start with a routes.toml: https://cedr.dev/docs/route (the app can generate one)
 #[command(
     name = "cedr",
     version,
-    about = "Route, review, pin, sync, monitor and bench the work of AI coding agents",
+    about = "Route, review, pin, sync, monitor and compare the work of AI coding agents",
     after_help = EXAMPLES
 )]
 struct Cli {
@@ -121,11 +121,11 @@ enum Command {
         command: GuardCommand,
     },
     /// Measure whether an agent configuration, skill or model change helps
-    Bench {
+    Compare {
         #[command(subcommand)]
-        command: bench::BenchCommand,
+        command: compare::CompareCommand,
     },
-    /// Serve the route, council, sync, monitor, bench and doctor tools over MCP on stdio
+    /// Serve the route, council, sync, monitor, compare and doctor tools over MCP on stdio
     Mcp {
         /// routes.toml to use instead of the usual search
         #[arg(long)]
@@ -299,7 +299,7 @@ fn dispatch(command: Command) -> ExitCode {
         Command::Council { config, command } => {
             council::run(command, &config).map_err(|e| e.to_string())
         }
-        Command::Bench { command } => bench::run(command),
+        Command::Compare { command } => compare::run(command),
         Command::Mcp { config } => mcp::serve(config)
             .map(|()| ExitCode::SUCCESS)
             .map_err(|e| format!("mcp: {e}")),

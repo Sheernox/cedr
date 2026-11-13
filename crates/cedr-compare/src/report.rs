@@ -1,4 +1,4 @@
-//! Results (docs/bench.md, Result): the shape saved and printed, the counts behind it, and the text
+//! Results (docs/compare.md, Result): the shape saved and printed, the counts behind it, and the text
 //! report. Facts only: a difference is stated with its uncertainty and never called an improvement.
 
 use serde::{Deserialize, Serialize};
@@ -74,6 +74,9 @@ pub struct SuiteInfo {
 #[serde(deny_unknown_fields)]
 pub struct VariantInfo {
     pub harness: HarnessKind,
+    /// False for command harnesses and results saved before clean homes were introduced.
+    #[serde(default)]
+    pub clean_home: bool,
     pub harness_version: Option<String>,
     pub model: String,
     pub effort: Option<String>,
@@ -176,7 +179,7 @@ pub enum CiProvider {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BenchResult {
+pub struct CompareResult {
     pub version: u32,
     #[serde(default)]
     pub source: Option<Source>,
@@ -259,8 +262,8 @@ pub fn separated(baseline: &VariantSummary, candidate: &VariantSummary) -> bool 
     }
 }
 
-impl BenchResult {
-    /// The exit code for this result (docs/bench.md, `bench run`). Incomplete wins over any
+impl CompareResult {
+    /// The exit code for this result (docs/compare.md, `compare run`). Incomplete wins over any
     /// comparison: a partial result never passes.
     pub fn exit_code(&self, fail_on: FailOn) -> u8 {
         if !self.complete {
@@ -295,7 +298,7 @@ impl BenchResult {
             (false, None) => format!("incomplete ({} unscored)", self.unscored()),
         };
         let mut out = format!(
-            "bench {}: {state}, {} of {} ({})\n",
+            "compare {}: {state}, {} of {} ({})\n",
             clean(&self.suite.name),
             money(self.spent_usd),
             money(self.budget_usd),
@@ -368,9 +371,9 @@ pub fn clean(text: &str) -> String {
 
 /// Validates a result read from disk: the shape comes from serde, and the verdict fields must
 /// follow from the trials, because an exit code is decided from them.
-pub fn parse(bytes: &[u8]) -> Result<BenchResult, String> {
-    let result: BenchResult =
-        serde_json::from_slice(bytes).map_err(|e| format!("not a bench result: {e}"))?;
+pub fn parse(bytes: &[u8]) -> Result<CompareResult, String> {
+    let result: CompareResult =
+        serde_json::from_slice(bytes).map_err(|e| format!("not a compare result: {e}"))?;
     if result.version != VERSION {
         return Err(format!(
             "unknown result version {}, this cedr reads {VERSION}",
@@ -458,7 +461,7 @@ mod tests {
         assert_eq!(s.tokens, 45);
     }
 
-    fn result(baseline: (u32, u32), candidate: (u32, u32), complete: bool) -> BenchResult {
+    fn result(baseline: (u32, u32), candidate: (u32, u32), complete: bool) -> CompareResult {
         let row = |(passed, scored): (u32, u32)| VariantSummary {
             scored,
             passed,
@@ -471,6 +474,7 @@ mod tests {
         };
         let info = VariantInfo {
             harness: HarnessKind::Claude,
+            clean_home: true,
             harness_version: None,
             model: "m".into(),
             effort: None,
@@ -481,10 +485,10 @@ mod tests {
             resolved_models: vec![],
         };
         let (b, c) = (row(baseline), row(candidate));
-        BenchResult {
+        CompareResult {
             version: VERSION,
             source: None,
-            id: "b-x".into(),
+            id: "c-x".into(),
             suite: SuiteInfo {
                 name: "s".into(),
                 sha256: "h".into(),
@@ -568,7 +572,7 @@ mod tests {
     #[test]
     fn a_result_file_cannot_claim_a_pass_its_trials_do_not_support() {
         use Status::*;
-        let bytes = |r: &BenchResult| serde_json::to_vec(r).unwrap();
+        let bytes = |r: &CompareResult| serde_json::to_vec(r).unwrap();
         let mut r = result((0, 0), (0, 0), true);
         r.trials = vec![trial(VariantName::Baseline, AgentError, 1, None)];
         r.summary.baseline = summarize(&r.trials, VariantName::Baseline);

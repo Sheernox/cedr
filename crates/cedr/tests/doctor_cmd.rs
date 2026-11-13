@@ -48,9 +48,9 @@ fn doctor_json_is_read_only_and_has_stable_checks() {
             "sync.shadowed",
             "sync.rules",
             "guard.lock",
-            "bench.budget",
-            "bench.push",
-            "bench.suite",
+            "compare.budget",
+            "compare.push",
+            "compare.suite",
         ]
     );
     assert_eq!(checks[1]["state"], "skip");

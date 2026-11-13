@@ -286,7 +286,7 @@ pub fn refuse_shallow(root: &Path) -> Result<()> {
     )?;
     if text.trim() == "true" {
         return Err(invalid(format!(
-            "{}: a shallow clone cannot run Bench; run git fetch --unshallow (in GitHub Actions, set fetch-depth: 0 on actions/checkout)",
+            "{}: a shallow clone cannot run Compare; run git fetch --unshallow (in GitHub Actions, set fetch-depth: 0 on actions/checkout)",
             root.display()
         )));
     }

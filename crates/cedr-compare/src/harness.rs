@@ -1,4 +1,4 @@
-//! The harnesses a variant can run (docs/bench.md, Harnesses): the command line for each, and the
+//! The harnesses a variant can run (docs/compare.md, Harnesses): the command line for each, and the
 //! outcome read back from its output. The parsers read output the agent's run produced, so anything
 //! unexpected reads as an unknown cost or an error, never a panic.
 
@@ -59,6 +59,7 @@ pub fn command(
     prompt_file: &Path,
     budget_left: f64,
     root: &Path,
+    clone: &Path,
 ) -> Option<(Command, Option<String>)> {
     match variant.harness {
         HarnessKind::Claude => {
@@ -70,6 +71,7 @@ pub fn command(
                 "--no-session-persistence",
                 "--setting-sources",
                 "project,local",
+                "--strict-mcp-config",
                 "--model",
                 &variant.model,
                 "--permission-mode",
@@ -80,6 +82,11 @@ pub fn command(
                 "--max-budget-usd",
                 &format!("{budget_left:.4}"),
             ]);
+            // Strict MCP excludes account connectors, but Compare must keep the repo's servers.
+            let mcp = clone.join(".mcp.json");
+            if mcp.is_file() {
+                cmd.arg("--mcp-config").arg(mcp);
+            }
             if let Some(effort) = &variant.effort {
                 cmd.args(["--effort", effort]);
             }
@@ -91,7 +98,6 @@ pub fn command(
                 "exec",
                 "--json",
                 "--ephemeral",
-                "--ignore-user-config",
                 "--skip-git-repo-check",
                 "-m",
                 &variant.model,
@@ -103,6 +109,10 @@ pub fn command(
             if let Some(effort) = &variant.effort {
                 cmd.args(["-c", &format!("model_reasoning_effort=\"{effort}\"")]);
             }
+            // --ignore-user-config also suppresses project config on supported Codex builds. The
+            // fresh home excludes user config; trust the clone so its own setup still loads.
+            let project = serde_json::to_string(&clone.to_string_lossy()).ok()?;
+            cmd.args(["-c", &format!("projects.{project}.trust_level=\"trusted\"")]);
             cmd.arg("-");
             Some((cmd, Some(prompt.to_string())))
         }
@@ -118,6 +128,67 @@ pub fn command(
             Some((cmd, None))
         }
     }
+}
+
+/// Gives a vendor CLI a private home containing only a link to its sign-in. Project files stay
+/// in the clone and load normally. The caller owns the temporary directory through process exit.
+pub fn clean_home(kind: HarnessKind, cmd: &mut Command, home: &Path) -> std::io::Result<()> {
+    if kind == HarnessKind::Command {
+        return Ok(());
+    }
+    let (variable, directory, credential) = match kind {
+        HarnessKind::Codex => ("CODEX_HOME", ".codex", "auth.json"),
+        HarnessKind::Claude => ("CLAUDE_CONFIG_DIR", ".claude", ".credentials.json"),
+        HarnessKind::Command => unreachable!(),
+    };
+    let user_home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    let source = std::env::var_os(variable)
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| user_home.map(|p| std::path::PathBuf::from(p).join(directory)));
+    let agent_home = home.join(directory);
+    std::fs::create_dir_all(&agent_home)?;
+    if let Some(source) = source {
+        let sign_in = source.join(credential);
+        match std::fs::metadata(&sign_in) {
+            Ok(_) => {
+                // An absolute target still works when the trial changes its working directory.
+                let target = std::fs::canonicalize(sign_in)?;
+                link_sign_in(&target, &agent_home.join(credential))?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    // Parent SDK sessions and user overrides can inject instructions, plugins or MCP servers.
+    // Keep provider credentials, including Claude's OAuth environment credential, available.
+    for (key, _) in std::env::vars_os() {
+        let name = key.to_string_lossy().to_ascii_uppercase();
+        if ((name.starts_with("CLAUDE_") || name.starts_with("CODEX_"))
+            && name != "CLAUDE_CODE_OAUTH_TOKEN")
+            || matches!(name.as_str(), "CLAUDECODE" | "BASH_ENV" | "ENV" | "ZDOTDIR")
+        {
+            cmd.env_remove(key);
+        }
+    }
+    cmd.env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env("XDG_STATE_HOME", home.join(".local/state"))
+        .env("XDG_CACHE_HOME", home.join(".cache"))
+        .env(variable, agent_home);
+    Ok(())
+}
+
+#[cfg(unix)]
+fn link_sign_in(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, target)
+}
+
+#[cfg(windows)]
+fn link_sign_in(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(source, target)
 }
 
 /// Reads a finished run from its stdout and whether the process exited cleanly.

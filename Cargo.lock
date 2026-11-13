@@ -176,7 +176,7 @@ dependencies = [
 name = "cedr"
 version = "0.11.3"
 dependencies = [
- "cedr-bench",
+ "cedr-compare",
  "cedr-core",
  "cedr-monitor",
  "cedr-route",
@@ -201,7 +201,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cedr-bench"
+name = "cedr-compare"
 version = "0.11.3"
 dependencies = [
  "cedr-monitor",

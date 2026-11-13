@@ -1,6 +1,15 @@
 # Changelog
 
-Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
+Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/compare.md](docs/compare.md) (Compare), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
+
+## Unreleased
+
+### Breaking
+- **Bench becomes Compare:** use `cedr compare` and its `compare_*` MCP tools. There is no command alias; the Bench name is reserved for the standard benchmark in #53. The crate is now `cedr-compare`, and the contract is [docs/compare.md](docs/compare.md).
+- **Upgrade step:** move `.cedr/bench/` to `.cedr/compare/`, rename `bench_budget_usd` to `compare_budget_usd` and the Action inputs `bench`, `bench-budget-usd`, `bench-fail-on` and `bench-allow-unpriced` to their `compare` equivalents, and switch scripts from `cedr bench` to `cedr compare`. Older results are not read from `cedr/bench/`; move those files to `cedr/compare/` to keep them. Move `bench-pushed-<org>.txt` to `compare-pushed-<org>.txt` to keep the sent list. New result ids start with `c-`. The hosted app must move `/bench/runs` and `/bench/settings` to `/compare/runs` and `/compare/settings` in step with the release.
+
+### Fixes
+- **Repeatable Compare trials:** Claude and Codex get a clean temporary agent home with only a linked sign-in; user instructions, settings and account MCP connectors stay out while the repo's own setup still loads. Results record `clean_home` for each variant (false for the unisolated `command` harness and older files).
 
 ## v0.11.3 (2026-11-13)
 

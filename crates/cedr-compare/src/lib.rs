@@ -1,5 +1,5 @@
-//! Bench: run a suite of tasks against a baseline and a candidate, let tests decide each trial, and
-//! report the counts (docs/bench.md). This crate holds the suite, harness adapters, trial runner and
+//! Compare: run a suite of tasks against a baseline and a candidate, let tests decide each trial, and
+//! report the counts (docs/compare.md). This crate holds the suite, harness adapters, trial runner and
 //! report; the `cedr` binary adds the commands and settings.
 
 pub mod exec;

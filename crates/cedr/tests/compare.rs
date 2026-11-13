@@ -1,4 +1,4 @@
-//! `cedr bench` end to end against a scratch repo, with scripts standing in for the agents: which
+//! `cedr compare` end to end against a scratch repo, with scripts standing in for the agents: which
 //! trials run, what each step can see, what the budget stops, and what the exit codes say.
 #![cfg(unix)]
 
@@ -76,7 +76,9 @@ impl Repo {
     }
 
     fn suite(&self, text: &str) -> String {
-        self.write(".cedr/bench/s.toml", text).display().to_string()
+        self.write(".cedr/compare/s.toml", text)
+            .display()
+            .to_string()
     }
 
     /// `cedr` with scratch state, in the repo, with the fake programs first on PATH.
@@ -85,6 +87,10 @@ impl Repo {
         let mut c = Command::new(env!("CARGO_BIN_EXE_cedr"));
         c.args(args)
             .current_dir(self.root())
+            .env("HOME", scratch.join("home"))
+            .env("USERPROFILE", scratch.join("home"))
+            .env("CODEX_HOME", scratch.join("home/.codex"))
+            .env("CLAUDE_CONFIG_DIR", scratch.join("home/.claude"))
             .env("XDG_STATE_HOME", scratch.join("state"))
             .env("XDG_CACHE_HOME", scratch.join("cache"))
             .env("XDG_CONFIG_HOME", scratch.join("config"))
@@ -159,7 +165,7 @@ test = "test -f done"
 
 fn run_args(suite: &str) -> Vec<&str> {
     vec![
-        "bench",
+        "compare",
         "run",
         suite,
         "--allow-unpriced",
@@ -177,6 +183,9 @@ fn tests_decide_each_trial_and_the_report_counts_them_per_variant() {
     assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
     let r = stdout_json(&out);
     assert_eq!(r["complete"], true);
+    assert_eq!(r["variants"]["baseline"]["clean_home"], false);
+    assert_eq!(r["variants"]["candidate"]["clean_home"], false);
+    assert!(r["id"].as_str().unwrap().starts_with("c-"));
     assert_eq!(r["summary"]["baseline"]["passed"], 0);
     assert_eq!(r["summary"]["baseline"]["scored"], 2);
     assert_eq!(r["summary"]["candidate"]["passed"], 2);
@@ -243,12 +252,12 @@ fn a_budget_set_in_settings_applies_and_a_bad_flag_is_refused() {
     repo.program("agent", AGENT);
     let suite = repo.suite(&command_suite(10));
     assert_eq!(
-        stdout_json(&repo.run(&["bench", "budget", "--format", "json"])),
+        stdout_json(&repo.run(&["compare", "budget", "--format", "json"])),
         serde_json::json!({"budget_usd": 2.0, "source": "default"})
     );
-    assert_eq!(code(&repo.run(&["bench", "budget", "0.15"])), 0);
+    assert_eq!(code(&repo.run(&["compare", "budget", "0.15"])), 0);
     assert_eq!(
-        stdout_json(&repo.run(&["bench", "budget", "--format", "json"]))["source"],
+        stdout_json(&repo.run(&["compare", "budget", "--format", "json"]))["source"],
         "settings"
     );
     let r = stdout_json(&repo.run(&run_args(&suite)));
@@ -262,11 +271,11 @@ fn a_budget_set_in_settings_applies_and_a_bad_flag_is_refused() {
     let mut args = run_args(&suite);
     args.extend(["--budget-usd=-1"]);
     assert_eq!(code(&repo.run(&args)), 2);
-    assert_eq!(code(&repo.run(&["bench", "budget", "--", "-1"])), 2);
+    assert_eq!(code(&repo.run(&["compare", "budget", "--", "-1"])), 2);
 
-    assert_eq!(code(&repo.run(&["bench", "budget", "--unset"])), 0);
+    assert_eq!(code(&repo.run(&["compare", "budget", "--unset"])), 0);
     assert_eq!(
-        stdout_json(&repo.run(&["bench", "budget", "--format", "json"]))["source"],
+        stdout_json(&repo.run(&["compare", "budget", "--format", "json"]))["source"],
         "default"
     );
 }
@@ -276,7 +285,7 @@ fn unpriced_variants_need_consent_and_a_missing_harness_stops_before_any_trial()
     let repo = Repo::new();
     repo.program("agent", AGENT);
     let suite = repo.suite(&command_suite(1));
-    let out = repo.run(&["bench", "run", &suite]);
+    let out = repo.run(&["compare", "run", &suite]);
     assert_eq!(code(&out), 2);
     assert!(String::from_utf8_lossy(&out.stderr).contains("--allow-unpriced"));
 
@@ -293,10 +302,10 @@ fn test_files_replace_what_the_agent_did_to_the_tests() {
         "agent",
         r#"mkdir -p tests; printf 'exit 0\n' > tests/check.sh; echo '{"cost_usd": 0}'"#,
     );
-    repo.write(".cedr/bench/hidden/tests/check.sh", "exit 7\n");
+    repo.write(".cedr/compare/hidden/tests/check.sh", "exit 7\n");
     let suite = repo.suite(&command_suite(1).replace(
         "test = \"test -f done\"",
-        "test = \"sh tests/check.sh\"\ntest_files = \".cedr/bench/hidden\"",
+        "test = \"sh tests/check.sh\"\ntest_files = \".cedr/compare/hidden\"",
     ));
     let r = stdout_json(&repo.run(&run_args(&suite)));
     assert_eq!(r["trials"][0]["status"], "failed");
@@ -388,7 +397,7 @@ fn plan_shows_the_work_and_starts_nothing() {
     let marker = repo.dir.path().join("ran");
     repo.program("agent", &format!("touch {}", marker.display()));
     let suite = repo.suite(&command_suite(2));
-    let out = repo.run(&["bench", "plan", &suite, "--format", "json"]);
+    let out = repo.run(&["compare", "plan", &suite, "--format", "json"]);
     assert_eq!(code(&out), 0);
     let plan = stdout_json(&out);
     assert_eq!(plan["total_trials"], 4);
@@ -402,26 +411,26 @@ fn plan_shows_the_work_and_starts_nothing() {
             .any(|w| w.as_str().unwrap().contains("unpriced"))
     );
     assert!(!marker.exists());
-    let text = repo.run(&["bench", "plan", &suite]);
+    let text = repo.run(&["compare", "plan", &suite]);
     assert!(String::from_utf8_lossy(&text.stdout).contains("4 trials"));
-    // The one suite in .cedr/bench/ is found without naming it.
-    assert_eq!(code(&repo.run(&["bench", "plan"])), 0);
+    // The one suite in .cedr/compare/ is found without naming it.
+    assert_eq!(code(&repo.run(&["compare", "plan"])), 0);
 }
 
 #[test]
 fn init_writes_a_suite_that_plans_and_never_overwrites() {
     let repo = Repo::new();
     git(&repo.root(), &["branch", "-f", "side"]);
-    let out = repo.run(&["bench", "init"]);
+    let out = repo.run(&["compare", "init"]);
     assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
-    let written = repo.root().join(".cedr/bench/suite.toml");
+    let written = repo.root().join(".cedr/compare/suite.toml");
     let starter = fs::read_to_string(&written).unwrap();
     let next = String::from_utf8_lossy(&out.stderr);
     for step in [
         "prompt and test",
         "HEAD differs from main",
         "another model",
-        "cedr bench plan",
+        "cedr compare plan",
     ] {
         assert!(next.contains(step), "{next}");
     }
@@ -429,15 +438,18 @@ fn init_writes_a_suite_that_plans_and_never_overwrites() {
     git(&repo.root(), &["checkout", "-q", "-b", "change"]);
     repo.write("AGENTS.md", "new rules\n");
     repo.commit("change");
-    let plan = repo.run(&["bench", "plan", "--format", "json"]);
+    let plan = repo.run(&["compare", "plan", "--format", "json"]);
     assert_eq!(code(&plan), 0, "{}", String::from_utf8_lossy(&plan.stderr));
     assert_eq!(stdout_json(&plan)["total_trials"], 6);
 
     fs::write(&written, "mine").unwrap();
-    assert_eq!(code(&repo.run(&["bench", "init"])), 1);
+    assert_eq!(code(&repo.run(&["compare", "init"])), 1);
     assert_eq!(fs::read_to_string(&written).unwrap(), "mine");
     assert!(starter.contains("A suite is code"));
-    assert_eq!(code(&repo.run(&["bench", "init", "--name", "../../x"])), 2);
+    assert_eq!(
+        code(&repo.run(&["compare", "init", "--name", "../../x"])),
+        2
+    );
 }
 
 #[test]
@@ -458,29 +470,29 @@ fn doctor_reports_the_cap_in_force_and_any_suite_that_would_not_plan() {
             found["message"].as_str().unwrap().to_string(),
         )
     };
-    assert_eq!(check("bench.push").0, "skip");
+    assert_eq!(check("compare.push").0, "skip");
     repo.machine_routes("version=1\n[sync]\norg='acme'\n");
     assert_eq!(
-        check("bench.push"),
+        check("compare.push"),
         ("ok".into(), "results sent automatically to acme".into())
     );
     repo.machine_routes("version=1\n[sync]\norg='acme'\nauto=false\n");
-    let disabled = check("bench.push");
+    let disabled = check("compare.push");
     assert_eq!(disabled.0, "skip");
     assert!(disabled.1.contains("auto = false") && disabled.1.contains("acme"));
     repo.machine_routes("invalid = [");
-    assert_eq!(check("bench.push").0, "warn");
+    assert_eq!(check("compare.push").0, "warn");
     repo.machine_routes("version=1\n");
-    assert_eq!(check("bench.suite").0, "skip");
+    assert_eq!(check("compare.suite").0, "skip");
     assert_eq!(
-        check("bench.budget"),
+        check("compare.budget"),
         ("ok".into(), "$2.00 (default)".into())
     );
     repo.suite("version = 1\nnot_a_key = true\n");
-    assert_eq!(check("bench.suite").0, "fail");
+    assert_eq!(check("compare.suite").0, "fail");
     repo.program("agent", AGENT);
     repo.suite(&command_suite(1));
-    assert_eq!(check("bench.suite").0, "warn", "the suite is unpriced");
+    assert_eq!(check("compare.suite").0, "warn", "the suite is unpriced");
 }
 
 #[test]
@@ -493,26 +505,26 @@ fn a_saved_run_reads_back_with_the_same_report_and_exit_code() {
     let first = stdout_json(&repo.run(&args));
     let id = first["id"].as_str().unwrap();
 
-    let shown = repo.run(&["bench", "show", id, "--format", "json"]);
+    let shown = repo.run(&["compare", "show", id, "--format", "json"]);
     assert_eq!(code(&shown), 3, "still incomplete");
     assert_eq!(stdout_json(&shown), first);
 
-    let rows = stdout_json(&repo.run(&["bench", "history", "--format", "json"]));
+    let rows = stdout_json(&repo.run(&["compare", "history", "--format", "json"]));
     assert_eq!(rows[0]["id"], first["id"]);
     assert_eq!(rows[0]["complete"], false);
     assert_eq!(rows[0]["baseline"]["scored"], 1);
 
     // A corrupt file is skipped with a note, and never hides the others or breaks the command.
     fs::write(
-        repo.dir.path().join("state/cedr/bench/b-zzzz.json"),
+        repo.dir.path().join("state/cedr/compare/c-zzzz.json"),
         "{not json",
     )
     .unwrap();
-    let out = repo.run(&["bench", "history", "--format", "json"]);
+    let out = repo.run(&["compare", "history", "--format", "json"]);
     assert_eq!(code(&out), 0);
     assert_eq!(stdout_json(&out)[0]["id"], first["id"]);
     assert!(String::from_utf8_lossy(&out.stderr).contains("skipped"));
-    assert_eq!(code(&repo.run(&["bench", "show", "b-zzzz"])), 2);
+    assert_eq!(code(&repo.run(&["compare", "show", "c-zzzz"])), 2);
 }
 
 #[test]
@@ -547,7 +559,7 @@ test = "true"
 "#,
     );
     let out = repo.run(&[
-        "bench",
+        "compare",
         "run",
         &suite,
         "--format",
@@ -648,7 +660,7 @@ fn the_apps_cap_is_pulled_into_settings_and_an_org_without_one_clears_it() {
         .unwrap();
         let config = config.display().to_string();
         repo.cedr(&[
-            "bench", "budget", "--pull", "--config", &config, "--format", "json",
+            "compare", "budget", "--pull", "--config", &config, "--format", "json",
         ])
         .env("CEDR_API_KEY", "test-key")
         .output()
@@ -660,7 +672,7 @@ fn the_apps_cap_is_pulled_into_settings_and_an_org_without_one_clears_it() {
     assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(
         task.join().unwrap(),
-        "GET /v1/bench/settings?org=acme HTTP/1.1"
+        "GET /v1/compare/settings?org=acme HTTP/1.1"
     );
     assert_eq!(
         stdout_json(&out),
@@ -676,7 +688,7 @@ fn the_apps_cap_is_pulled_into_settings_and_an_org_without_one_clears_it() {
         assert_eq!(code(&pull(&url)), 2, "{reply}");
         task.join().unwrap();
         assert_eq!(
-            stdout_json(&repo.run(&["bench", "budget", "--format", "json"]))["budget_usd"],
+            stdout_json(&repo.run(&["compare", "budget", "--format", "json"]))["budget_usd"],
             7.5
         );
     }
@@ -711,7 +723,7 @@ test = "true"
 "#,
     );
     let out = repo.run(&[
-        "bench",
+        "compare",
         "run",
         &suite,
         "--format",
@@ -727,7 +739,7 @@ test = "true"
     assert!(
         String::from_utf8_lossy(
             &repo
-                .run(&["bench", "show", r["id"].as_str().unwrap()])
+                .run(&["compare", "show", r["id"].as_str().unwrap()])
                 .stdout
         )
         .contains("incomplete (unknown cost)")
@@ -735,7 +747,7 @@ test = "true"
 
     // The user can agree to it, and then every trial runs.
     let out = repo.run(&[
-        "bench",
+        "compare",
         "run",
         &suite,
         "--allow-unpriced",
@@ -755,7 +767,7 @@ fn an_agent_that_never_reads_its_prompt_cannot_take_the_run_down() {
 echo '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.01}'"#,
     );
     // Larger than a pipe's buffer, so a writer would still be writing when the agent exits.
-    repo.write(".cedr/bench/prompt.md", &"p".repeat(1024 * 1024));
+    repo.write(".cedr/compare/prompt.md", &"p".repeat(1024 * 1024));
     let suite = repo.suite(
         r#"version = 1
 trials = 1
@@ -767,11 +779,11 @@ harness = "claude"
 model = "b"
 [[tasks]]
 id = "t"
-prompt_file = ".cedr/bench/prompt.md"
+prompt_file = ".cedr/compare/prompt.md"
 test = "true"
 "#,
     );
-    let out = repo.run(&["bench", "run", &suite, "--format", "json"]);
+    let out = repo.run(&["compare", "run", &suite, "--format", "json"]);
     assert_eq!(out.status.code(), Some(0), "killed by a signal when None");
     assert_eq!(stdout_json(&out)["summary"]["candidate"]["passed"], 1);
 }
@@ -781,7 +793,7 @@ fn a_settings_file_that_cannot_be_read_is_an_error_rather_than_the_default_cap()
     let repo = Repo::new();
     // A directory at the file's path fails to read for every user, root included.
     fs::create_dir_all(repo.dir.path().join("config/cedr/cli.toml")).unwrap();
-    let out = repo.run(&["bench", "budget"]);
+    let out = repo.run(&["compare", "budget"]);
     assert_eq!(code(&out), 2);
     assert!(String::from_utf8_lossy(&out.stderr).contains("cli.toml"));
 }
@@ -822,7 +834,7 @@ fn an_interrupt_kills_the_agent_and_its_children_and_keeps_what_was_measured() {
         .unwrap()
         .success();
     assert!(!alive, "the agent's child outlived the run");
-    let saved = repo.run(&["bench", "history", "--format", "json"]);
+    let saved = repo.run(&["compare", "history", "--format", "json"]);
     assert_eq!(stdout_json(&saved)[0]["stop"], "interrupted");
     let left: Vec<_> = fs::read_dir(repo.dir.path().join("tmp")).unwrap().collect();
     assert!(left.is_empty(), "the clone was left behind: {left:?}");
@@ -855,7 +867,7 @@ prompt = "p"
 test = "true"
 "#,
     );
-    let out = repo.run(&["bench", "run", &suite, "--format", "json"]);
+    let out = repo.run(&["compare", "run", &suite, "--format", "json"]);
     assert_eq!(code(&out), 3);
     let r = stdout_json(&out);
     assert_eq!(r["stop"], "unknown_cost");
@@ -874,7 +886,7 @@ fn a_prompt_file_that_cannot_be_read_stops_the_run_before_any_spend() {
         "{}\n[[tasks]]\nid = \"second\"\nprompt_file = \"bad.md\"\ntest = \"true\"\n",
         command_suite(1)
     ));
-    assert_eq!(code(&repo.run(&["bench", "plan", &suite])), 2);
+    assert_eq!(code(&repo.run(&["compare", "plan", &suite])), 2);
     assert_eq!(code(&repo.run(&run_args(&suite))), 2);
     assert!(!marker.exists(), "an agent started before the refusal");
 }
@@ -896,11 +908,11 @@ fn a_shallow_clone_is_refused_before_any_trial() {
             shallow.to_str().unwrap(),
         ],
     );
-    fs::create_dir_all(shallow.join(".cedr/bench")).unwrap();
-    let suite = shallow.join(".cedr/bench/s.toml");
+    fs::create_dir_all(shallow.join(".cedr/compare")).unwrap();
+    let suite = shallow.join(".cedr/compare/s.toml");
     fs::write(&suite, command_suite(1)).unwrap();
     let out = repo
-        .cedr(&["bench", "plan", suite.to_str().unwrap()])
+        .cedr(&["compare", "plan", suite.to_str().unwrap()])
         .current_dir(&shallow)
         .output()
         .unwrap();
@@ -979,7 +991,7 @@ test = "true"
 "#,
     );
     let child = repo
-        .cedr(&["bench", "run", &suite, "--format", "json"])
+        .cedr(&["compare", "run", &suite, "--format", "json"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -1008,7 +1020,7 @@ fn an_interrupt_saves_the_run_when_its_output_has_gone_away() {
     wait_for(&marker);
     send("-INT", child.id());
     assert_eq!(child.wait().unwrap().code(), Some(3));
-    let saved = repo.run(&["bench", "history", "--format", "json"]);
+    let saved = repo.run(&["compare", "history", "--format", "json"]);
     assert_eq!(stdout_json(&saved)[0]["stop"], "interrupted");
 }
 
@@ -1067,12 +1079,12 @@ fn an_agent_that_removes_its_clone_has_an_unknown_cost() {
 }
 
 /// A loopback API with bounded accepts, so a missing request fails instead of hanging the suite.
-struct BenchApi {
+struct CompareApi {
     listener: std::net::TcpListener,
     url: String,
 }
 
-impl BenchApi {
+impl CompareApi {
     fn new() -> Self {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -1097,7 +1109,7 @@ impl BenchApi {
                     match listener.accept() {
                         Ok((stream, _)) => break stream,
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            assert!(std::time::Instant::now() < deadline, "missing Bench request");
+                            assert!(std::time::Instant::now() < deadline, "missing Compare request");
                             std::thread::yield_now();
                         }
                         Err(e) => panic!("accept: {e}"),
@@ -1112,7 +1124,7 @@ impl BenchApi {
                     assert!(request.len() < 8192);
                 }
                 let headers = String::from_utf8(request).unwrap().to_ascii_lowercase();
-                assert!(headers.starts_with("post /v1/bench/runs http/1.1\r\n"), "{headers}");
+                assert!(headers.starts_with("post /v1/compare/runs http/1.1\r\n"), "{headers}");
                 assert!(headers.contains("authorization: bearer test-key\r\n"));
                 assert!(headers.contains("content-type: application/json\r\n"));
                 let length: usize = headers.lines().find_map(|l| l.strip_prefix("content-length: ")).unwrap().parse().unwrap();
@@ -1163,7 +1175,7 @@ fn seed_result(repo: &Repo) -> Value {
 fn store_result(repo: &Repo, id: &str, result: &Value) {
     let mut result = result.clone();
     result["id"] = id.into();
-    let dir = repo.dir.path().join("state/cedr/bench");
+    let dir = repo.dir.path().join("state/cedr/compare");
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join(format!("{id}.json")),
@@ -1176,27 +1188,32 @@ fn store_result(repo: &Repo, id: &str, result: &Value) {
 fn push_tracks_unsent_ids_per_org_and_explicit_ids_can_be_duplicates() {
     let repo = Repo::new();
     let result = seed_result(&repo);
-    for id in ["b-3", "b-1", "b-2"] {
+    for id in ["c-3", "c-1", "c-2"] {
         store_result(&repo, id, &result);
     }
     let mut other = result.clone();
     other["source"]["repo"] = "other/repo".into();
-    store_result(&repo, "b-4-other", &other);
+    store_result(&repo, "c-4-other", &other);
     let mut legacy = result.clone();
     legacy.as_object_mut().unwrap().remove("source");
-    store_result(&repo, "b-5-legacy", &legacy);
+    store_result(&repo, "c-5-legacy", &legacy);
     fs::write(
-        repo.dir.path().join("state/cedr/bench/b-6-corrupt.json"),
+        repo.dir.path().join("state/cedr/compare/c-6-corrupt.json"),
         "{not json",
     )
     .unwrap();
-    fs::create_dir(repo.dir.path().join("state/cedr/bench/b-7-unreadable.json")).unwrap();
+    fs::create_dir(
+        repo.dir
+            .path()
+            .join("state/cedr/compare/c-7-unreadable.json"),
+    )
+    .unwrap();
     let state = repo.dir.path().join("state/cedr");
-    fs::write(state.join("bench-pushed-acme.txt"), "b-1\n").unwrap();
-    let api = BenchApi::new();
+    fs::write(state.join("compare-pushed-acme.txt"), "c-1\n").unwrap();
+    let api = CompareApi::new();
     let config = api.config(&repo, "");
     let send = |extra: &[&str]| {
-        let mut args = vec!["bench", "push", "--config", &config, "--format", "json"];
+        let mut args = vec!["compare", "push", "--config", &config, "--format", "json"];
         args.extend_from_slice(extra);
         repo.cedr(&args)
             .env("CEDR_API_KEY", "test-key")
@@ -1212,15 +1229,15 @@ fn push_tracks_unsent_ids_per_org_and_explicit_ids_can_be_duplicates() {
             .iter()
             .map(|b| b["result"]["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["b-2", "b-3"]
+        ["c-2", "c-3"]
     );
     assert_eq!(
         stdout_json(&out),
-        serde_json::json!({"org":"acme","pushed":["b-2","b-3"],"duplicates":[],"failed":[],"skipped":4})
+        serde_json::json!({"org":"acme","pushed":["c-2","c-3"],"duplicates":[],"failed":[],"skipped":4})
     );
     assert_eq!(
-        fs::read_to_string(state.join("bench-pushed-acme.txt")).unwrap(),
-        "b-1\nb-2\nb-3\n"
+        fs::read_to_string(state.join("compare-pushed-acme.txt")).unwrap(),
+        "c-1\nc-2\nc-3\n"
     );
     let out = send(&[]);
     assert_eq!(
@@ -1231,7 +1248,7 @@ fn push_tracks_unsent_ids_per_org_and_explicit_ids_can_be_duplicates() {
     assert_eq!(stdout_json(&out)["pushed"], serde_json::json!([]));
     assert_eq!(stdout_json(&out)["skipped"], 4);
     let out = repo
-        .cedr(&["bench", "push", "--config", &config])
+        .cedr(&["compare", "push", "--config", &config])
         .env("CEDR_API_KEY", "test-key")
         .output()
         .unwrap();
@@ -1242,21 +1259,21 @@ fn push_tracks_unsent_ids_per_org_and_explicit_ids_can_be_duplicates() {
     );
     api.assert_no_request();
     let task = api.respond(vec![(200, true)]);
-    let out = send(&["b-2"]);
+    let out = send(&["c-2"]);
     task.join().unwrap();
-    assert_eq!(stdout_json(&out)["duplicates"], serde_json::json!(["b-2"]));
-    assert_eq!(stdout_json(&out)["pushed"], serde_json::json!(["b-2"]));
+    assert_eq!(stdout_json(&out)["duplicates"], serde_json::json!(["c-2"]));
+    assert_eq!(stdout_json(&out)["pushed"], serde_json::json!(["c-2"]));
     let task = api.respond(vec![(200, false); 3]);
     let out = send(&["--org", "other"]);
     assert_eq!(code(&out), 0);
     assert!(task.join().unwrap().iter().all(|b| b["org"] == "other"));
     assert_eq!(
-        fs::read_to_string(state.join("bench-pushed-other.txt")).unwrap(),
-        "b-1\nb-2\nb-3\n"
+        fs::read_to_string(state.join("compare-pushed-other.txt")).unwrap(),
+        "c-1\nc-2\nc-3\n"
     );
     assert_eq!(
-        fs::read_to_string(state.join("bench-pushed-acme.txt")).unwrap(),
-        "b-1\nb-2\nb-3\nb-2\n"
+        fs::read_to_string(state.join("compare-pushed-acme.txt")).unwrap(),
+        "c-1\nc-2\nc-3\nc-2\n"
     );
     let out = send(&["--all", "--repo", "override"]);
     assert_eq!(code(&out), 2);
@@ -1272,15 +1289,15 @@ fn push_tracks_unsent_ids_per_org_and_explicit_ids_can_be_duplicates() {
     assert_eq!(task.join().unwrap()[0]["repo"], "other/repo");
     assert_eq!(
         stdout_json(&out)["pushed"],
-        serde_json::json!(["b-4-other"])
+        serde_json::json!(["c-4-other"])
     );
     assert_eq!(stdout_json(&out)["skipped"], 0);
-    assert_eq!(stdout_json(&out)["failed"][0]["id"], "b-5-legacy");
-    assert_eq!(stdout_json(&out)["failed"][1]["id"], "b-6-corrupt");
-    assert_eq!(stdout_json(&out)["failed"][2]["id"], "b-7-unreadable");
-    let out = send(&["b-6-corrupt"]);
+    assert_eq!(stdout_json(&out)["failed"][0]["id"], "c-5-legacy");
+    assert_eq!(stdout_json(&out)["failed"][1]["id"], "c-6-corrupt");
+    assert_eq!(stdout_json(&out)["failed"][2]["id"], "c-7-unreadable");
+    let out = send(&["c-6-corrupt"]);
     assert_eq!(code(&out), 2);
-    assert_eq!(stdout_json(&out)["failed"][0]["id"], "b-6-corrupt");
+    assert_eq!(stdout_json(&out)["failed"][0]["id"], "c-6-corrupt");
     api.assert_no_request();
 }
 
@@ -1288,8 +1305,8 @@ fn push_tracks_unsent_ids_per_org_and_explicit_ids_can_be_duplicates() {
 fn auto_sends_only_the_new_run_even_when_incomplete_with_the_exact_body() {
     let repo = Repo::new();
     let result = seed_result(&repo);
-    store_result(&repo, "b-old", &result);
-    let api = BenchApi::new();
+    store_result(&repo, "c-old", &result);
+    let api = CompareApi::new();
     api.config(&repo, &format!("[machine]\nname={:?}", "é".repeat(64)));
     let suite = repo.suite(&command_suite(10));
     let mut args = run_args(&suite);
@@ -1323,10 +1340,10 @@ fn auto_sends_only_the_new_run_even_when_incomplete_with_the_exact_body() {
     );
     assert!(bodies[0]["result"].get("source").is_none());
     assert_eq!(
-        fs::read_to_string(repo.dir.path().join("state/cedr/bench-pushed-acme.txt")).unwrap(),
+        fs::read_to_string(repo.dir.path().join("state/cedr/compare-pushed-acme.txt")).unwrap(),
         format!("{id}\n")
     );
-    let shown = repo.run(&["bench", "show", &id, "--format", "json"]);
+    let shown = repo.run(&["compare", "show", &id, "--format", "json"]);
     assert_eq!(out.stdout, shown.stdout);
     assert!(String::from_utf8_lossy(&out.stderr).contains(&format!("pushed {id} to acme")));
     api.assert_no_request();
@@ -1336,7 +1353,7 @@ fn auto_sends_only_the_new_run_even_when_incomplete_with_the_exact_body() {
 fn failed_auto_sends_preserve_complete_regression_and_incomplete_reports_and_exit_codes() {
     let repo = Repo::new();
     repo.program("agent", AGENT);
-    let api = BenchApi::new();
+    let api = CompareApi::new();
     api.config(&repo, "");
     let suite = repo.suite(
         &command_suite(2)
@@ -1361,7 +1378,7 @@ fn failed_auto_sends_preserve_complete_regression_and_incomplete_reports_and_exi
         assert_eq!(code(&out), expected);
         let saved = stdout_json(&out);
         let id = saved["id"].as_str().unwrap();
-        let mut show_args = vec!["bench", "show", id, "--format", "json"];
+        let mut show_args = vec!["compare", "show", id, "--format", "json"];
         if expected == 1 {
             show_args.extend(["--fail-on", "lower"]);
         }
@@ -1372,7 +1389,7 @@ fn failed_auto_sends_preserve_complete_regression_and_incomplete_reports_and_exi
         assert!(
             stderr.contains("was not sent")
                 && stderr.contains(error)
-                && stderr.contains("cedr bench push"),
+                && stderr.contains("cedr compare push"),
             "{stderr}"
         );
         assert!(!stderr.contains("test-key"));
@@ -1388,7 +1405,7 @@ fn failed_auto_sends_preserve_complete_regression_and_incomplete_reports_and_exi
         !repo
             .dir
             .path()
-            .join("state/cedr/bench-pushed-acme.txt")
+            .join("state/cedr/compare-pushed-acme.txt")
             .exists()
     );
 }
@@ -1398,7 +1415,7 @@ fn automatic_sending_respects_opt_outs_and_silent_unconfigured_states() {
     let repo = Repo::new();
     repo.program("agent", AGENT);
     let suite = repo.suite(&command_suite(1));
-    let api = BenchApi::new();
+    let api = CompareApi::new();
     let config = repo.dir.path().join("config/cedr/routes.toml");
     fs::create_dir_all(config.parent().unwrap()).unwrap();
     let cases = [
@@ -1435,7 +1452,7 @@ fn automatic_sending_respects_opt_outs_and_silent_unconfigured_states() {
         if let Some(text) = text {
             fs::write(&config, text).unwrap();
         }
-        let before = stdout_json(&repo.run(&["bench", "history", "--format", "json"]))
+        let before = stdout_json(&repo.run(&["compare", "history", "--format", "json"]))
             .as_array()
             .unwrap()
             .len();
@@ -1455,7 +1472,7 @@ fn automatic_sending_respects_opt_outs_and_silent_unconfigured_states() {
         }
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(stderr.contains("was not sent"), warns, "{stderr}");
-        let after = stdout_json(&repo.run(&["bench", "history", "--format", "json"]))
+        let after = stdout_json(&repo.run(&["compare", "history", "--format", "json"]))
             .as_array()
             .unwrap()
             .len();
@@ -1468,13 +1485,13 @@ fn automatic_sending_respects_opt_outs_and_silent_unconfigured_states() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("was not sent: no API key"));
     api.assert_no_request();
     // --no-push postpones sending: a later bare push still includes that saved result.
-    let due = stdout_json(&repo.run(&["bench", "history", "--format", "json"]))
+    let due = stdout_json(&repo.run(&["compare", "history", "--format", "json"]))
         .as_array()
         .unwrap()
         .len();
     let task = api.respond(vec![(200, false); due]);
     let out = repo
-        .cedr(&["bench", "push", "--format", "json"])
+        .cedr(&["compare", "push", "--format", "json"])
         .env("CEDR_API_KEY", "test-key")
         .output()
         .unwrap();
@@ -1494,27 +1511,27 @@ fn push_continues_after_local_and_server_failures_and_legacy_results_can_be_sent
     let result = seed_result(&repo);
     let mut old = result.clone();
     old.as_object_mut().unwrap().remove("source");
-    store_result(&repo, "b-1-old", &old);
-    let shown = repo.run(&["bench", "show", "b-1-old", "--format", "json"]);
+    store_result(&repo, "c-1-old", &old);
+    let shown = repo.run(&["compare", "show", "c-1-old", "--format", "json"]);
     assert_eq!(code(&shown), 0);
     assert_eq!(stdout_json(&shown)["version"], 1);
     assert!(stdout_json(&shown)["source"].is_null());
     let mut big = result.clone();
     big["variants"]["baseline"]["resolved_models"] = serde_json::json!(vec!["m".repeat(256); 1100]);
-    store_result(&repo, "b-2-big", &big);
-    store_result(&repo, "b-3-denied", &result);
-    store_result(&repo, "b-4-ok", &result);
-    let api = BenchApi::new();
+    store_result(&repo, "c-2-big", &big);
+    store_result(&repo, "c-3-denied", &result);
+    store_result(&repo, "c-4-ok", &result);
+    let api = CompareApi::new();
     let config = api.config(&repo, "");
     let task = api.respond(vec![(403, false), (200, false)]);
     let out = repo
         .cedr(&[
-            "bench",
+            "compare",
             "push",
-            "b-1-old",
-            "b-2-big",
-            "b-3-denied",
-            "b-4-ok",
+            "c-1-old",
+            "c-2-big",
+            "c-3-denied",
+            "c-4-ok",
             "--config",
             &config,
             "--format",
@@ -1527,8 +1544,8 @@ fn push_continues_after_local_and_server_failures_and_legacy_results_can_be_sent
     assert_eq!(bodies.len(), 2);
     assert_eq!(code(&out), 2);
     let report = stdout_json(&out);
-    assert_eq!(report["pushed"], serde_json::json!(["b-4-ok"]));
-    assert_eq!(report["failed"][0]["id"], "b-1-old");
+    assert_eq!(report["pushed"], serde_json::json!(["c-4-ok"]));
+    assert_eq!(report["failed"][0]["id"], "c-1-old");
     assert!(
         report["failed"][0]["error"]
             .as_str()
@@ -1539,7 +1556,7 @@ fn push_continues_after_local_and_server_failures_and_legacy_results_can_be_sent
         report["failed"][1]["error"]
             .as_str()
             .unwrap()
-            .contains("b-2-big: body over 256 KiB (262144 bytes)")
+            .contains("c-2-big: body over 256 KiB (262144 bytes)")
     );
     assert!(
         report["failed"][2]["error"]
@@ -1549,19 +1566,19 @@ fn push_continues_after_local_and_server_failures_and_legacy_results_can_be_sent
     );
     assert!(!String::from_utf8_lossy(&out.stdout).contains("test-key"));
     assert_eq!(
-        fs::read_to_string(repo.dir.path().join("state/cedr/bench-pushed-acme.txt")).unwrap(),
-        "b-4-ok\n"
+        fs::read_to_string(repo.dir.path().join("state/cedr/compare-pushed-acme.txt")).unwrap(),
+        "c-4-ok\n"
     );
     api.assert_no_request();
     let out = repo
-        .cedr(&["bench", "push", "b-1-old", "--config", &config])
+        .cedr(&["compare", "push", "c-1-old", "--config", &config])
         .env("CEDR_API_KEY", "test-key")
         .output()
         .unwrap();
     assert_eq!(code(&out), 2);
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
-        text.starts_with("b-1-old: no repo name saved; pass --repo\n"),
+        text.starts_with("c-1-old: no repo name saved; pass --repo\n"),
         "{text}"
     );
     assert!(text.ends_with("pushed 0 to acme\n"));
@@ -1569,9 +1586,9 @@ fn push_continues_after_local_and_server_failures_and_legacy_results_can_be_sent
     let task = api.respond(vec![(200, true)]);
     let out = repo
         .cedr(&[
-            "bench",
+            "compare",
             "push",
-            "b-1-old",
+            "c-1-old",
             "--config",
             &config,
             "--repo",
@@ -1589,13 +1606,13 @@ fn push_continues_after_local_and_server_failures_and_legacy_results_can_be_sent
 fn dry_run_prints_the_bodies_without_a_key_request_or_sent_marker() {
     let repo = Repo::new();
     let result = seed_result(&repo);
-    store_result(&repo, "b-dry", &result);
-    let api = BenchApi::new();
+    store_result(&repo, "c-dry", &result);
+    let api = CompareApi::new();
     let config = api.config(&repo, "");
     let out = repo.run(&[
-        "bench",
+        "compare",
         "push",
-        "b-dry",
+        "c-dry",
         "--config",
         &config,
         "--repo",
@@ -1607,14 +1624,14 @@ fn dry_run_prints_the_bodies_without_a_key_request_or_sent_marker() {
     assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
     let bodies = stdout_json(&out);
     assert_eq!(bodies.as_array().unwrap().len(), 1);
-    assert_eq!(bodies[0]["result"]["id"], "b-dry");
+    assert_eq!(bodies[0]["result"]["id"], "c-dry");
     assert_eq!(bodies[0]["repo"], "preview/repo");
     assert!(bodies[0]["result"].get("source").is_none());
     assert!(
         !repo
             .dir
             .path()
-            .join("state/cedr/bench-pushed-acme.txt")
+            .join("state/cedr/compare-pushed-acme.txt")
             .exists()
     );
     api.assert_no_request();
@@ -1744,7 +1761,7 @@ fn repo_precedence_sanitizes_remotes_and_ci_metadata_only_describes_github_https
     repo.program("agent", AGENT);
     let invalid_root = repo.root().with_file_name("bad name");
     fs::rename(repo.root(), &invalid_root).unwrap();
-    let suite = invalid_root.join(".cedr/bench/s.toml");
+    let suite = invalid_root.join(".cedr/compare/s.toml");
     let out = repo
         .cedr(&run_args(suite.to_str().unwrap()))
         .current_dir(invalid_root)
@@ -1759,10 +1776,10 @@ fn bare_push_uses_run_name_precedence_and_requires_repo_context() {
     let repo = Repo::new();
     let result = seed_result(&repo);
     for (id, name) in [
-        ("b-flag", "explicit/name"),
-        ("b-actions", "actions/name"),
-        ("b-remote", "remote/name"),
-        ("b-directory", "repo"),
+        ("c-flag", "explicit/name"),
+        ("c-actions", "actions/name"),
+        ("c-remote", "remote/name"),
+        ("c-directory", "repo"),
     ] {
         let mut result = result.clone();
         result["source"]["repo"] = name.into();
@@ -1777,10 +1794,10 @@ fn bare_push_uses_run_name_precedence_and_requires_repo_context() {
             "https://example.invalid/remote/name.git",
         ],
     );
-    let api = BenchApi::new();
+    let api = CompareApi::new();
     let config = api.config(&repo, "");
     let args = [
-        "bench",
+        "compare",
         "push",
         "--config",
         &config,
@@ -1792,9 +1809,9 @@ fn bare_push_uses_run_name_precedence_and_requires_repo_context() {
     let sub = repo.root().join("nested");
     fs::create_dir(&sub).unwrap();
     for (flag, github, expected) in [
-        (Some("explicit/name"), true, "b-flag"),
-        (None, true, "b-actions"),
-        (None, false, "b-remote"),
+        (Some("explicit/name"), true, "c-flag"),
+        (None, true, "c-actions"),
+        (None, false, "c-remote"),
     ] {
         let mut command = repo.cedr(&args);
         command
@@ -1815,7 +1832,7 @@ fn bare_push_uses_run_name_precedence_and_requires_repo_context() {
         &["remote", "set-url", "origin", "/home/alice/web"],
     );
     let out = repo.cedr(&args).current_dir(&sub).output().unwrap();
-    assert_eq!(stdout_json(&out)[0]["result"]["id"], "b-directory");
+    assert_eq!(stdout_json(&out)[0]["result"]["id"], "c-directory");
     let outside = repo.dir.path();
     let out = repo.cedr(&args).current_dir(outside).output().unwrap();
     assert_eq!(code(&out), 2);
@@ -1894,18 +1911,18 @@ fn uploads_clean_paths_controls_empty_values_and_lengths_without_changing_saved_
     for trial in result["trials"].as_array_mut().unwrap() {
         trial["models"] = models.clone();
     }
-    result["id"] = "b-clean".into();
-    store_result(&repo, "b-clean", &result);
-    let path = repo.dir.path().join("state/cedr/bench/b-clean.json");
+    result["id"] = "c-clean".into();
+    store_result(&repo, "c-clean", &result);
+    let path = repo.dir.path().join("state/cedr/compare/c-clean.json");
     let original_bytes = fs::read(&path).unwrap();
-    let original_report = repo.run(&["bench", "show", "b-clean", "--format", "json"]);
+    let original_report = repo.run(&["compare", "show", "c-clean", "--format", "json"]);
     assert_eq!(code(&original_report), 0);
     assert_eq!(stdout_json(&original_report), result);
-    let api = BenchApi::new();
+    let api = CompareApi::new();
     let config = api.config(&repo, "");
     let task = api.respond(vec![(200, false)]);
     let out = repo
-        .cedr(&["bench", "push", "b-clean", "--config", &config])
+        .cedr(&["compare", "push", "c-clean", "--config", &config])
         .env("CEDR_API_KEY", "test-key")
         .output()
         .unwrap();
@@ -1934,7 +1951,7 @@ fn uploads_clean_paths_controls_empty_values_and_lengths_without_changing_saved_
     assert!(!bodies[0].to_string().contains("alice"));
     assert_eq!(fs::read(path).unwrap(), original_bytes);
     assert_eq!(
-        repo.run(&["bench", "show", "b-clean", "--format", "json"])
+        repo.run(&["compare", "show", "c-clean", "--format", "json"])
             .stdout,
         original_report.stdout
     );
@@ -1945,7 +1962,7 @@ fn automatic_sending_uses_machine_config_regardless_of_the_working_directory() {
     let repo = Repo::new();
     repo.program("agent", AGENT);
     let suite = repo.suite(&command_suite(1));
-    let api = BenchApi::new();
+    let api = CompareApi::new();
     api.config(&repo, "");
     // A repository override cannot change or suppress the user's automatic upload destination.
     let outside = repo.dir.path().join("outside");
@@ -1985,7 +2002,7 @@ fn bare_push_requires_matching_names_and_roots_including_from_a_linked_worktree(
     let result = seed_result(&repo);
     let root = result["source"]["root_commit"].as_str().unwrap();
     assert_eq!(result["variants"]["baseline"]["commit"], root);
-    store_result(&repo, "b-1-same-directory", &result);
+    store_result(&repo, "c-1-same-directory", &result);
     let other = Repo::new();
     git(&other.root(), &["checkout", "-q", "--orphan", "unrelated"]);
     other.write("AGENTS.md", "an independent repository\n");
@@ -1993,19 +2010,19 @@ fn bare_push_requires_matching_names_and_roots_including_from_a_linked_worktree(
     let unrelated = seed_result(&other);
     assert_eq!(unrelated["source"]["repo"], result["source"]["repo"]);
     assert_ne!(unrelated["source"]["root_commit"], root);
-    store_result(&repo, "b-2-other-directory", &unrelated);
+    store_result(&repo, "c-2-other-directory", &unrelated);
     let mut legacy = result.clone();
     legacy["source"]
         .as_object_mut()
         .unwrap()
         .remove("root_commit");
-    store_result(&repo, "b-3-no-root", &legacy);
-    let shown = repo.run(&["bench", "show", "b-3-no-root", "--format", "json"]);
+    store_result(&repo, "c-3-no-root", &legacy);
+    let shown = repo.run(&["compare", "show", "c-3-no-root", "--format", "json"]);
     assert_eq!(code(&shown), 0);
     assert!(stdout_json(&shown)["source"]["root_commit"].is_null());
-    let api = BenchApi::new();
+    let api = CompareApi::new();
     let config = api.config(&repo, "");
-    let args = ["bench", "push", "--config", &config, "--format", "json"];
+    let args = ["compare", "push", "--config", &config, "--format", "json"];
     let task = api.respond(vec![(200, false)]);
     let out = repo
         .cedr(&args)
@@ -2015,7 +2032,7 @@ fn bare_push_requires_matching_names_and_roots_including_from_a_linked_worktree(
     assert_eq!(code(&out), 0);
     assert_eq!(
         stdout_json(&out)["pushed"],
-        serde_json::json!(["b-1-same-directory"])
+        serde_json::json!(["c-1-same-directory"])
     );
     assert_eq!(stdout_json(&out)["skipped"], 2);
     assert!(task.join().unwrap()[0]["result"].get("source").is_none());
@@ -2048,17 +2065,17 @@ fn bare_push_requires_matching_names_and_roots_including_from_a_linked_worktree(
     );
     let out = repo
         .cedr(&args)
-        .args(["b-3-no-root", "--dry-run"])
+        .args(["c-3-no-root", "--dry-run"])
         .output()
         .unwrap();
-    assert_eq!(stdout_json(&out)[0]["result"]["id"], "b-3-no-root");
+    assert_eq!(stdout_json(&out)[0]["result"]["id"], "c-3-no-root");
 
     git(
         &repo.root(),
         &["remote", "add", "origin", "https://github.com/Acme/API.git"],
     );
     let network = seed_result(&repo);
-    store_result(&repo, "b-4-same-network", &network);
+    store_result(&repo, "c-4-same-network", &network);
     git(
         &other.root(),
         &[
@@ -2069,10 +2086,10 @@ fn bare_push_requires_matching_names_and_roots_including_from_a_linked_worktree(
         ],
     );
     let other_network = seed_result(&other);
-    store_result(&repo, "b-5-other-network", &other_network);
+    store_result(&repo, "c-5-other-network", &other_network);
     let mut fork = network.clone();
     fork["source"]["repo"] = "fork/api".into();
-    store_result(&repo, "b-6-fork", &fork);
+    store_result(&repo, "c-6-fork", &fork);
     // A linked worktree shares the history and origin even when its directory name differs.
     git(
         &repo.root(),
@@ -2105,7 +2122,7 @@ fn bare_push_requires_matching_names_and_roots_including_from_a_linked_worktree(
     assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(
         stdout_json(&out)["pushed"],
-        serde_json::json!(["b-4-same-network"])
+        serde_json::json!(["c-4-same-network"])
     );
     assert_eq!(stdout_json(&out)["skipped"], 4);
     let bodies = task.join().unwrap();
@@ -2118,14 +2135,14 @@ fn bare_push_requires_matching_names_and_roots_including_from_a_linked_worktree(
 }
 
 #[test]
-fn bench_push_retries_busy_organizations_and_stops_after_three_attempts() {
+fn compare_push_retries_busy_organizations_and_stops_after_three_attempts() {
     let repo = Repo::new();
     let result = seed_result(&repo);
-    store_result(&repo, "b-retry", &result);
-    let api = BenchApi::new();
+    store_result(&repo, "c-retry", &result);
+    let api = CompareApi::new();
     let config = api.config(&repo, "");
     let args = [
-        "bench", "push", "b-retry", "--config", &config, "--format", "json",
+        "compare", "push", "c-retry", "--config", &config, "--format", "json",
     ];
     let task = api.respond_with_retry_after(vec![(503, false, Some("1")), (200, false, None)]);
     let out = repo
@@ -2137,8 +2154,8 @@ fn bench_push_retries_busy_organizations_and_stops_after_three_attempts() {
     let bodies = task.join().unwrap();
     assert_eq!(bodies.len(), 2);
     assert_eq!(bodies[0], bodies[1]);
-    assert_eq!(stdout_json(&out)["pushed"], serde_json::json!(["b-retry"]));
-    let marker = repo.dir.path().join("state/cedr/bench-pushed-acme.txt");
+    assert_eq!(stdout_json(&out)["pushed"], serde_json::json!(["c-retry"]));
+    let marker = repo.dir.path().join("state/cedr/compare-pushed-acme.txt");
     let before = fs::read(&marker).unwrap();
     let task = api.respond_with_retry_after(vec![
         (503, false, None),
@@ -2172,19 +2189,19 @@ fn bench_push_retries_busy_organizations_and_stops_after_three_attempts() {
 fn cleaned_required_fields_use_unknown_without_changing_saved_results() {
     let repo = Repo::new();
     let result = seed_result(&repo);
-    let api = BenchApi::new();
+    let api = CompareApi::new();
     let config = api.config(&repo, "");
     for model in ["~/models/foo/", "/", r"C:\"] {
         let mut result = result.clone();
         result["suite"]["name"] = "\n\t".into();
         result["variants"]["baseline"]["model"] = model.into();
         result["variants"]["baseline"]["ref"] = "\n\u{1b}".into();
-        store_result(&repo, "b-empty", &result);
-        let path = repo.dir.path().join("state/cedr/bench/b-empty.json");
+        store_result(&repo, "c-empty", &result);
+        let path = repo.dir.path().join("state/cedr/compare/c-empty.json");
         let before = fs::read(&path).unwrap();
         let task = api.respond(vec![(200, false)]);
         let out = repo
-            .cedr(&["bench", "push", "b-empty", "--config", &config])
+            .cedr(&["compare", "push", "c-empty", "--config", &config])
             .env("CEDR_API_KEY", "test-key")
             .output()
             .unwrap();
@@ -2203,4 +2220,155 @@ fn cleaned_required_fields_use_unknown_without_changing_saved_results() {
         );
         assert_eq!(fs::read(path).unwrap(), before);
     }
+}
+
+#[test]
+fn vendor_trials_exclude_user_setup_but_keep_the_committed_project_setup() {
+    for vendor in ["claude", "codex"] {
+        let repo = Repo::new();
+        let user = repo.dir.path().join("user");
+        for directory in [".codex", ".claude", ".agents/skills/user"] {
+            fs::create_dir_all(user.join(directory)).unwrap();
+        }
+        for file in [
+            "AGENTS.md",
+            "CLAUDE.md",
+            ".codex/AGENTS.md",
+            ".codex/config.toml",
+            ".claude/CLAUDE.md",
+            ".claude/settings.json",
+            ".claude/.mcp.json",
+            ".agents/skills/user/SKILL.md",
+        ] {
+            fs::write(user.join(file), "user setup must never load").unwrap();
+        }
+        // Synthetic sign-ins: a trial must link them, and leave the originals intact.
+        fs::write(user.join(".codex/auth.json"), "fake sign-in").unwrap();
+        fs::write(user.join(".claude/.credentials.json"), "fake sign-in").unwrap();
+        repo.write("CLAUDE.md", "project rules");
+        repo.write(".claude/settings.json", "{}");
+        repo.write(
+            ".codex/config.toml",
+            "developer_instructions = 'project setup'",
+        );
+        repo.write(
+            ".mcp.json",
+            r#"{"mcpServers":{"project":{"command":"project-server"}}}"#,
+        );
+        repo.commit("project setup");
+        let homes = repo.dir.path().join("homes");
+        repo.program(
+            vendor,
+            &format!(
+                r#"
+if [ "$1" = --version ]; then echo 1; exit 0; fi
+set -eu
+[ "$HOME" != '{user}' ]
+[ "$USERPROFILE" = "$HOME" ]
+[ "$XDG_CONFIG_HOME" = "$HOME/.config" ]
+[ "$XDG_DATA_HOME" = "$HOME/.local/share" ]
+[ "$XDG_STATE_HOME" = "$HOME/.local/state" ]
+[ "$XDG_CACHE_HOME" = "$HOME/.cache" ]
+[ ! -e "$HOME/AGENTS.md" ] && [ ! -e "$HOME/CLAUDE.md" ] && [ ! -e "$HOME/.agents" ]
+[ -z "${{CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD:-}}" ]
+[ -z "${{CODEX_MANAGED_CONFIG_PATH:-}}" ]
+[ -z "${{CLAUDECODE:-}}" ]
+[ -z "${{BASH_ENV:-}}" ]
+[ "$(cat AGENTS.md)" = 'base rules' ]
+[ "$(cat CLAUDE.md)" = 'project rules' ]
+[ -f .claude/settings.json ] && [ -f .codex/config.toml ]
+case '{vendor}' in
+ claude)
+  [ "$CLAUDE_CONFIG_DIR" = "$HOME/.claude" ]
+  [ -L "$CLAUDE_CONFIG_DIR/.credentials.json" ]
+  [ "$(readlink "$CLAUDE_CONFIG_DIR/.credentials.json")" = '{user}/.claude/.credentials.json' ]
+  [ ! -e "$CLAUDE_CONFIG_DIR/settings.json" ]
+  case " $* " in *' --strict-mcp-config '*) ;; *) exit 1;; esac
+  case " $* " in *" --mcp-config $PWD/.mcp.json "*) ;; *) exit 1;; esac
+  case " $* " in *--safe-mode*|*--bare*|*'{user}'*) exit 1;; esac
+  echo '{{"type":"result","subtype":"success","total_cost_usd":0}}'
+  ;;
+ codex)
+  # Model the config loader: this flag would prevent the committed project config loading too.
+  case " $* " in *' --ignore-user-config '*|*' --ignore-rules '*) exit 1;; esac
+  [ "$CODEX_HOME" = "$HOME/.codex" ]
+  [ -L "$CODEX_HOME/auth.json" ]
+  [ "$(readlink "$CODEX_HOME/auth.json")" = '{user}/.codex/auth.json' ]
+  [ ! -e "$CODEX_HOME/AGENTS.md" ] && [ ! -e "$CODEX_HOME/config.toml" ]
+  case " $* " in *"projects.\"$PWD\".trust_level=\"trusted\""*) ;; *) exit 1;; esac
+  echo '{{"type":"turn.completed","usage":{{"input_tokens":1,"output_tokens":1}}}}'
+  ;;
+esac
+echo "$HOME" >> '{homes}'
+"#,
+                user = user.display(),
+                homes = homes.display()
+            ),
+        );
+        let suite = repo.suite(&format!(
+            r#"version = 1
+trials = 2
+[baseline]
+harness = "{vendor}"
+model = "gpt-6-luna"
+[candidate]
+harness = "{vendor}"
+model = "gpt-6-luna"
+permissions = "full"
+[[tasks]]
+id = "t"
+prompt = "p"
+test = "true"
+"#
+        ));
+        let out = repo
+            .cedr(&["compare", "run", &suite, "--no-push", "--format", "json"])
+            .env("HOME", &user)
+            .env("CODEX_HOME", user.join(".codex"))
+            .env("CLAUDE_CONFIG_DIR", user.join(".claude"))
+            .env("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "1")
+            .env("CODEX_MANAGED_CONFIG_PATH", user.join(".codex/config.toml"))
+            .env("CLAUDECODE", "1")
+            .env("BASH_ENV", user.join("startup.sh"))
+            .output()
+            .unwrap();
+        assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+        let result = stdout_json(&out);
+        assert_eq!(result["variants"]["baseline"]["clean_home"], true);
+        assert_eq!(result["variants"]["candidate"]["clean_home"], true);
+        let recorded = fs::read_to_string(&homes).unwrap();
+        let mut paths: Vec<_> = recorded.lines().collect();
+        assert_eq!(paths.len(), 4);
+        paths.sort();
+        paths.dedup();
+        assert_eq!(paths.len(), 4, "trials shared a home");
+        for path in paths {
+            assert!(!Path::new(path).exists(), "home survived its trial");
+        }
+        for file in [".codex/auth.json", ".claude/.credentials.json"] {
+            assert_eq!(fs::read_to_string(user.join(file)).unwrap(), "fake sign-in");
+        }
+    }
+}
+
+#[test]
+fn migrated_results_keep_their_ids_and_missing_clean_home_reads_as_false() {
+    let repo = Repo::new();
+    repo.program("agent", AGENT);
+    let suite = repo.suite(&command_suite(1));
+    let out = repo.run(&run_args(&suite));
+    assert_eq!(code(&out), 0);
+    let mut result = stdout_json(&out);
+    for name in ["baseline", "candidate"] {
+        result["variants"][name]
+            .as_object_mut()
+            .unwrap()
+            .remove("clean_home");
+    }
+    store_result(&repo, "b-migrated", &result);
+    let shown = repo.run(&["compare", "show", "b-migrated", "--format", "json"]);
+    assert_eq!(code(&shown), 0);
+    let shown = stdout_json(&shown);
+    assert_eq!(shown["id"], "b-migrated");
+    assert_eq!(shown["variants"]["baseline"]["clean_home"], false);
 }

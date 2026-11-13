@@ -587,18 +587,18 @@ pub fn send_monitor(sync: &Sync, key: &str, body: &Value) -> Result<Value> {
     serde_json::from_slice(&bytes).map_err(|_| sync_err("monitor reply", "invalid JSON"))
 }
 
-/// Sends one saved Bench result using Route's transport and bounded reply rules.
-pub fn send_bench(sync: &Sync, key: &str, body: &Value) -> Result<Value> {
+/// Sends one saved Compare result using Route's transport and bounded reply rules.
+pub fn send_compare(sync: &Sync, key: &str, body: &Value) -> Result<Value> {
     let client = client(sync.url())?;
     let mut retries = 0;
     loop {
         let response = client
-            .post(format!("{}/bench/runs", sync.url()))
+            .post(format!("{}/compare/runs", sync.url()))
             .bearer_auth(key)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.to_string())
             .send()
-            .map_err(|e| sync_err("bench", request_error(e)))?;
+            .map_err(|e| sync_err("compare", request_error(e)))?;
         // A busy organization lock is transient; idempotent result ids make retrying safe.
         if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE && retries < 2 {
             let seconds = response
@@ -614,10 +614,11 @@ pub fn send_bench(sync: &Sync, key: &str, body: &Value) -> Result<Value> {
             continue;
         }
         if !response.status().is_success() {
-            return Err(reply_error("bench", response, key));
+            return Err(reply_error("compare", response, key));
         }
-        let bytes = read_limited(response, 4096).map_err(|e| sync_err("bench reply", e))?;
-        return serde_json::from_slice(&bytes).map_err(|_| sync_err("bench reply", "invalid JSON"));
+        let bytes = read_limited(response, 4096).map_err(|e| sync_err("compare reply", e))?;
+        return serde_json::from_slice(&bytes)
+            .map_err(|_| sync_err("compare reply", "invalid JSON"));
     }
 }
 
@@ -627,9 +628,9 @@ pub enum SyncRules {
     None,
     PlanRequired,
 }
-/// The organization's Bench cap from the app (docs/bench.md, Budget); None when it has set none.
-pub fn get_bench_budget(sync: &Sync, key: &str) -> Result<Option<f64>> {
-    let mut url = reqwest::Url::parse(&format!("{}/bench/settings", sync.url()))
+/// The organization's Compare cap from the app (docs/compare.md, Budget); None when it has set none.
+pub fn get_compare_budget(sync: &Sync, key: &str) -> Result<Option<f64>> {
+    let mut url = reqwest::Url::parse(&format!("{}/compare/settings", sync.url()))
         .map_err(|_| sync_err("pull", "invalid API URL"))?;
     url.query_pairs_mut().append_pair("org", &sync.org);
     let response = client(sync.url())?

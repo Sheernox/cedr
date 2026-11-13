@@ -1,5 +1,5 @@
-//! `cedr bench ...`: run a suite against a baseline and a candidate, and read the results
-//! (docs/bench.md). Exit codes: run and show 0 complete, 1 the `--fail-on` condition held, 3
+//! `cedr compare ...`: run a suite against a baseline and a candidate, and read the results
+//! (docs/compare.md). Exit codes: run and show 0 complete, 1 the `--fail-on` condition held, 3
 //! incomplete; 2 usage, suite or I/O failure.
 
 use std::collections::HashSet;
@@ -7,9 +7,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use cedr_bench::report::{self, BenchResult, Ci, CiProvider, FailOn, Source};
-use cedr_bench::run::{self, RunOptions, Selection};
-use cedr_bench::suite;
+use cedr_compare::report::{self, Ci, CiProvider, CompareResult, FailOn, Source};
+use cedr_compare::run::{self, RunOptions, Selection};
+use cedr_compare::suite;
 use cedr_route::{config, machine};
 use clap::{Subcommand, ValueEnum};
 use serde_json::{Value, json};
@@ -37,8 +37,8 @@ impl From<FailOnArg> for FailOn {
 }
 
 #[derive(Subcommand)]
-pub enum BenchCommand {
-    /// Write a starter suite to .cedr/bench/
+pub enum CompareCommand {
+    /// Write a starter suite to .cedr/compare/
     Init {
         /// File name, without .toml
         #[arg(long, default_value = "suite")]
@@ -46,7 +46,7 @@ pub enum BenchCommand {
     },
     /// Validate a suite and show what a run would do, starting nothing
     Plan {
-        /// Suite file; default the only *.toml in .cedr/bench/
+        /// Suite file; default the only *.toml in .cedr/compare/
         suite: Option<PathBuf>,
         /// Only this task; repeatable
         #[arg(long = "task", value_name = "ID")]
@@ -59,7 +59,7 @@ pub enum BenchCommand {
     },
     /// Run a suite's agents and tests, within a budget (a suite is code: run ones you trust)
     Run {
-        /// Suite file; default the only *.toml in .cedr/bench/
+        /// Suite file; default the only *.toml in .cedr/compare/
         suite: Option<PathBuf>,
         /// Cap in USD at API prices, instead of the one in your settings
         #[arg(long, value_name = "USD")]
@@ -80,7 +80,7 @@ pub enum BenchCommand {
         /// Do not save or send this run
         #[arg(long)]
         no_record: bool,
-        /// Skip automatic sending for this run; a later bench push can still send it
+        /// Skip automatic sending for this run; a later compare push can still send it
         #[arg(long)]
         no_push: bool,
         /// Repository name recorded with the run
@@ -98,7 +98,7 @@ pub enum BenchCommand {
     },
     /// Print a saved run, with the same report and exit code as when it ran
     Show {
-        /// A run id from `cedr bench history`, or a result file
+        /// A run id from `cedr compare history`, or a result file
         id: String,
         #[arg(long, value_enum, default_value_t = FailOnArg::Never)]
         fail_on: FailOnArg,
@@ -150,10 +150,10 @@ pub enum BenchCommand {
     },
 }
 
-pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
+pub fn run(command: CompareCommand) -> Result<ExitCode, String> {
     match command {
-        BenchCommand::Init { name } => init(&name),
-        BenchCommand::Plan {
+        CompareCommand::Init { name } => init(&name),
+        CompareCommand::Plan {
             suite,
             tasks,
             trials,
@@ -166,7 +166,7 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        BenchCommand::Run {
+        CompareCommand::Run {
             suite,
             budget_usd,
             tasks,
@@ -197,7 +197,7 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             };
             // Progress must never end a run that has spent money, so its failures are ignored.
             let mut result = run::run(&loaded, &options, |line| {
-                let _ = writeln!(std::io::stderr(), "cedr: bench: {line}");
+                let _ = writeln!(std::io::stderr(), "cedr: compare: {line}");
             })
             .map_err(|e| e.to_string())?;
             result.source = Some(source);
@@ -210,7 +210,7 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             }
             Ok(ExitCode::from(result.exit_code(fail_on.into())))
         }
-        BenchCommand::History { limit, format } => {
+        CompareCommand::History { limit, format } => {
             let rows = history_rows(limit)?;
             match format {
                 Format::Json => print_json(&Value::Array(rows)),
@@ -218,7 +218,7 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        BenchCommand::Show {
+        CompareCommand::Show {
             id,
             fail_on,
             format,
@@ -227,7 +227,7 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             print_result(&result, format);
             Ok(ExitCode::from(result.exit_code(fail_on.into())))
         }
-        BenchCommand::Push {
+        CompareCommand::Push {
             ids,
             all,
             org,
@@ -244,7 +244,7 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             dry_run,
             format,
         ),
-        BenchCommand::Budget {
+        CompareCommand::Budget {
             usd,
             unset,
             pull,
@@ -255,23 +255,23 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             let mut settings = settings::Settings::load();
             if let Some(cap) = usd {
                 check_cap(cap, "USD")?;
-                settings.set_bench_budget_usd(Some(cap));
+                settings.set_compare_budget_usd(Some(cap));
                 settings.save()?;
             } else if unset {
-                settings.set_bench_budget_usd(None);
+                settings.set_compare_budget_usd(None);
                 settings.save()?;
             } else if pull {
                 let sync = common::settings(org.as_deref(), config.as_deref())?;
                 let key = cedr_route::sync::api_key().map_err(|e| e.to_string())?;
                 let cap =
-                    cedr_route::sync::get_bench_budget(&sync, &key).map_err(|e| e.to_string())?;
-                settings.set_bench_budget_usd(cap);
+                    cedr_route::sync::get_compare_budget(&sync, &key).map_err(|e| e.to_string())?;
+                settings.set_compare_budget_usd(cap);
                 settings.save()?;
             }
             let (cap, source) = resolve_budget()?;
             match format {
                 Format::Json => print_json(&json!({"budget_usd": cap, "source": source})),
-                Format::Text => println!("bench budget {} ({source})", report::money(cap)),
+                Format::Text => println!("compare budget {} ({source})", report::money(cap)),
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -382,12 +382,12 @@ fn remote_repo(remote: &str) -> Option<String> {
 /// A bare push must identify a repo without treating an arbitrary working directory as one.
 fn current_repo(flag: Option<&str>) -> Result<Source, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let root = cedr_bench::exec::git_root(&cwd).ok();
+    let root = cedr_compare::exec::git_root(&cwd).ok();
     let source = source(flag, root.as_deref());
     // A name alone can collide across organizations, so a bare push needs the repo's history too.
     if source.repo.is_none() || source.root_commit.is_none() {
         return Err(
-            "bench push: cannot determine repo; run it inside the repo, name ids or pass --all"
+            "compare push: cannot determine repo; run it inside the repo, name ids or pass --all"
                 .into(),
         );
     }
@@ -452,7 +452,7 @@ fn push_machine_name(config: &config::Config) -> String {
 const MAX_PUSH_BYTES: usize = 256 * 1024;
 
 fn push_body(
-    result: &BenchResult,
+    result: &CompareResult,
     sync: &config::Sync,
     machine: &Value,
     repo: Option<&str>,
@@ -486,7 +486,7 @@ fn push_body(
 }
 
 /// Clean only the outgoing copy: local reports retain exactly what the harness measured.
-fn clean_outgoing(result: &mut BenchResult) {
+fn clean_outgoing(result: &mut CompareResult) {
     fn text(value: &str, max: usize) -> String {
         common::clip(&report::clean(value), max)
     }
@@ -553,17 +553,17 @@ fn clean_outgoing(result: &mut BenchResult) {
 }
 
 fn pushed_path(org: &str) -> PathBuf {
-    settings::state_file(&format!("bench-pushed-{org}.txt"))
+    settings::state_file(&format!("compare-pushed-{org}.txt"))
 }
 
 /// Mark only accepted results. A lost marker is harmless because the server deduplicates ids.
 fn send_result(sync: &config::Sync, key: &str, id: &str, body: &Value) -> Result<bool, String> {
-    let reply = cedr_route::sync::send_bench(sync, key, body).map_err(|e| e.to_string())?;
+    let reply = cedr_route::sync::send_compare(sync, key, body).map_err(|e| e.to_string())?;
     let duplicate = reply["duplicate"]
         .as_bool()
-        .ok_or("bench reply: missing duplicate")?;
+        .ok_or("compare reply: missing duplicate")?;
     if reply["ok"] != true || reply["id"].as_str() != Some(id) {
-        return Err("bench reply: expected ok and matching result id".into());
+        return Err("compare reply: expected ok and matching result id".into());
     }
     let path = pushed_path(&sync.org);
     if let Some(dir) = path.parent() {
@@ -699,7 +699,7 @@ fn push(
         }
         for failure in &failed {
             eprintln!(
-                "cedr: bench: {}: {}",
+                "cedr: compare: {}: {}",
                 report::clean(failure["id"].as_str().unwrap_or("")),
                 report::clean(failure["error"].as_str().unwrap_or(""))
             );
@@ -735,7 +735,7 @@ fn push(
 }
 
 /// Upload failures cannot replace an expensive measurement's report or gate.
-fn auto_push(result: &BenchResult) {
+fn auto_push(result: &CompareResult) {
     let outcome: Result<Option<String>, String> = (|| {
         let Some(config) = local_config()? else {
             return Ok(None);
@@ -753,7 +753,7 @@ fn auto_push(result: &BenchResult) {
         Ok(Some(org)) => {
             let _ = writeln!(
                 std::io::stderr(),
-                "cedr: bench: pushed {} to {org}",
+                "cedr: compare: pushed {} to {org}",
                 result.id
             );
         }
@@ -761,7 +761,7 @@ fn auto_push(result: &BenchResult) {
         Err(error) => {
             let _ = writeln!(
                 std::io::stderr(),
-                "cedr: bench: {} was not sent: {}; cedr bench push can send it later",
+                "cedr: compare: {} was not sent: {}; cedr compare push can send it later",
                 result.id,
                 report::clean(&error)
             );
@@ -769,9 +769,9 @@ fn auto_push(result: &BenchResult) {
     }
 }
 
-const STARTER: &str = r#"# A Cedr Bench suite: https://cedr.dev/docs/bench
+const STARTER: &str = r#"# A Cedr Compare suite: https://cedr.dev/docs/compare
 # A suite is code: setup and test are shell commands that run with your permissions.
-# Check it with `cedr bench plan`; run it with `cedr bench run --budget-usd 5`.
+# Check it with `cedr compare plan`; run it with `cedr compare run --budget-usd 5`.
 version = 1
 trials = 3
 timeout_seconds = 600
@@ -793,7 +793,7 @@ id = "first-task"
 prompt = "Describe a real task here, one the tests below can judge."
 # setup = "npm ci"          # runs before the agent, in a fresh clone
 test = "npm test"           # exit 0 is a pass
-# test_files = ".cedr/bench/first-task"   # copied over the clone after the agent stops
+# test_files = ".cedr/compare/first-task"   # copied over the clone after the agent stops
 "#;
 
 fn init(name: &str) -> Result<ExitCode, String> {
@@ -808,10 +808,10 @@ fn init(name: &str) -> Result<ExitCode, String> {
         ));
     }
     let cwd = std::env::current_dir().map_err(|e| format!("current directory: {e}"))?;
-    let root = cedr_bench::exec::git_root(&cwd).map_err(|e| e.to_string())?;
+    let root = cedr_compare::exec::git_root(&cwd).map_err(|e| e.to_string())?;
     let path = root
         .join(".cedr")
-        .join("bench")
+        .join("compare")
         .join(format!("{name}.toml"));
     if path.exists() {
         eprintln!("cedr: {} already exists", path.display());
@@ -823,7 +823,7 @@ fn init(name: &str) -> Result<ExitCode, String> {
         "cedr: next: 1. write a real task's prompt and test in it; \
          2. make the candidate differ from the baseline: commit the agent setup change to measure so HEAD differs from main, \
          or drop both refs and give the candidate another model to compare models; \
-         3. run cedr bench plan to check the suite, then cedr bench run --budget-usd 5"
+         3. run cedr compare plan to check the suite, then cedr compare run --budget-usd 5"
     );
     Ok(ExitCode::SUCCESS)
 }
@@ -836,9 +836,9 @@ fn check_cap(cap: f64, key: &str) -> Result<(), String> {
     }
 }
 
-/// The cap and where it came from, without a `--budget-usd` flag (docs/bench.md, Budget).
+/// The cap and where it came from, without a `--budget-usd` flag (docs/compare.md, Budget).
 fn resolve_budget() -> Result<(f64, &'static str), String> {
-    Ok(match settings::Settings::load().bench_budget_usd()? {
+    Ok(match settings::Settings::load().compare_budget_usd()? {
         Some(cap) => (cap, "settings"),
         None => (DEFAULT_BUDGET_USD, "default"),
     })
@@ -866,7 +866,7 @@ pub(crate) fn plan_value(
 fn plan_text(plan: &Value) -> String {
     let budget = report::money(plan["budget_usd"].as_f64().unwrap_or(0.0));
     let mut out = format!(
-        "bench {}: {} trials ({} per task and variant), budget {budget} ({})\n",
+        "compare {}: {} trials ({} per task and variant), budget {budget} ({})\n",
         report::clean(plan["suite"].as_str().unwrap_or("")),
         plan["total_trials"],
         plan["trials_each"],
@@ -906,61 +906,61 @@ fn plan_text(plan: &Value) -> String {
     out
 }
 
-/// `cedr doctor`'s Bench checks (docs/doctor.md): the cap in force, and whether each suite in the
+/// `cedr doctor`'s Compare checks (docs/doctor.md): the cap in force, and whether each suite in the
 /// repo would plan, plus the automatic upload destination. Starts no agent.
 pub(crate) fn doctor_checks(root: &Path, mut add: impl FnMut(&str, &str, String, &str)) {
     match resolve_budget() {
         Ok((cap, source)) => add(
-            "bench.budget",
+            "compare.budget",
             "ok",
             format!("{} ({source})", report::money(cap)),
             "",
         ),
         Err(e) => add(
-            "bench.budget",
+            "compare.budget",
             "fail",
             e,
-            "Fix or remove the settings file it names; cedr bench budget --unset clears a broken value",
+            "Fix or remove the settings file it names; cedr compare budget --unset clears a broken value",
         ),
     }
     match local_config() {
         Ok(Some(config)) => match config.sync {
             Some(sync) if sync.auto => add(
-                "bench.push",
+                "compare.push",
                 "ok",
                 format!("results sent automatically to {}", sync.org),
                 "",
             ),
             Some(sync) => add(
-                "bench.push",
+                "compare.push",
                 "skip",
                 format!(
                     "automatic sending off (auto = false); organization {}",
                     sync.org
                 ),
-                "Run cedr bench push to send saved results, or set [sync] auto = true",
+                "Run cedr compare push to send saved results, or set [sync] auto = true",
             ),
             None => add(
-                "bench.push",
+                "compare.push",
                 "skip",
                 "no [sync]; results are not sent automatically".into(),
                 "Add [sync] to routes.toml to send results automatically",
             ),
         },
         Ok(None) => add(
-            "bench.push",
+            "compare.push",
             "skip",
             "no config; results are not sent automatically".into(),
             "Add [sync] to routes.toml to send results automatically",
         ),
         Err(error) => add(
-            "bench.push",
+            "compare.push",
             "warn",
             format!("automatic sending unavailable: {error}"),
-            "Repair routes.toml; cedr bench push can send saved results later",
+            "Repair routes.toml; cedr compare push can send saved results later",
         ),
     }
-    let dir = root.join(".cedr").join("bench");
+    let dir = root.join(".cedr").join("compare");
     let mut suites: Vec<PathBuf> = std::fs::read_dir(&dir)
         .into_iter()
         .flatten()
@@ -970,10 +970,10 @@ pub(crate) fn doctor_checks(root: &Path, mut add: impl FnMut(&str, &str, String,
     suites.sort();
     if suites.is_empty() {
         add(
-            "bench.suite",
+            "compare.suite",
             "skip",
-            "no suite in .cedr/bench/".into(),
-            "Run cedr bench init to start one",
+            "no suite in .cedr/compare/".into(),
+            "Run cedr compare init to start one",
         );
     }
     for path in suites {
@@ -983,31 +983,31 @@ pub(crate) fn doctor_checks(root: &Path, mut add: impl FnMut(&str, &str, String,
         let name = path.display();
         match planned {
             Ok(plan) if plan.warnings.is_empty() => {
-                add("bench.suite", "ok", format!("{name} plans"), "")
+                add("compare.suite", "ok", format!("{name} plans"), "")
             }
             Ok(plan) => add(
-                "bench.suite",
+                "compare.suite",
                 "warn",
                 format!("{name}: {}", plan.warnings.join("; ")),
-                "Run cedr bench plan",
+                "Run cedr compare plan",
             ),
-            Err(e) => add("bench.suite", "fail", e, "Run cedr bench plan"),
+            Err(e) => add("compare.suite", "fail", e, "Run cedr compare plan"),
         }
     }
 }
 
 fn results_dir() -> PathBuf {
-    settings::state_file("bench")
+    settings::state_file("compare")
 }
 
-fn save(result: &BenchResult) -> Result<(), String> {
+fn save(result: &CompareResult) -> Result<(), String> {
     let path = results_dir().join(format!("{}.json", result.id));
     let text = serde_json::to_vec_pretty(result).map_err(|e| e.to_string())?;
     settings::write_atomic(&path, &text)
 }
 
 /// A result by run id or by file path. Files are capped before reading and validated after.
-pub(crate) fn read_result(id: &str) -> Result<BenchResult, String> {
+pub(crate) fn read_result(id: &str) -> Result<CompareResult, String> {
     let path = if run::is_result_id(id) {
         results_dir().join(format!("{id}.json"))
     } else {
@@ -1016,7 +1016,7 @@ pub(crate) fn read_result(id: &str) -> Result<BenchResult, String> {
     read_result_file(&path)
 }
 
-fn read_result_file(path: &Path) -> Result<BenchResult, String> {
+fn read_result_file(path: &Path) -> Result<CompareResult, String> {
     let name = path.display();
     let size = std::fs::metadata(path)
         .map_err(|e| format!("{name}: {e}"))?
@@ -1058,7 +1058,7 @@ pub(crate) fn history_rows(limit: usize) -> Result<Vec<Value>, String> {
                 "baseline": {"passed": r.summary.baseline.passed, "scored": r.summary.baseline.scored},
                 "candidate": {"passed": r.summary.candidate.passed, "scored": r.summary.candidate.scored},
             })),
-            Err(e) => eprintln!("cedr: bench: skipped {e}"),
+            Err(e) => eprintln!("cedr: compare: skipped {e}"),
         }
     }
     Ok(rows)
@@ -1066,7 +1066,7 @@ pub(crate) fn history_rows(limit: usize) -> Result<Vec<Value>, String> {
 
 fn history_text(rows: &[Value]) -> String {
     if rows.is_empty() {
-        return "no saved bench runs\n".into();
+        return "no saved compare runs\n".into();
     }
     let mut out = String::new();
     for row in rows {
@@ -1098,7 +1098,7 @@ fn print_json(value: &Value) {
 }
 
 /// Prints the report. A reader that has gone away must not replace the run's exit code with a panic.
-fn print_result(result: &BenchResult, format: Format) {
+fn print_result(result: &CompareResult, format: Format) {
     let text = match format {
         Format::Text => result.text(),
         Format::Json => {

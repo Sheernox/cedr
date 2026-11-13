@@ -1,5 +1,5 @@
 name: cedr
-description: Check Guard inventory and Sync agent configuration, report drift, repair generated files with a pull request, and run Bench suites
+description: Check Guard inventory and Sync agent configuration, report drift, repair generated files with a pull request, and run Compare suites
 author: Sheernox
 branding:
   icon: shield
@@ -31,20 +31,20 @@ inputs:
   sync-fix:
     description: "Repair Sync drift with a PR on push, schedule or workflow_dispatch; needs contents and pull-requests write"
     default: "false"
-  bench:
-    description: "A Bench suite to run, for example .cedr/bench/agents.toml; empty skips Bench. Results are sent when push-org and CEDR_API_KEY are set. A suite is code: never point this at one from an untrusted pull request"
+  compare:
+    description: "A Compare suite to run, for example .cedr/compare/agents.toml; empty skips Compare. Results are sent when push-org and CEDR_API_KEY are set. A suite is code: never point this at one from an untrusted pull request"
     default: ""
-  bench-budget-usd:
-    description: Cap for the Bench run in USD at API prices; default the app's cap when push-org and CEDR_API_KEY are set, else the CLI default
+  compare-budget-usd:
+    description: Cap for the Compare run in USD at API prices; default the app's cap when push-org and CEDR_API_KEY are set, else the CLI default
     default: ""
-  bench-fail-on:
+  compare-fail-on:
     description: "Fail when the candidate's pass rate is lower (lower), also with no overlap in the intervals (separated), or never"
     default: never
-  bench-allow-unpriced:
-    description: "Run Bench variants whose spend the budget cannot see, such as a command harness: true or false"
+  compare-allow-unpriced:
+    description: "Run Compare variants whose spend the budget cannot see, such as a command harness: true or false"
     default: "false"
   push-org:
-    description: When set with the CEDR_API_KEY env, send Guard, Sync and saved Bench results to this cedr.dev organization (also when checks fail; a Bench send failure only warns)
+    description: When set with the CEDR_API_KEY env, send Guard, Sync and saved Compare results to this cedr.dev organization (also when checks fail; a Compare send failure only warns)
     default: ""
 
 runs:
@@ -136,34 +136,34 @@ runs:
         INPUT_PATH: ${{ inputs.path }}
       run: cedr outdated "$INPUT_PATH" --format github
 
-    - name: cedr bench
-      id: bench
-      if: ${{ always() && inputs.bench != '' }}
+    - name: cedr compare
+      id: compare
+      if: ${{ always() && inputs.compare != '' }}
       shell: bash
       continue-on-error: true
       env:
         INPUT_PATH: ${{ inputs.path }}
-        INPUT_SUITE: ${{ inputs.bench }}
-        INPUT_BUDGET: ${{ inputs.bench-budget-usd }}
-        INPUT_FAIL_ON: ${{ inputs.bench-fail-on }}
-        INPUT_ALLOW_UNPRICED: ${{ inputs.bench-allow-unpriced }}
+        INPUT_SUITE: ${{ inputs.compare }}
+        INPUT_BUDGET: ${{ inputs.compare-budget-usd }}
+        INPUT_FAIL_ON: ${{ inputs.compare-fail-on }}
+        INPUT_ALLOW_UNPRICED: ${{ inputs.compare-allow-unpriced }}
         INPUT_ORG: ${{ inputs.push-org }}
       run: |
         # Actions runs this with -e, and an incomplete run must still reach the summary below.
         set +e -uo pipefail
         cd "$INPUT_PATH" || exit 2
-        args=(bench run "$INPUT_SUITE" --no-push --fail-on "$INPUT_FAIL_ON")
+        args=(compare run "$INPUT_SUITE" --no-push --fail-on "$INPUT_FAIL_ON")
         case "$INPUT_ALLOW_UNPRICED" in
           true) args+=(--allow-unpriced) ;;
           false) ;;
-          *) echo "::error title=cedr::bench-allow-unpriced must be true or false"; exit 2 ;;
+          *) echo "::error title=cedr::compare-allow-unpriced must be true or false"; exit 2 ;;
         esac
         if [ -n "$INPUT_BUDGET" ]; then
           args+=(--budget-usd "$INPUT_BUDGET")
         elif [ -n "$INPUT_ORG" ] && [ -n "${CEDR_API_KEY:-}" ]; then
-          cedr bench budget --pull --org "$INPUT_ORG" || exit 2
+          cedr compare budget --pull --org "$INPUT_ORG" || exit 2
         fi
-        report="$RUNNER_TEMP/cedr-bench-report.txt"
+        report="$RUNNER_TEMP/cedr-compare-report.txt"
         cedr "${args[@]}" | tee "$report"
         status=${PIPESTATUS[0]}
         # The report is a text table: outside a code block, markdown would run its lines together.
@@ -171,7 +171,7 @@ runs:
           { echo '```text'; cat "$report"; echo '```'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
         fi
         if [ -n "$INPUT_ORG" ] && [ -n "${CEDR_API_KEY:-}" ]; then
-          cedr bench push --org "$INPUT_ORG" || echo "::warning title=cedr::Bench results were not sent"
+          cedr compare push --org "$INPUT_ORG" || echo "::warning title=cedr::Compare results were not sent"
         fi
         exit "$status"
 
@@ -268,7 +268,7 @@ runs:
         VERIFY: ${{ steps.verify.outcome }}
         SYNC: ${{ steps.sync.outcome }}
         SYNC_FIX: ${{ steps.sync-fix.outcome }}
-        BENCH: ${{ steps.bench.outcome }}
+        COMPARE: ${{ steps.compare.outcome }}
       run: |
         echo "cedr guard lint: $LINT, cedr guard verify: $VERIFY"
-        [ "$LINT" != failure ] && [ "$VERIFY" != failure ] && [ "$SYNC" != failure ] && [ "$SYNC_FIX" != failure ] && [ "$BENCH" != failure ]
+        [ "$LINT" != failure ] && [ "$VERIFY" != failure ] && [ "$SYNC" != failure ] && [ "$SYNC_FIX" != failure ] && [ "$COMPARE" != failure ]

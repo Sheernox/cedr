@@ -214,8 +214,8 @@ fn json(v: impl serde::Serialize) -> Value {
 
 #[derive(Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
-pub struct BenchPlanArgs {
-    /// Suite file; default the only *.toml in .cedr/bench/
+pub struct ComparePlanArgs {
+    /// Suite file; default the only *.toml in .cedr/compare/
     suite: Option<PathBuf>,
     /// Only these task ids
     task: Option<Vec<String>>,
@@ -225,41 +225,46 @@ pub struct BenchPlanArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
-pub struct BenchHistoryArgs {
+pub struct CompareHistoryArgs {
     /// How many runs, newest first; default 20
     limit: Option<usize>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
-pub struct BenchShowArgs {
-    /// A run id from bench_history, or a result file
+pub struct CompareShowArgs {
+    /// A run id from compare_history, or a result file
     id: String,
 }
 
 #[tool_router]
 impl RouteServer {
-    #[tool(description = "Validate a Bench suite and show what a run would do, starting nothing.")]
-    async fn bench_plan(&self, Parameters(a): Parameters<BenchPlanArgs>) -> CallToolResult {
+    #[tool(
+        description = "Validate a Compare suite and show what a run would do, starting nothing."
+    )]
+    async fn compare_plan(&self, Parameters(a): Parameters<ComparePlanArgs>) -> CallToolResult {
         blocking(move || {
-            crate::bench::plan_value(a.suite.as_deref(), a.task.unwrap_or_default(), a.trials)
+            crate::compare::plan_value(a.suite.as_deref(), a.task.unwrap_or_default(), a.trials)
                 .map_err(cedr_route::Error::Usage)
         })
         .await
     }
-    #[tool(description = "Saved Bench runs with their pass counts and spend, newest first.")]
-    async fn bench_history(&self, Parameters(a): Parameters<BenchHistoryArgs>) -> CallToolResult {
+    #[tool(description = "Saved Compare runs with their pass counts and spend, newest first.")]
+    async fn compare_history(
+        &self,
+        Parameters(a): Parameters<CompareHistoryArgs>,
+    ) -> CallToolResult {
         blocking(move || {
-            crate::bench::history_rows(a.limit.unwrap_or(20))
+            crate::compare::history_rows(a.limit.unwrap_or(20))
                 .map(Value::Array)
                 .map_err(cedr_route::Error::Usage)
         })
         .await
     }
-    #[tool(description = "One saved Bench run: its variants, trials, counts and spend.")]
-    async fn bench_show(&self, Parameters(a): Parameters<BenchShowArgs>) -> CallToolResult {
+    #[tool(description = "One saved Compare run: its variants, trials, counts and spend.")]
+    async fn compare_show(&self, Parameters(a): Parameters<CompareShowArgs>) -> CallToolResult {
         blocking(move || {
-            crate::bench::read_result(&a.id)
+            crate::compare::read_result(&a.id)
                 .map(json)
                 .map_err(cedr_route::Error::Usage)
         })
@@ -613,6 +618,23 @@ mod tests {
                 });
         }
         true
+    }
+
+    #[test]
+    fn compare_tools_publish_the_arguments_clients_use() {
+        let tools = RouteServer::tool_router().list_all();
+        for (name, arguments) in [
+            (
+                "compare_plan",
+                json!({"suite": ".cedr/compare/tasks.toml", "task": ["parser"], "trials": 2}),
+            ),
+            ("compare_history", json!({"limit": 5})),
+            ("compare_show", json!({"id": "c-20261101T193000Z-abcdef"})),
+        ] {
+            let tool = tools.iter().find(|t| t.name == name).unwrap();
+            let schema = Value::Object((*tool.input_schema).clone());
+            assert!(valid(&schema, &schema, &arguments), "{name}");
+        }
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Suite files (docs/bench.md, Suite): parsing, validation and the digest that identifies a suite.
+//! Suite files (docs/compare.md, Suite): parsing, validation and the digest that identifies a suite.
 //! A suite is code the user chose to run, but it still cannot set its own budget, and every value
 //! that reaches a command line is checked so a typo cannot turn into a flag.
 
@@ -87,13 +87,13 @@ pub struct Loaded {
     pub sha256: String,
 }
 
-/// The suite named by `arg`, or the only `*.toml` in `.cedr/bench/` of the repo at `cwd`.
+/// The suite named by `arg`, or the only `*.toml` in `.cedr/compare/` of the repo at `cwd`.
 pub fn locate(arg: Option<&Path>, cwd: &Path) -> Result<PathBuf> {
     if let Some(path) = arg {
         return Ok(path.to_path_buf());
     }
     let root = exec::git_root(cwd)?;
-    let dir = root.join(".cedr").join("bench");
+    let dir = root.join(".cedr").join("compare");
     let mut found = Vec::new();
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
