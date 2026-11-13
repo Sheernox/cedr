@@ -402,3 +402,92 @@ fn version_checks_accept_the_full_muse_build_revision() {
     ));
     assert!(container::version_matches("codex-cli 0.167.2", "0.167.2"));
 }
+
+#[test]
+fn suite_image_build_uses_the_suite_root_and_its_dockerfile() {
+    let args = container::build_args(Path::new("/suite-snapshot"), "base:test").unwrap();
+    assert_eq!(args.last().unwrap(), "/suite-snapshot");
+    assert!(
+        args.windows(2)
+            .any(|a| a == ["--file", "/suite-snapshot/image/Dockerfile"])
+    );
+}
+
+#[test]
+fn claude_cost_uses_cache_lifetimes_and_request_prompt_tiers() {
+    use cedr_bench::adapter::{self, Harness};
+    let request = serde_json::json!({"type":"assistant", "message": {
+        "id":"message-one", "model":"claude-haiku-5-5", "usage": {
+            "input_tokens":10, "cache_read_input_tokens":90000,
+            "cache_creation_input_tokens":10000, "output_tokens":100,
+            "cache_creation":{"ephemeral_1h_input_tokens":8000}
+        }
+    }});
+    let result = serde_json::json!({"type":"result", "total_cost_usd":999,
+        "modelUsage":{"claude-haiku-5-5":{
+            "inputTokens":20,"cacheReadInputTokens":90000,"cacheCreationInputTokens":10000,
+            "cacheCreationEphemeral1hInputTokens":8000,"outputTokens":110,"thinkingTokens":50
+        }}
+    });
+    // A content block repeated for one message must not apply the premium twice.
+    let text = format!("{request}\n{request}\n{result}\n");
+    let usage = adapter::parse(Harness::Claude, text.as_bytes(), "claude-haiku-5-5");
+    let request_cost =
+        (10.0 * 0.1 + 90000.0 * 0.01 + 2000.0 * 0.125 + 8000.0 * 0.2 + 100.0 * 0.5) / 1e6;
+    let expected = request_cost * 5.0 + (10.0 * 0.1 + 10.0 * 0.5) / 1e6;
+    assert!((usage.cost_usd.unwrap() - expected).abs() < 1e-12);
+    assert_eq!(usage.tokens.reasoning_tokens, Some(50));
+    assert_eq!(
+        adapter::parse(
+            Harness::Claude,
+            result.to_string().as_bytes(),
+            "claude-haiku-5-5"
+        )
+        .cost_usd,
+        None
+    );
+    let mut boundary = request;
+    boundary["message"]["usage"]["input_tokens"] = 0.into();
+    let mut total = result;
+    total["modelUsage"]["claude-haiku-5-5"]["inputTokens"] = 0.into();
+    let usage = adapter::parse(
+        Harness::Claude,
+        format!("{boundary}\n{total}\n").as_bytes(),
+        "claude-haiku-5-5",
+    );
+    assert!((usage.cost_usd.unwrap() - (900.0 + 250.0 + 1600.0 + 55.0) / 1e6).abs() < 1e-12);
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_install_overrides_an_inherited_non_root_home() {
+    // Execute the generated installer shell with offline stand-ins for its I/O.
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("curl"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::write(
+        temp.path().join("bash"),
+        "#!/bin/sh\nprintf '%s' \"$HOME\" > \"$INSTALL_HOME_RECORD\"\n",
+    )
+    .unwrap();
+    std::fs::write(temp.path().join("cp"), "#!/bin/sh\nexit 0\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    for name in ["curl", "bash", "cp"] {
+        std::fs::set_permissions(
+            temp.path().join(name),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    let record = temp.path().join("installer-home");
+    let install = container::claude_install("1.2.3");
+    let status = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(install.strip_prefix("RUN ").unwrap())
+        .env("PATH", temp.path())
+        .env("HOME", "/home/bench")
+        .env("INSTALL_HOME_RECORD", &record)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert_eq!(std::fs::read_to_string(record).unwrap(), "/root");
+}

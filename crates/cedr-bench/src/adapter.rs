@@ -81,6 +81,51 @@ fn snake(v: &Value) -> Tokens {
         reasoning_tokens: n(v, "reasoning_tokens"),
     }
 }
+// Claude's result totals include side queries, but only request usage can select a
+// long-prompt tier. Deduplicate content blocks by message id before applying it.
+fn claude_cost(model: &str, row: &Value, events: &[Value]) -> Option<f64> {
+    let tokens = Tokens {
+        input_tokens: n(row, "inputTokens"),
+        cache_read_tokens: n(row, "cacheReadInputTokens"),
+        cache_write_tokens: n(row, "cacheCreationInputTokens"),
+        output_tokens: n(row, "outputTokens"),
+        reasoning_tokens: None,
+    };
+    let (price, _) = cedr_monitor::pricing::price(model)?;
+    let hour = n(row, "cacheCreationEphemeral1hInputTokens").unwrap_or(0);
+    tokens.cache_write_tokens.unwrap_or(0).checked_sub(hour)?;
+    let mut cost = priced(model, &tokens)?
+        + hour as f64 * (price.cache_write1h - price.cache_write5m) / 1_000_000.0;
+    if let Some(tier) = &price.long_prompt {
+        let mut requests = std::collections::BTreeMap::new();
+        for event in events {
+            let message = &event["message"];
+            if event["type"] == "assistant" && message["model"] == model {
+                requests.insert(message["id"].as_str()?, &message["usage"]);
+            }
+        }
+        let mut seen = 0_u64;
+        for usage in requests.values() {
+            let request = snake(usage);
+            let input = request.input()?;
+            seen = seen.checked_add(input)?;
+            if input > tier.above_input_tokens {
+                let hour = n(&usage["cache_creation"], "ephemeral_1h_input_tokens").unwrap_or(0);
+                request.cache_write_tokens.unwrap_or(0).checked_sub(hour)?;
+                let base = priced(model, &request)?
+                    + hour as f64 * (price.cache_write1h - price.cache_write5m) / 1_000_000.0;
+                cost += base * (tier.multiplier - 1.0);
+            }
+        }
+        // Unobserved side queries are provably below the threshold only when their
+        // combined input is. Otherwise refuse pricing rather than guessing a tier.
+        if tokens.input()?.checked_sub(seen)? > tier.above_input_tokens {
+            return None;
+        }
+    }
+    Some(cost)
+}
+
 /// Cost follows the full per-model usage, never the vendor's subscription bill.
 pub fn parse(h: Harness, text: &[u8], model: &str) -> Usage {
     let text = String::from_utf8_lossy(text);
@@ -116,7 +161,8 @@ pub fn parse(h: Harness, text: &[u8], model: &str) -> Usage {
                                 cache_read_tokens: n(r, "cacheReadInputTokens"),
                                 cache_write_tokens: n(r, "cacheCreationInputTokens"),
                                 output_tokens: n(r, "outputTokens"),
-                                reasoning_tokens: n(r, "reasoningTokens"),
+                                reasoning_tokens: n(r, "reasoningTokens")
+                                    .or_else(|| n(r, "thinkingTokens")),
                             },
                         ));
                     }
@@ -232,7 +278,21 @@ pub fn parse(h: Harness, text: &[u8], model: &str) -> Usage {
     let mut models = std::collections::BTreeSet::new();
     let mut cost = if rows.is_empty() { None } else { Some(0.0) };
     for (m, t) in rows {
-        cost = cost.zip(priced(&m, &t)).map(|(a, b)| a + b);
+        let row_cost = if h == Harness::Claude {
+            events
+                .iter()
+                .rev()
+                .find_map(|v| v["modelUsage"].get(&m))
+                .and_then(|row| claude_cost(&m, row, &events))
+                .or_else(|| {
+                    (events.iter().all(|v| v.get("modelUsage").is_none()))
+                        .then(|| priced(&m, &t))
+                        .flatten()
+                })
+        } else {
+            priced(&m, &t)
+        };
+        cost = cost.zip(row_cost).map(|(a, b)| a + b);
         merge(&mut out.tokens, &t);
         models.insert(m);
     }
@@ -265,7 +325,8 @@ pub fn argv(
             "--safe-mode",
             "--strict-mcp-config",
             "--output-format",
-            "json",
+            "stream-json",
+            "--verbose",
             "--no-session-persistence",
             "--permission-mode",
             "bypassPermissions",

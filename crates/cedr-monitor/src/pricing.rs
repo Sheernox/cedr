@@ -13,6 +13,16 @@ pub struct Price {
     pub cache_read: f64,
     pub cache_write5m: f64,
     pub cache_write1h: f64,
+    #[serde(default)]
+    pub long_prompt: Option<LongPrompt>,
+}
+
+/// Request-level premium; aggregate session tokens cannot select this tier.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LongPrompt {
+    pub above_input_tokens: u64,
+    pub multiplier: f64,
 }
 
 /// How a model found its price.

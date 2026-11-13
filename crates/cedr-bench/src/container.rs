@@ -212,6 +212,30 @@ pub fn task_args(
     args.push(image.into());
     args
 }
+/// Dockerfile COPY sources are rooted at the suite, independent of the caller's directory.
+pub fn build_args(root: &Path, tag: &str) -> Result<Vec<String>> {
+    Ok(vec![
+        "build".into(),
+        "--file".into(),
+        root.join("image/Dockerfile")
+            .to_str()
+            .ok_or("non UTF-8 image path")?
+            .into(),
+        "--provenance=false".into(),
+        "--quiet".into(),
+        "--tag".into(),
+        tag.into(),
+        root.to_str().ok_or("non UTF-8 suite path")?.into(),
+    ])
+}
+
+/// Base images may set HOME for their non-root user; install the vendor binary as root.
+pub fn claude_install(version: &str) -> String {
+    format!(
+        "RUN curl -fsSL https://claude.ai/install.sh -o /tmp/install.sh && HOME=/root bash /tmp/install.sh {version} && cp -L /root/.local/bin/claude /usr/local/bin/claude\n"
+    )
+}
+
 pub struct Container {
     pub base: String,
     pub image: String,
@@ -228,19 +252,12 @@ impl Container {
             .rsplit_once("@sha256:")
             .is_some_and(|(_, d)| d.len() == 64 && d.bytes().all(|b| b.is_ascii_hexdigit()));
         if build {
-            let path = suite.root.join("image");
-            if !path.join("Dockerfile").is_file() {
+            if !suite.root.join("image/Dockerfile").is_file() {
                 return Err("--build-image needs suite image/Dockerfile".into());
             }
             let tag = format!("cedr-bench-base:{}", &suite.digest[..16]);
-            docker(&[
-                "build",
-                "--provenance=false",
-                "--quiet",
-                "--tag",
-                &tag,
-                path.to_str().ok_or("non UTF-8 image path")?,
-            ])?;
+            let args = build_args(&suite.root, &tag)?;
+            docker(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
             self.base = docker(&["image", "inspect", "--format", "{{.Id}}", &tag])?;
         } else {
             if !pinned {
@@ -318,9 +335,7 @@ impl Container {
             let context = c._scratch.path().join("layer");
             std::fs::create_dir(&context).map_err(|e| e.to_string())?;
             let install = match h {
-                Harness::Claude => format!(
-                    "RUN curl -fsSL https://claude.ai/install.sh -o /tmp/install.sh && bash /tmp/install.sh {version} && cp -L /root/.local/bin/claude /usr/local/bin/claude\n"
-                ),
+                Harness::Claude => claude_install(version),
                 Harness::Codex => format!("RUN npm install -g @openai/codex@{version}\n"),
                 Harness::Gemini => format!("RUN npm install -g @google/gemini-cli@{version}\n"),
                 Harness::Muse | Harness::Grok => {

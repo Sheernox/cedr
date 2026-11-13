@@ -30,6 +30,8 @@ graders/<id>/grade        the hidden grader; never copied into the workspace
 
 `score` is the mean task score over the code tasks, times 100. A task the run never reached counts as zero. `solved` is the number of code tasks at four of four. There is no judge model anywhere.
 
+The code score is a correctness gate. The headline comparisons are cost per solved code task (the sum of code-task list costs divided by code tasks solved) and time per task, derived from the existing task records. Visual costs and probe costs remain part of run spend but not the cost-per-solved numerator.
+
 ## Cost: a goal, not a limit
 
 - The edition sets `goal_usd` (10.00 in edition 1), at API list prices from the Monitor price table, including for runs on a subscription.
@@ -133,7 +135,7 @@ The adapters are Claude, Codex, Muse, Grok, Gemini ([documentation-derived](http
 
 ## Usage and accounting
 
-Five nullable token fields are fresh `input_tokens`, `cache_read_tokens`, `cache_write_tokens`, `output_tokens`, `reasoning_tokens`. Codex input includes cache and its output includes reasoning: subtract cache from input, do not add reasoning twice. Claude modelUsage covers the whole run. Muse and Antigravity do not report cache writes. Missing fields are not invented. List cost uses Monitor prices for each resolved model; unreported usage or an unknown price yields null cost. A reported subset never implies zero spend for the missing part. Duration and turns are nullable when unavailable. Both probe parts are recorded and included in run spend and unpriced counts. Host account maintenance is separate from task/probe usage; catalog/account calls are preferred, with fixed no-tool inference checks where necessary.
+Five nullable token fields are fresh `input_tokens`, `cache_read_tokens`, `cache_write_tokens`, `output_tokens`, `reasoning_tokens`. Codex input includes cache and its output includes reasoning: subtract cache from input, do not add reasoning twice. Claude modelUsage covers the whole run, including side queries, and reports `thinkingTokens` as reasoning. Claude is invoked with verbose stream JSON so request usage can select the Monitor catalog's long-prompt tier; session totals alone cannot select it. Cache writes use their reported one-hour lifetime, with unclassified writes priced at five minutes. Repeated content blocks for one message are counted once for tier pricing. If unobserved usage could itself exceed the tier threshold, cost remains null rather than guessing. Muse and Antigravity do not report cache writes. Missing fields are not invented. List cost uses Monitor prices for each resolved model; unreported usage or an unknown price yields null cost. A reported subset never implies zero spend for the missing part. Duration and turns are nullable when unavailable. Both probe parts are recorded and included in run spend and unpriced counts. Host account maintenance is separate from task/probe usage; catalog/account calls are preferred, with fixed no-tool inference checks where necessary.
 
 `--stop-at-usd` overrides `bench_stop_usd` in `$XDG_CONFIG_HOME/cedr/cli.toml`. Both must be finite and positive. Check the accumulated known spend before every task; a stop produces `user_stop`. With no stop, print exactly one warning naming `--stop-at-usd`. The goal never stops work. A timed out or interrupted invocation has unknown cost even if partial usage was emitted. Unknown cost stops before another task unless `--allow-unpriced`.
 
