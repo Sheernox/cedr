@@ -2,6 +2,28 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.11.3 (2026-11-13)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.11.3.png" alt="cedr v0.11.3: muse ember" width="770">
+
+**v0.11.3** · 2 changes from 1 contributor
+
+### Highlights
+**Muse Ember shows a cost.** Monitor and Bench price `muse-ember-1.0` at Meta's list prices instead of reporting it as unpriced.
+
+### Fixes
+- **Muse Ember pricing:** adds `muse-ember-1.0` at $0.10 per million input tokens, $0.50 output and $0.004 cached input.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* feat(monitor): price muse ember 1.0
+* chore(release): price muse ember as cedr 0.11.3
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.11.2...v0.11.3
+</details>
+
 ## v0.11.2 (2026-11-12)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.11.2.png" alt="cedr v0.11.2: gemini 4 carbon" width="770">
