@@ -43,7 +43,7 @@ A result must depend on the configuration, not on whose machine ran it. Three la
 
 1. **Clean agent home.** Every trial runs with an agent home that holds the sign-in and nothing else: no user rules, skills, hooks, memory, MCP servers or account connectors. Each harness has its own recipe (for example a fresh `CODEX_HOME` for Codex; `--safe-mode --strict-mcp-config` for Claude). Credentials are linked or mounted, never copied or printed, and the user's sign-in must still work after a run. See #52 for what leaks today.
 2. **The pinned image.** By default the agent and the graders run in the container image the edition names by digest: fixed toolchains, fonts and browser. The agent's network is limited to its model provider's hosts; graders get none. `--local` runs on the host instead, with the clean home only.
-3. **The probe.** Before the tasks, the runner sends a fixed one-line prompt in an empty workspace and records the input tokens (fresh, cache read and cache write together) and the tool count where the harness reports one. Extra rules or tools show up as extra tokens. The edition carries a reference per harness version and model; the result records `match`, `mismatch` or `no_reference`.
+3. **The probe.** Before the tasks, the runner sends a fixed fingerprint prompt in an empty workspace and records its input tokens (fresh, cache read and cache write together), followed by a separate tool-readiness prompt whose files are verified. Extra rules or tools show up as extra tokens. The edition carries a reference per harness version and model; the result records `match`, `mismatch` or `no_reference`.
 
 The result's `environment.mode` is `container` or `local`. Only a `container` run with a clean home and a probe that matches (or sets) the reference is eligible for a public listing.
 
@@ -71,7 +71,7 @@ Saved to `$XDG_STATE_HOME/cedr/bench/<id>.json`, with artifacts beside it in `<i
   "edition": {"number": 1, "suite_sha256": "...", "commit": "...", "image": "sha256:..."},
   "config": {"harness": "claude", "harness_version": "...", "model": "...", "effort": "high", "resolved_models": ["..."]},
   "environment": {"mode": "container", "clean_home": true, "network": "allowlist", "os": "linux", "arch": "x86_64", "cli": "..."},
-  "probe": {"input_tokens": 31926, "tools": 27, "reference": 31926, "status": "match"},
+  "probe": {"input_tokens": 31926, "tools": 27, "reference": 31926, "status": "match", "tools_ok": true},
   "billing": "plan",
   "started_at": "...", "finished_at": "...",
   "goal_usd": 10.0, "stop_usd": null, "spent_usd": 4.12, "over_goal": false, "unpriced_trials": 0,
@@ -111,7 +111,9 @@ All TOML objects deny unknown fields. Task ids use ASCII letters, digits, `_`, `
 
 `[probe]` contains `[[probe.references]]` entries: `harness`, `harness_version`, `model`, optional `effort`, `input_tokens`, optional `tools`. Identity includes effort. Duplicate identities are errors. Reference comparison uses total fresh plus cache-read plus cache-write input, with an inclusive tolerance of 16. Missing reported fields remain null. A reference does not prove byte-identical context: small injections below the tolerance can pass.
 
-The fixed prompt is: `Run exactly one shell command: printf 'cedr-bench-probe\n' > probe.txt. Then read probe.txt and reply with its contents. Do not run any other shell commands.` The runner checks that the file contains exactly `cedr-bench-probe\n`. An agent without working tools fails the probe. `--set-reference` records status `reference` and prints a TOML entry on stderr; it never edits the edition.
+The probe has two independent prompts in separate empty workspaces and fresh clean homes. Part 1, the fingerprint, is exactly `Reply with the single word OK.` It needs one model request and no tools. Compare its total fresh plus cache-read plus cache-write input tokens with the reference within 16 tokens for every adapter, including those that only report run totals. Part 2, readiness, is exactly: `Run exactly one shell command: printf 'cedr-bench-command\n' > command.txt. Then write probe.txt containing exactly cedr-bench-probe followed by a newline. Do not run any other shell commands.` The runner verifies both files' exact contents, recording `tools_ok`; readiness tokens are never compared. A passing probe requires `match` (or `reference`) and `tools_ok`. `no_reference` is usable for diagnosis but is not a passing probe. `--set-reference` records status `reference` and prints a TOML entry on stderr; it never edits the edition.
+
+Probe records hold fingerprint `input_tokens`, optional readiness `tools`, `reference`, `status`, `tools_ok`, `fingerprint_cost_usd`, `tools_cost_usd`, and combined `cost_usd` (null if either cost is unknown). Run spend includes each known part even if the other is unknown; unpriced counts include each unknown part. Optional per-request usage must not replace the uniform total-token fingerprint comparison.
 
 `--suite PATH` reads a local tree. Otherwise edition defaults to 1. `--edition N` clones `https://github.com/Sheernox/cedr-bench.git` at `edition-N` into `$XDG_CACHE_HOME/cedr/bench/edition-N`; the first fetch records the commit and SHA-256 alongside it. Subsequent loads recompute and verify both, refusing drift. This is trust on first fetch, not a publisher signature. Hashing sorts relative UTF-8 names and hashes length-prefixed names, executable bits and file bytes, excluding `.git`. A local suite also records that digest and its commit when available. Grader support files participate in the digest.
 
@@ -125,7 +127,7 @@ The agent runs non-root at `/workspace` with home `/home/bench`, a read-only roo
 
 Sign-in files are mounted read-only for containers and linked for local runs. They are never copied into images, logged or included in results. Supported credential environment variables take precedence. Before using a sign-in mount, one host-side authenticated call allows renewal; after each call the host sign-in is checked again. Failure blocks further agent invocations. Output from these checks is discarded. Local mode reuses Compare's shared filtered shadow home, without user rules, skills, hooks, memory or MCP. It is configuration isolation, not a sandbox.
 
-The adapters are Claude, Codex, Muse, Grok, Gemini (documentation-derived and unverified), Antigravity (ACP, local only), and command (custom argv, never eligible). Efforts must be offered by the CLI for the selected model; unknown availability is a refusal rather than a guessed substitution. No silent model or effort fallback is permitted.
+The adapters are Claude, Codex, Muse, Grok, Gemini ([documentation-derived](https://geminicli.com/docs/cli/headless/) and unverified), Antigravity (ACP, local only), and command (custom argv, local only, never eligible). Efforts must be offered by the CLI for the selected model; unknown availability is a refusal rather than a guessed substitution. No silent model or effort fallback is permitted.
 
 ## Usage and accounting
 
@@ -137,7 +139,7 @@ A code grader emits exactly four uniquely named boolean checks. A visual grader 
 
 ## Persistence and consistency
 
-Saved result version is 1 and kind is `bench`. The issue's result example defines required fields. `edition.image` records the image actually used, `environment.pinned` records whether it matched the edition, and `environment.agent_image` records the local layer. `eligible` additionally requires a complete run, a pinned container, clean home, allowlist networking, a successful matching or setting probe, and a verified vendor adapter. `billing` is `api` or `plan`, supplied with `--billing` (default `plan`).
+Saved result version is 1 and kind is `bench`. The issue's result example defines required fields. `edition.image` records the image actually used, `environment.pinned` records whether it matched the edition, and `environment.agent_image` records the local layer. `eligible` additionally requires a complete run, a pinned container, clean home, allowlist networking, a successful matching or setting fingerprint and readiness probe, and a verified vendor adapter. `billing` is `api` or `plan`, supplied with `--billing` (default `plan`).
 
 `show` validates ids, unique task ids, finite nonnegative costs, check counts, score, solved, task totals, spent, unpriced count, over_goal, completion, stop and listing eligibility against the underlying records. It refuses inconsistent results. History returns summary rows newest first. Both MCP tools use the same loader. Results contain neither prompts nor captured agent output.
 
