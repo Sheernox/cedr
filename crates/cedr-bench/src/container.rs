@@ -72,9 +72,12 @@ fn verify_engine() -> Result<()> {
     if !supports_isolated(&version) {
         return Err("Docker Engine 28 or newer is required for isolated bridge gateways".into());
     }
+    verify_bind_identity()
+}
+fn verify_bind_identity() -> Result<()> {
     let security = docker(&["info", "--format", "{{json .SecurityOptions}}"])?;
     if security.contains("rootless") || security.contains("userns") {
-        return Err("Docker rootless/userns UID mapping cannot preserve the invoking UID/GID on these bind mounts; use --local or a daemon without user-namespace remapping".into());
+        return Err("Docker rootless/userns UID mapping cannot preserve the invoking UID/GID on these bind mounts; use a daemon without user-namespace remapping, or host-only --local grading with Docker stopped".into());
     }
     Ok(())
 }
@@ -322,6 +325,7 @@ impl Container {
             task,
             _scratch: scratch,
         };
+        verify_bind_identity()?;
         c.set_base(suite, build)?;
         Ok(c)
     }

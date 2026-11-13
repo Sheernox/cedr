@@ -505,7 +505,11 @@ fn compare_refuses_a_legacy_cap_even_with_an_explicit_override() {
 #[test]
 fn local_grading_uses_the_image_when_available_and_host_tools_otherwise() {
     use std::os::unix::fs::PermissionsExt;
-    for (available, expected) in [(true, 100.0), (false, 75.0)] {
+    for (available, rootless, expected) in [
+        (true, false, 100.0),
+        (false, false, 75.0),
+        (true, true, 0.0),
+    ] {
         let s = Scratch::new(0.0, 0.0);
         let bin = s.dir.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
@@ -514,9 +518,9 @@ fn local_grading_uses_the_image_when_available_and_host_tools_otherwise() {
             &docker,
             if available {
                 r#"#!/usr/bin/env python3
-import sys,json
+import sys,json,os
 args=sys.argv[1:]
-if args[0]=='info': print('29.0.0')
+if args[0]=='info': print('["name=rootless"]' if os.environ.get('BENCH_TEST_ROOTLESS') else '29.0.0')
 elif args[0]=='image': print('sha256:'+'0'*64)
 elif args[0]=='run':
     assert any(x.startswith('BENCH_SEED=') for x in args)
@@ -533,15 +537,19 @@ elif args[0]=='run':
         let out = s.command(&["bench","run","--harness","command","--model","stub","--suite",&suite(),"--local","--set-reference","--stop-at-usd","1","--command","python3","--command","-c","--command",
             "import pathlib,json;pathlib.Path('probe.txt').write_text('cedr-bench-probe');pathlib.Path('command.txt').write_text('cedr-bench-command');print(json.dumps(dict(input_tokens=10,cache_read_tokens=0,cache_write_tokens=0,output_tokens=1,cost_usd=0)))",
             "--format","json"])
-            .env("PATH", std::env::join_paths(paths).unwrap()).output().unwrap();
-        assert!(
-            out.status.success(),
+            .env("PATH", std::env::join_paths(paths).unwrap()).env("BENCH_TEST_ROOTLESS", if rootless {"1"} else {""}).output().unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(if rootless { 3 } else { 0 }),
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
+        if rootless {
+            assert!(String::from_utf8_lossy(&out.stderr).contains("rootless/userns UID mapping"));
+        }
         let result: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(result["score"], expected);
-        assert_eq!(result["complete"], true);
+        assert_eq!(result["complete"], !rootless);
     }
 }
 
