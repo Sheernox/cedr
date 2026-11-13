@@ -562,15 +562,18 @@ fn container_effort_uses_the_layer_catalog_without_calling_the_host_agent() {
     std::fs::create_dir(&bin).unwrap();
     let docker = bin.join("docker");
     std::fs::write(&docker, r#"#!/usr/bin/env python3
-import sys,json,pathlib
+import sys,json,pathlib,os
 args=sys.argv[1:]
+ready=pathlib.Path(os.environ['BENCH_TEST_NETWORK_READY'])
 if args[0]=='version': print('29.0.0')
 elif args[0]=='info': print('[]')
 elif args[:2]==['image','inspect']: print('sha256:'+'0'*64)
+elif args[:2]==['network','connect']: ready.write_text('connected')
 elif args[:2]==['network','inspect']:
     if args[2]=='bridge': print('172.17.0.1')
     else: print(json.dumps([{'Internal':True,'Options':{'com.docker.network.bridge.gateway_mode_ipv4':'isolated'}}]))
 elif args[0]=='run':
+    if args[-1].startswith('import socket,errno') and not ready.exists(): sys.exit(23)
     if '--version' in args: print('test')
     elif '--input-format' in args:
         print(json.dumps({'response':{'response':{'models':[{'value':'claude-haiku-5-5','supportedEffortLevels':['high']}]}}}))
@@ -610,6 +613,10 @@ elif args[0]=='run':
         ])
         .env("PATH", std::env::join_paths(paths).unwrap())
         .env("ANTHROPIC_API_KEY", "fake-test-key")
+        .env(
+            "BENCH_TEST_NETWORK_READY",
+            s.dir.path().join("proxy-connected"),
+        )
         .output()
         .unwrap();
     assert!(

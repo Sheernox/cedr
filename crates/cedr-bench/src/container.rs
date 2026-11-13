@@ -432,7 +432,6 @@ impl Container {
         let network = network_args(&c.network);
         docker(&network.iter().map(String::as_str).collect::<Vec<_>>())
             .map_err(|_|"cannot establish isolated Docker egress; use a Docker engine supporting isolated bridge gateway mode".to_string())?;
-        c.verify_topology()?;
         let script = c._scratch.path().join("proxy.py");
         std::fs::write(&script, include_str!("proxy.py")).map_err(|e| e.to_string())?;
         docker(&[
@@ -466,6 +465,7 @@ impl Container {
             &c.network,
             &c.proxy,
         ])?;
+        c.verify_topology()?;
         // Check readiness and the actual proxy policy before spending any tokens.
         let check = "import socket; s=socket.create_connection(('bench-proxy',3128),10); s.sendall(b'CONNECT example.com:443 HTTP/1.1\\r\\n\\r\\n'); assert b'403' in s.recv(1024)";
         docker(&[
