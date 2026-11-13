@@ -450,7 +450,7 @@ impl Container {
         timeout: Duration,
     ) -> Result<exec::StepOutput> {
         let mut cmd = Command::new("docker");
-        cmd.args(task_args(
+        let mut args = task_args(
             &self.network,
             &self.image,
             workspace,
@@ -458,8 +458,24 @@ impl Container {
             &self.task,
             credential,
             h,
-        ))
-        .args(argv);
+        );
+        if h == Harness::Claude {
+            let script = self._scratch.path().join("claude_process.py");
+            std::fs::write(&script, include_str!("claude_process.py"))
+                .map_err(|e| e.to_string())?;
+            args.pop(); // Insert the read-only launcher mount before the image argument.
+            args.extend([
+                "--mount".into(),
+                format!(
+                    "type=bind,src={},dst=/bench-agent.py,readonly",
+                    script.display()
+                ),
+                self.image.clone(),
+                "python3".into(),
+                "/bench-agent.py".into(),
+            ]);
+        }
+        cmd.args(args).args(argv);
         let out = exec::run_step(cmd, None, timeout).map_err(|e| e.to_string());
         let _ = docker(&["rm", "--force", &self.task]);
         out

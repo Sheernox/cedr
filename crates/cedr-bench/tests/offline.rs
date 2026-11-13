@@ -491,3 +491,27 @@ fn claude_install_overrides_an_inherited_non_root_home() {
     assert!(status.success());
     assert_eq!(std::fs::read_to_string(record).unwrap(), "/root");
 }
+
+#[cfg(unix)]
+#[test]
+fn claude_terminal_result_ends_hung_helpers_without_losing_usage() {
+    let temp = tempfile::tempdir().unwrap();
+    let child = temp.path().join("agent.py");
+    std::fs::write(&child, r#"import json, signal, subprocess, sys
+subprocess.Popen([sys.executable, '-c', 'import signal; signal.pause()'])
+print(json.dumps({'type':'result', 'subtype':'success', 'is_error':False,
+                 'modelUsage':{'claude-haiku-5-5':{'inputTokens':10, 'outputTokens':20}}}), flush=True)
+signal.pause()
+"#).unwrap();
+    let mut command = std::process::Command::new("python3");
+    command
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/claude_process.py"))
+        .arg("python3")
+        .arg(&child);
+    let output = cedr_compare::exec::run_step(command, None, Duration::from_secs(5)).unwrap();
+    assert!(output.succeeded());
+    let usage = cedr_bench::adapter::parse(Harness::Claude, &output.stdout, "claude-haiku-5-5");
+    assert_eq!(usage.tokens.input_tokens, Some(10));
+    assert_eq!(usage.tokens.output_tokens, Some(20));
+    assert!(usage.cost_usd.is_some());
+}
