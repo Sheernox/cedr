@@ -112,6 +112,9 @@ pub fn digest(root: &Path) -> Result<String> {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     for (name, path) in files(root)? {
+        if name.starts_with("probes/") {
+            continue;
+        }
         hash.update((name.len() as u64).to_be_bytes());
         hash.update(name.as_bytes());
         #[cfg(unix)]
@@ -129,13 +132,38 @@ pub fn digest(root: &Path) -> Result<String> {
     }
     Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
+/// Parse separately published references using the same identity rules as a local suite.
+pub fn parse_references(text: &str) -> Result<References> {
+    if text.len() > 1024 * 1024 {
+        return Err("probe reference file exceeds 1 MiB".into());
+    }
+    let references: References =
+        toml::from_str(text).map_err(|_| "invalid probe reference file")?;
+    let mut keys = BTreeSet::new();
+    for r in &references.references {
+        if r.harness.is_empty()
+            || r.harness_version.is_empty()
+            || r.model.is_empty()
+            || !keys.insert((&r.harness, &r.harness_version, &r.model, &r.effort))
+        {
+            return Err("invalid or duplicate probe reference identity".into());
+        }
+    }
+    Ok(references)
+}
 fn read<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     toml::from_str(&std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?)
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 pub fn load(root: &Path) -> Result<Suite> {
     let digest = digest(root)?;
-    let edition: Edition = read(&root.join("edition.toml"))?;
+    let mut edition: Edition = read(&root.join("edition.toml"))?;
+    let references = root.join(format!("probes/edition-{}.toml", edition.number));
+    edition.probe = if references.exists() {
+        parse_references(&std::fs::read_to_string(&references).map_err(|e| e.to_string())?)?
+    } else {
+        References::default()
+    };
     if edition.number == 0
         || !edition.goal_usd.is_finite()
         || edition.goal_usd <= 0.0
@@ -201,6 +229,13 @@ pub fn load(root: &Path) -> Result<Suite> {
     })
 }
 pub fn copy(from: &Path, to: &Path) -> Result<()> {
+    copy_inner(from, to, false)
+}
+/// Grading ignores submission symlinks, without inspecting their targets.
+pub fn copy_submission(from: &Path, to: &Path) -> Result<()> {
+    copy_inner(from, to, true)
+}
+fn copy_inner(from: &Path, to: &Path, skip_links: bool) -> Result<()> {
     if !std::fs::symlink_metadata(from)
         .map_err(|e| e.to_string())?
         .is_dir()
@@ -216,10 +251,10 @@ pub fn copy(from: &Path, to: &Path) -> Result<()> {
         }
         let kind = entry.file_type().map_err(|e| e.to_string())?;
         if kind.is_dir() {
-            copy(&entry.path(), &to.join(name))?;
+            copy_inner(&entry.path(), &to.join(name), skip_links)?;
         } else if kind.is_file() {
             std::fs::copy(entry.path(), to.join(name)).map_err(|e| e.to_string())?;
-        } else {
+        } else if !(skip_links && kind.is_symlink()) {
             return Err("symlinks and special files are refused".into());
         }
     }

@@ -66,8 +66,8 @@ fn priced(model: &str, t: &Tokens) -> Option<f64> {
     let (p, _) = cedr_monitor::pricing::price(model)?;
     Some(
         (t.input_tokens? as f64 * p.input
-            + t.cache_read_tokens.unwrap_or(0) as f64 * p.cache_read
-            + t.cache_write_tokens.unwrap_or(0) as f64 * p.cache_write5m
+            + t.cache_read_tokens? as f64 * p.cache_read
+            + t.cache_write_tokens? as f64 * p.cache_write5m
             + t.output_tokens? as f64 * p.output)
             / 1_000_000.0,
     )
@@ -92,18 +92,24 @@ fn claude_cost(model: &str, row: &Value, events: &[Value]) -> Option<f64> {
         reasoning_tokens: None,
     };
     let (price, _) = cedr_monitor::pricing::price(model)?;
-    let hour = n(row, "cacheCreationEphemeral1hInputTokens").unwrap_or(0);
+    let mut requests = std::collections::BTreeMap::new();
+    for event in events {
+        let message = &event["message"];
+        if event["type"] == "assistant" && message["model"] == model {
+            requests.insert(message["id"].as_str()?, &message["usage"]);
+        }
+    }
+    let reported_hours = requests.values().try_fold(0_u64, |total, usage| {
+        total.checked_add(n(&usage["cache_creation"], "ephemeral_1h_input_tokens").unwrap_or(0))
+    })?;
+    let hour = n(row, "cacheCreationEphemeral1hInputTokens").unwrap_or(reported_hours);
+    if hour < reported_hours {
+        return None;
+    }
     tokens.cache_write_tokens.unwrap_or(0).checked_sub(hour)?;
     let mut cost = priced(model, &tokens)?
         + hour as f64 * (price.cache_write1h - price.cache_write5m) / 1_000_000.0;
     if let Some(tier) = &price.long_prompt {
-        let mut requests = std::collections::BTreeMap::new();
-        for event in events {
-            let message = &event["message"];
-            if event["type"] == "assistant" && message["model"] == model {
-                requests.insert(message["id"].as_str()?, &message["usage"]);
-            }
-        }
         let mut seen = 0_u64;
         for usage in requests.values() {
             let request = snake(usage);
@@ -176,7 +182,7 @@ pub fn parse(h: Harness, text: &[u8], model: &str) -> Usage {
                 if e["type"] == "turn.completed" {
                     let r = &e["usage"];
                     let read = n(r, "cached_input_tokens");
-                    let write = n(r, "cache_write_input_tokens");
+                    let write = n(r, "cache_write_input_tokens").or(Some(0));
                     rows.push((
                         model.into(),
                         Tokens {
@@ -219,7 +225,7 @@ pub fn parse(h: Harness, text: &[u8], model: &str) -> Usage {
                                     input_tokens: n(r, "input_tokens")
                                         .and_then(|v| v.checked_sub(cached.unwrap_or(0))),
                                     cache_read_tokens: cached,
-                                    cache_write_tokens: None,
+                                    cache_write_tokens: Some(0),
                                     output_tokens: n(r, "output_tokens"),
                                     reasoning_tokens: n(r, "reasoning_tokens"),
                                 },
@@ -243,7 +249,7 @@ pub fn parse(h: Harness, text: &[u8], model: &str) -> Usage {
                             input_tokens: n(t, "prompt")
                                 .and_then(|a| a.checked_sub(cache.unwrap_or(0))),
                             cache_read_tokens: cache,
-                            cache_write_tokens: None,
+                            cache_write_tokens: Some(0),
                             output_tokens: n(t, "candidates")
                                 .zip(n(t, "thoughts"))
                                 .map(|(a, b)| a.saturating_add(b)),
@@ -298,7 +304,12 @@ pub fn parse(h: Harness, text: &[u8], model: &str) -> Usage {
     }
     out.models = models.into_iter().collect();
     out.tokens.reasoning_tokens = out.tokens.reasoning_tokens.or(reasoning_fallback);
-    out.cost_usd = if h == Harness::Command {
+    out.cost_usd = if h == Harness::Command
+        && out.tokens.input_tokens.is_some()
+        && out.tokens.cache_read_tokens.is_some()
+        && out.tokens.cache_write_tokens.is_some()
+        && out.tokens.output_tokens.is_some()
+    {
         events
             .last()
             .and_then(|v| v["cost_usd"].as_f64())
@@ -500,7 +511,7 @@ pub fn check_effort(h: Harness, model: &str, effort: Option<&str>) -> Result<()>
     }
 }
 
-fn claude_levels(response: &Value, model: &str) -> Vec<String> {
+pub(crate) fn claude_levels(response: &Value, model: &str) -> Vec<String> {
     response["response"]["response"]["models"]
         .as_array()
         .into_iter()
@@ -546,7 +557,7 @@ fn claude_efforts(model: &str) -> Result<Vec<String>> {
             command.env(key, value);
         }
     }
-    cedr_agent::clean_home(
+    cedr_agent::sign_in_home(
         cedr_agent::Agent::Claude,
         &mut command,
         &scratch.path().join("home"),
@@ -554,17 +565,17 @@ fn claude_efforts(model: &str) -> Result<Vec<String>> {
     .map_err(|e| e.to_string())?;
     cedr_agent::private_runtime(&mut command, &scratch.path().join("runtime"))
         .map_err(|e| e.to_string())?;
-    if let Some(config) = std::env::var_os("CLAUDE_CONFIG_DIR")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".claude")))
-    {
-        command.env("CLAUDE_CONFIG_DIR", config);
-    }
+    let links = cedr_agent::SignInLink::capture(&scratch.path().join("home"))
+        .map_err(|_| "cannot track sign-in renewal")?;
     command.env("DISABLE_AUTOUPDATER", "1");
     let request = "{\"type\":\"control_request\",\"request_id\":\"bench-models\",\"request\":{\"subtype\":\"initialize\"}}\n";
     let output =
         cedr_compare::exec::run_step(command, Some(request), std::time::Duration::from_secs(30))
             .map_err(|e| e.to_string())?;
+    for link in links {
+        link.save_renewed()
+            .map_err(|_| "cannot preserve renewed sign-in")?;
+    }
     if !output.succeeded() {
         return Err(
             "Claude model capability discovery failed; check its sign-in and installed version"

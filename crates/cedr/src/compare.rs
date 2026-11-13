@@ -178,6 +178,7 @@ pub fn run(command: CompareCommand) -> Result<ExitCode, String> {
             repo,
             format,
         } => {
+            settings::Settings::load().check_compare_budget_rename()?;
             if let Some(name) = repo.as_deref() {
                 common::repo_name(Some(name), Path::new(""))?;
             }

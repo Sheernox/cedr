@@ -64,20 +64,31 @@ pub struct Artifact {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct TamperSignal {
+    pub path: String,
+    pub line: u64,
+    pub kind: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskResult {
     pub id: String,
     pub kind: Kind,
     pub status: Status,
+    pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<Check>,
     pub score: Option<f64>,
     pub solved: bool,
+    pub seed: Option<u64>,
     pub duration_ms: Option<u64>,
     pub turns: Option<u64>,
     #[serde(flatten)]
     pub tokens: Tokens,
     pub cost_usd: Option<f64>,
     pub patch_sha256: Option<String>,
+    #[serde(default)]
+    pub tamper_signals: Vec<TamperSignal>,
     pub gates: Vec<Gate>,
     pub artifacts: Vec<Artifact>,
 }
@@ -87,14 +98,17 @@ impl TaskResult {
             id: id.into(),
             kind,
             status: Status::NotReached,
+            error: None,
             checks: Vec::new(),
             score: if kind == Kind::Code { Some(0.0) } else { None },
             solved: false,
+            seed: None,
             duration_ms: None,
             turns: None,
             tokens: Tokens::default(),
             cost_usd: None,
             patch_sha256: None,
+            tamper_signals: Vec::new(),
             gates: Vec::new(),
             artifacts: Vec::new(),
         }
@@ -128,7 +142,7 @@ impl Probe {
 pub fn probe(usage: &Usage, reference: Option<u64>, set: bool, tools_ok: bool) -> Probe {
     let input = usage.tokens.input();
     let status = match (input, reference) {
-        (Some(_), _) if set => ProbeStatus::Reference,
+        (Some(_), None) if set => ProbeStatus::Reference,
         (Some(a), Some(b)) if a.abs_diff(b) <= 16 => ProbeStatus::Match,
         (_, Some(_)) => ProbeStatus::Mismatch,
         _ => ProbeStatus::NoReference,
@@ -136,7 +150,7 @@ pub fn probe(usage: &Usage, reference: Option<u64>, set: bool, tools_ok: bool) -
     Probe {
         input_tokens: input,
         tools: usage.tools,
-        reference: if set { input } else { reference },
+        reference: reference.or_else(|| set.then_some(input).flatten()),
         status,
         tools_ok,
         cost_usd: usage.cost_usd,
@@ -169,6 +183,8 @@ pub struct Environment {
     pub network: String,
     pub pinned: bool,
     pub agent_image: Option<String>,
+    pub verified: Vec<String>,
+    pub limits: Option<String>,
     pub os: String,
     pub arch: String,
     pub cli: String,
@@ -224,9 +240,13 @@ impl BenchResult {
                 .filter(|t| t.status != Status::NotReached && t.cost_usd.is_none())
                 .count();
         self.over_goal = self.spent_usd > self.goal_usd;
-        self.complete =
-            self.stop.is_none() && self.tasks.iter().all(|t| t.status == Status::Graded);
+        self.complete = self.stop.is_none()
+            && self
+                .tasks
+                .iter()
+                .all(|t| matches!(t.status, Status::Graded | Status::Timeout));
         self.eligible = self.complete
+            && self.tasks.iter().all(|task| task.tamper_signals.is_empty())
             && self.environment.mode == "container"
             && self.environment.pinned
             && self.environment.clean_home
@@ -264,12 +284,17 @@ impl BenchResult {
                 return Err("invalid or duplicate task id".into());
             }
             if t.cost_usd.is_some_and(|n| !n.is_finite() || n < 0.0)
-                || matches!(
-                    t.status,
-                    Status::NotReached | Status::Timeout | Status::Interrupted
-                ) && t.cost_usd.is_some()
+                || matches!(t.status, Status::NotReached | Status::Interrupted)
+                    && t.cost_usd.is_some()
             {
                 return Err("invalid task cost".into());
+            }
+            if t.tamper_signals.iter().any(|signal| {
+                !suite::relative(&signal.path)
+                    || signal.line == 0
+                    || !suite::identifier(&signal.kind)
+            }) {
+                return Err("invalid tamper signal".into());
             }
             let mut checks = BTreeSet::new();
             if t.checks

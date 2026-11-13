@@ -70,7 +70,7 @@ impl Backend for Stub {
             duration_ms: 1,
         })
     }
-    fn grade(&mut self, _: &Suite, _t: &Task, w: &Path) -> Result<Vec<u8>, String> {
+    fn grade(&mut self, _: &Suite, _t: &Task, w: &Path, _: u64) -> Result<Vec<u8>, String> {
         assert_eq!(
             std::fs::read_to_string(w.join("answer.txt")).unwrap(),
             "fixed\n"
@@ -85,6 +85,8 @@ impl Backend for Stub {
             network: "host".into(),
             pinned: false,
             agent_image: None,
+            verified: Vec::new(),
+            limits: None,
             os: "linux".into(),
             arch: "x86_64".into(),
             cli: "test".into(),
@@ -150,6 +152,8 @@ fn ordered_scores_goal_stop_and_unknown_cost() {
     assert_eq!(r.solved, 0);
     assert!(r.over_goal);
     assert_eq!(r.tasks.len(), 2);
+    assert!(r.tasks.iter().all(|task| task.tamper_signals.is_empty()));
+    assert!(r.tasks.iter().all(|task| task.seed.is_some()));
     let mut o = options();
     o.stop_usd = Some(0.7);
     let r = measure(&o, false);
@@ -319,7 +323,7 @@ fn vendor_fixtures_normalize_tokens_without_double_counting() {
         assert_eq!(u.tokens.output_tokens, Some(output), "{h:?}");
         assert_eq!(u.tokens.reasoning_tokens, reason, "{h:?}");
         if h == Muse {
-            assert_eq!(u.tokens.cache_write_tokens, None);
+            assert_eq!(u.tokens.cache_write_tokens, Some(0));
         }
     }
     let u = adapter::parse(Muse, b"{}", "muse-spark-1.3");
@@ -449,6 +453,10 @@ fn claude_cost_uses_cache_lifetimes_and_request_prompt_tiers() {
     let mut boundary = request;
     boundary["message"]["usage"]["input_tokens"] = 0.into();
     let mut total = result;
+    total["modelUsage"]["claude-haiku-5-5"]
+        .as_object_mut()
+        .unwrap()
+        .remove("cacheCreationEphemeral1hInputTokens");
     total["modelUsage"]["claude-haiku-5-5"]["inputTokens"] = 0.into();
     let usage = adapter::parse(
         Harness::Claude,
@@ -500,7 +508,7 @@ fn claude_terminal_result_ends_hung_helpers_without_losing_usage() {
     std::fs::write(&child, r#"import json, signal, subprocess, sys
 subprocess.Popen([sys.executable, '-c', 'import signal; signal.pause()'])
 print(json.dumps({'type':'result', 'subtype':'success', 'is_error':False,
-                 'modelUsage':{'claude-haiku-5-5':{'inputTokens':10, 'outputTokens':20}}}), flush=True)
+                 'modelUsage':{'claude-haiku-5-5':{'inputTokens':10, 'cacheReadInputTokens':0, 'cacheCreationInputTokens':0, 'outputTokens':20}}}), flush=True)
 signal.pause()
 "#).unwrap();
     let mut command = std::process::Command::new("python3");
@@ -536,6 +544,7 @@ fn missing_visual_submission_is_graded_but_missing_promised_artifact_is_an_error
             suite: &Suite,
             task: &Task,
             workspace: &Path,
+            _: u64,
         ) -> Result<Vec<u8>, String> {
             if task.kind == Kind::Visual {
                 assert!(!workspace.join("chart.svg").exists());
@@ -545,7 +554,7 @@ fn missing_visual_submission_is_graded_but_missing_promised_artifact_is_an_error
                 }))
                 .unwrap())
             } else {
-                self.inner.grade(suite, task, workspace)
+                self.inner.grade(suite, task, workspace, 1)
             }
         }
         fn environment(&self) -> Environment {
@@ -581,5 +590,189 @@ fn missing_visual_submission_is_graded_but_missing_promised_artifact_is_an_error
         assert_eq!(result.complete, !promised);
         assert!(!task.gates[0].passed);
         assert!(task.artifacts.is_empty());
+    }
+}
+
+#[test]
+fn a_reference_flag_cannot_override_an_existing_mismatch() {
+    let usage = Usage {
+        tokens: Tokens {
+            input_tokens: Some(40000),
+            ..Tokens::default()
+        },
+        ..Usage::default()
+    };
+    let result = probe(&usage, Some(31926), true, true);
+    assert_eq!(result.status, ProbeStatus::Mismatch);
+    assert_eq!(result.reference, Some(31926));
+    assert!(!result.passed());
+}
+#[test]
+fn missing_cache_counts_are_unknown_except_explicit_plain_input_writes() {
+    use cedr_bench::adapter;
+    for field in [
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "input_tokens",
+        "output_tokens",
+    ] {
+        let mut row = serde_json::json!({"input_tokens":10,"cache_read_tokens":0,"cache_write_tokens":0,"output_tokens":5});
+        row.as_object_mut().unwrap().remove(field);
+        assert_eq!(
+            adapter::parse(
+                Harness::Antigravity,
+                row.to_string().as_bytes(),
+                "gpt-6-luna"
+            )
+            .cost_usd,
+            None
+        );
+    }
+    let codex = br#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":2}}"#;
+    assert!(
+        adapter::parse(Harness::Codex, codex, "gpt-6-luna")
+            .cost_usd
+            .is_some()
+    );
+    let missing = br#"{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":2}}"#;
+    assert_eq!(
+        adapter::parse(Harness::Codex, missing, "gpt-6-luna").cost_usd,
+        None
+    );
+}
+#[test]
+fn timeouts_are_complete_results_even_with_unknown_cost() {
+    let mut result = measure(&options(), false);
+    result.tasks[0].status = Status::Timeout;
+    result.tasks[0].checks.clear();
+    result.tasks[0].score = Some(0.0);
+    result.tasks[0].cost_usd = None;
+    result.summarize();
+    result.validate().unwrap();
+    assert!(result.complete);
+    assert_eq!(result.unpriced_trials, 1);
+    assert_eq!(result.score, 37.5);
+    for status in [
+        Status::AgentError,
+        Status::SetupFailed,
+        Status::Interrupted,
+        Status::NotReached,
+    ] {
+        result.tasks[0].status = status;
+        result.summarize();
+        assert!(!result.complete);
+    }
+}
+#[cfg(unix)]
+#[test]
+fn submission_symlinks_are_skipped_and_not_followed() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("real.txt"), "real").unwrap();
+    std::os::unix::fs::symlink("/etc", source.join("outside")).unwrap();
+    std::os::unix::fs::symlink("missing", source.join("broken")).unwrap();
+    let target = dir.path().join("target");
+    suite::copy_submission(&source, &target).unwrap();
+    assert_eq!(std::fs::read_dir(target).unwrap().count(), 1);
+}
+#[test]
+fn references_are_mutable_outside_the_frozen_edition_digest() {
+    let dir = tempfile::tempdir().unwrap();
+    suite::copy(&fixture(), dir.path()).unwrap();
+    let before = suite::digest(dir.path()).unwrap();
+    std::fs::create_dir(dir.path().join("probes")).unwrap();
+    std::fs::write(
+        dir.path().join("probes/edition-1.toml"),
+        "[[references]]\nharness='codex'\nharness_version='test'\nmodel='stub'\ninput_tokens=100\n",
+    )
+    .unwrap();
+    assert_eq!(before, suite::digest(dir.path()).unwrap());
+    assert_eq!(
+        suite::load(dir.path())
+            .unwrap()
+            .edition
+            .probe
+            .references
+            .len(),
+        1
+    );
+}
+#[test]
+fn isolation_requires_supported_engines_and_excludes_renewal_hosts() {
+    assert!(!container::supports_isolated("27.5.1"));
+    assert!(container::supports_isolated("28.0.0"));
+    for (h, host) in [
+        (Harness::Claude, "platform.claude.com:443"),
+        (Harness::Codex, "auth.openai.com:443"),
+        (Harness::Muse, "auth.meta.com:443"),
+        (Harness::Grok, "auth.x.ai:443"),
+        (Harness::Gemini, "oauth2.googleapis.com:443"),
+    ] {
+        assert!(!container::allowed(h, host));
+    }
+    let args = container::task_args(
+        "test",
+        "image",
+        Path::new("/ws"),
+        Path::new("/home"),
+        "test-task",
+        None,
+        Harness::Codex,
+    );
+    assert!(
+        args.windows(2)
+            .any(|args| args == ["--user", &container::identity()])
+    );
+    for limit in [
+        "--memory=2g",
+        "--pids-limit=256",
+        "/tmp:rw,nosuid,nodev,mode=1777,size=1g",
+    ] {
+        assert!(args.contains(&limit.into()));
+    }
+}
+
+#[test]
+fn audit_signals_keep_scores_but_prevent_listing() {
+    let mut result = measure(&options(), false);
+    result.environment.mode = "container".into();
+    result.environment.network = "allowlist".into();
+    result.environment.pinned = true;
+    result.config.harness = "claude".into();
+    result.summarize();
+    assert!(result.eligible);
+    let score = result.score;
+    result.tasks[0].tamper_signals.push(TamperSignal {
+        path: "answer.py".into(),
+        line: 1,
+        kind: "process_introspection".into(),
+    });
+    result.summarize();
+    result.validate().unwrap();
+    assert_eq!(result.score, score);
+    assert!(!result.eligible);
+}
+
+#[test]
+fn code_patches_are_retained_for_local_audit() {
+    let suite = suite::load(&fixture()).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let mut backend = Stub {
+        calls: 0,
+        unknown: false,
+        unknown_at: None,
+    };
+    let result = run::run(&suite, &options(), &mut backend, directory.path(), |_| {}).unwrap();
+    for task in &result.tasks {
+        let patch =
+            std::fs::read(directory.path().join(&task.id).join("submission.patch")).unwrap();
+        assert_eq!(task.patch_sha256, Some(cedr_bench::sha(&patch)));
+        assert!(String::from_utf8_lossy(&patch).contains("fixed"));
+        assert!(
+            task.artifacts
+                .iter()
+                .all(|artifact| !artifact.path.ends_with("submission.patch"))
+        );
     }
 }

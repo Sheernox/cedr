@@ -109,8 +109,15 @@ fn connection(
             c.env(key, value);
         }
     }
-    cedr_agent::clean_home(cedr_agent::Agent::Antigravity, &mut c, home)
-        .map_err(|e| e.to_string())?;
+    if !home.join(".gemini/antigravity-acp/acp_token.json").exists() {
+        cedr_agent::clean_home(cedr_agent::Agent::Antigravity, &mut c, home)
+            .map_err(|e| e.to_string())?;
+    } else {
+        c.env("HOME", home)
+            .env("USERPROFILE", home)
+            .env("GEMINI_HOME", home.join(".gemini"))
+            .env("XDG_CONFIG_HOME", home.join(".config"));
+    }
     cedr_agent::private_runtime(
         &mut c,
         &home
@@ -135,28 +142,70 @@ fn connection(
     Ok(rpc)
 }
 pub fn check(credential: &Credential) -> Result<()> {
+    let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let workspace = scratch.path().join("workspace");
+    std::fs::create_dir(&workspace).map_err(|e| e.to_string())?;
+    let home = scratch.path().join("home");
     let mut command = Command::new(program()?);
-    command.env_clear();
-    for key in ["PATH", "HOME", "SYSTEMROOT", "WINDIR", "TMP", "TEMP"] {
+    command.env_clear().current_dir(&workspace);
+    for key in ["PATH", "LANG", "SYSTEMROOT", "WINDIR", "TMP", "TEMP"] {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
         }
     }
-    command.env(
-        "GEMINI_HOME",
-        credential
-            .source
-            .parent()
-            .and_then(Path::parent)
-            .ok_or("Antigravity credential root missing")?,
-    );
-    let mut rpc = Rpc::start(command, Duration::from_secs(90))?;
-    rpc.call("initialize",json!({"protocolVersion":1,"clientInfo":{"name":"cedr-bench","version":env!("CARGO_PKG_VERSION")},"clientCapabilities":{}}))?;
-    rpc.call("authenticate", json!({"methodId":"oauth-personal"}))?;
-    Ok(())
+    cedr_agent::sign_in_home(cedr_agent::Agent::Antigravity, &mut command, &home)
+        .map_err(|e| e.to_string())?;
+    cedr_agent::private_runtime(&mut command, &scratch.path().join("runtime"))
+        .map_err(|e| e.to_string())?;
+    let link = home.join(".gemini/antigravity-acp/acp_token.json");
+    if !link.exists() {
+        std::fs::create_dir_all(link.parent().ok_or("missing sign-in parent")?)
+            .map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&credential.source, &link).map_err(|e| e.to_string())?;
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&credential.source, &link).map_err(|e| e.to_string())?;
+    }
+    let links = cedr_agent::SignInLink::capture(&home).map_err(|e| e.to_string())?;
+    let checked = (|| -> Result<()> {
+        let mut rpc = Rpc::start(command, Duration::from_secs(90))?;
+        rpc.call("initialize",json!({"protocolVersion":1,"clientInfo":{"name":"cedr-bench","version":env!("CARGO_PKG_VERSION")},"clientCapabilities":{}}))?;
+        rpc.call("authenticate", json!({"methodId":"oauth-personal"}))?;
+        Ok(())
+    })();
+    for link in links {
+        link.save_renewed()
+            .map_err(|_| "cannot preserve renewed sign-in")?;
+    }
+    checked
 }
 
 pub fn invoke(
+    model: &str,
+    prompt: &str,
+    workspace: &Path,
+    home: &Path,
+    credential: &Credential,
+    timeout: Duration,
+) -> Result<Usage> {
+    let target = home.join(".gemini/antigravity-acp/acp_token.json");
+    std::fs::create_dir_all(target.parent().ok_or("missing sign-in parent")?)
+        .map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&credential.source, &target).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&credential.source, &target).map_err(|e| e.to_string())?;
+    let links =
+        cedr_agent::SignInLink::capture(home).map_err(|_| "cannot track sign-in renewal")?;
+    let result = invoke_inner(model, prompt, workspace, home, credential, timeout);
+    for link in links {
+        link.save_renewed()
+            .map_err(|_| "cannot preserve renewed sign-in")?;
+    }
+    result
+}
+
+fn invoke_inner(
     model: &str,
     prompt: &str,
     workspace: &Path,

@@ -7,24 +7,13 @@ use std::time::Duration;
 
 pub fn hosts(h: Harness) -> &'static [&'static str] {
     match h {
-        Harness::Claude => &[
-            "api.anthropic.com",
-            "claude.ai",
-            "platform.claude.com",
-            "console.anthropic.com",
-        ],
-        Harness::Codex => &["chatgpt.com", "api.openai.com", "auth.openai.com"],
-        Harness::Muse => &["api.meta.ai", "auth.meta.com"],
-        Harness::Grok => &[
-            "api.x.ai",
-            "cli-chat-proxy.grok.com",
-            "grok.com",
-            "accounts.x.ai",
-        ],
+        Harness::Claude => &["api.anthropic.com"],
+        Harness::Codex => &["chatgpt.com", "api.openai.com"],
+        Harness::Muse => &["api.meta.ai"],
+        Harness::Grok => &["api.x.ai", "cli-chat-proxy.grok.com"],
         Harness::Gemini => &[
             "generativelanguage.googleapis.com",
             "cloudcode-pa.googleapis.com",
-            "oauth2.googleapis.com",
         ],
         _ => &[],
     }
@@ -65,6 +54,42 @@ fn docker(args: &[&str]) -> Result<String> {
         ));
     }
     Ok(String::from_utf8_lossy(&o.stdout).trim().into())
+}
+pub fn available() -> bool {
+    let mut command = Command::new("docker");
+    command.args(["info", "--format", "{{.ServerVersion}}"]);
+    exec::run_step(command, None, Duration::from_secs(5)).is_ok_and(|out| out.succeeded())
+}
+pub fn supports_isolated(version: &str) -> bool {
+    version
+        .split('.')
+        .next()
+        .and_then(|v| v.parse::<u32>().ok())
+        .is_some_and(|v| v >= 28)
+}
+fn verify_engine() -> Result<()> {
+    let version = docker(&["version", "--format", "{{.Server.Version}}"])?;
+    if !supports_isolated(&version) {
+        return Err("Docker Engine 28 or newer is required for isolated bridge gateways".into());
+    }
+    let security = docker(&["info", "--format", "{{json .SecurityOptions}}"])?;
+    if security.contains("rootless") || security.contains("userns") {
+        return Err("Docker rootless/userns UID mapping cannot preserve the invoking UID/GID on these bind mounts; use --local or a daemon without user-namespace remapping".into());
+    }
+    Ok(())
+}
+/// Linux bind mounts keep the caller's ownership; other platforms use Docker's host file sharing.
+pub fn identity() -> String {
+    #[cfg(unix)]
+    {
+        format!("{}:{}", unsafe { libc::geteuid() }, unsafe {
+            libc::getegid()
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        "1000:1000".into()
+    }
 }
 #[derive(Clone)]
 pub struct Credential {
@@ -150,12 +175,15 @@ pub fn task_args(
         "--network",
         network,
         "--user",
-        "1000:1000",
+        &identity(),
+        "--memory=2g",
+        "--memory-swap=2g",
+        "--pids-limit=256",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
         "--read-only",
         "--tmpfs",
-        "/tmp:rw,nosuid,nodev,mode=1777",
+        "/tmp:rw,nosuid,nodev,mode=1777,size=1g",
         "--workdir",
         "/workspace",
         "--env",
@@ -240,6 +268,7 @@ pub struct Container {
     pub base: String,
     pub image: String,
     pub pinned: bool,
+    pub verified: Vec<String>,
     network: String,
     proxy: String,
     task: String,
@@ -262,7 +291,7 @@ impl Container {
         } else {
             if !pinned {
                 return Err(
-                    "edition.toml: image must be pinned by digest (or use --build-image)".into(),
+                    "edition.toml: image digest is empty or invalid; the orchestrator fills it in when the image is published; use --build-image for an unpinned local build".into(),
                 );
             }
             docker(&["pull", "--quiet", base])?;
@@ -287,6 +316,7 @@ impl Container {
             base: String::new(),
             image: String::new(),
             pinned: false,
+            verified: Vec::new(),
             network: String::new(),
             proxy: String::new(),
             task,
@@ -310,11 +340,13 @@ impl Container {
             base: String::new(),
             image: String::new(),
             pinned: false,
+            verified: Vec::new(),
             network: format!("cedr-bench-{suffix}"),
             proxy: format!("cedr-proxy-{suffix}"),
             task: format!("cedr-task-{suffix}"),
             _scratch: scratch,
         };
+        verify_engine()?;
         c.set_base(suite, build)?;
         if version.is_empty()
             || !version
@@ -396,6 +428,7 @@ impl Container {
         let network = network_args(&c.network);
         docker(&network.iter().map(String::as_str).collect::<Vec<_>>())
             .map_err(|_|"cannot establish isolated Docker egress; use a Docker engine supporting isolated bridge gateway mode".to_string())?;
+        c.verify_topology()?;
         let script = c._scratch.path().join("proxy.py");
         std::fs::write(&script, include_str!("proxy.py")).map_err(|e| e.to_string())?;
         docker(&[
@@ -406,7 +439,10 @@ impl Container {
             "--network",
             "bridge",
             "--user",
-            "1000:1000",
+            &identity(),
+            "--memory=2g",
+            "--memory-swap=2g",
+            "--pids-limit=256",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges",
             "--read-only",
@@ -439,6 +475,147 @@ impl Container {
             check,
         ])?;
         Ok(c)
+    }
+    fn verify_topology(&mut self) -> Result<()> {
+        let details = docker(&["network", "inspect", &self.network])?;
+        let networks: serde_json::Value =
+            serde_json::from_str(&details).map_err(|_| "invalid Docker network inspection")?;
+        let net = &networks[0];
+        if net["Internal"] != true
+            || net["Options"]["com.docker.network.bridge.gateway_mode_ipv4"] != "isolated"
+        {
+            return Err("Docker did not apply the isolated internal bridge topology".into());
+        }
+        let gateway = docker(&[
+            "network",
+            "inspect",
+            "bridge",
+            "--format",
+            "{{(index .IPAM.Config 0).Gateway}}",
+        ])?;
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
+            .map_err(|_| "cannot create host listener for isolation verification")?;
+        let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        // The listener is known live on the host, so a failed connection cannot
+        // be mistaken for a closed service. Test direct egress without a proxy.
+        let script = format!(
+            r#"import socket,errno
+for host,port in [({gateway:?},{port}),({gateway:?},443),('1.1.1.1',443)]:
+    try:
+        s=socket.create_connection((host,port),2)
+    except OSError as e:
+        assert isinstance(e,TimeoutError) or e.errno in (errno.ENETUNREACH,errno.EHOSTUNREACH), 'host route is reachable'
+    else:
+        s.close(); raise AssertionError('direct connection escaped task network')
+try:
+    socket.getaddrinfo('example.com',443)
+except socket.gaierror:
+    pass
+else:
+    raise AssertionError('external DNS escaped task network')
+"#
+        );
+        docker(&["run", "--rm", "--network", &self.network, &self.base, "python3", "-c", &script])
+            .map_err(|_| "Docker isolation check failed: host gateway, live host port, outside connectivity or DNS was reachable".to_string())?;
+        self.verified = vec![
+            "engine>=28".into(),
+            "isolated-internal-bridge".into(),
+            "host-gateway-unreachable".into(),
+            "live-host-port-unreachable".into(),
+            "external-ip-unreachable".into(),
+            "external-dns-blocked".into(),
+        ];
+        Ok(())
+    }
+    /// Effort must come from the installed agent layer, never the host's version.
+    pub fn check_effort(
+        &self,
+        h: Harness,
+        model: &str,
+        effort: Option<&str>,
+        credential: Option<&Credential>,
+    ) -> Result<()> {
+        let Some(effort) = effort else {
+            return Ok(());
+        };
+        let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let workspace = scratch.path().join("workspace");
+        let home = scratch.path().join("home");
+        std::fs::create_dir(&workspace).map_err(|e| e.to_string())?;
+        for name in [".claude", ".codex", ".config/muse", ".grok", ".gemini"] {
+            std::fs::create_dir_all(home.join(name)).map_err(|e| e.to_string())?;
+        }
+        let mut command = Command::new("docker");
+        let mut args = task_args(
+            &self.network,
+            &self.image,
+            &workspace,
+            &home,
+            &self.task,
+            credential,
+            h,
+        );
+        args.insert(1, "-i".into());
+        command.args(args);
+        let levels = match h {
+            Harness::Claude => {
+                command.args([
+                    "claude",
+                    "-p",
+                    "--safe-mode",
+                    "--strict-mcp-config",
+                    "--tools",
+                    "",
+                    "--no-session-persistence",
+                    "--input-format",
+                    "stream-json",
+                    "--output-format",
+                    "stream-json",
+                    "--verbose",
+                ]);
+                let output = exec::run_step(command, Some("{\"type\":\"control_request\",\"request_id\":\"bench-models\",\"request\":{\"subtype\":\"initialize\"}}\n"), Duration::from_secs(30)).map_err(|e| e.to_string())?;
+                if !output.succeeded() {
+                    return Err("container agent model discovery failed".into());
+                }
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter_map(|line| serde_json::from_str(line).ok())
+                    .flat_map(|row| crate::adapter::claude_levels(&row, model))
+                    .collect::<Vec<_>>()
+            }
+            Harness::Codex => {
+                command.args(["codex", "app-server"]);
+                let mut rpc = crate::rpc::Rpc::start(command, Duration::from_secs(30))?;
+                rpc.call("initialize", serde_json::json!({"clientInfo":{"name":"cedr-bench","version":env!("CARGO_PKG_VERSION")}}))?;
+                rpc.send(&serde_json::json!({"method":"initialized"}))?;
+                let response = rpc.call("model/list", serde_json::json!({}))?;
+                response["data"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|row| row["model"] == model || row["id"] == model)
+                    .flat_map(|row| {
+                        row["supportedReasoningEfforts"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                    })
+                    .filter_map(|row| row["reasoningEffort"].as_str().map(str::to_string))
+                    .collect()
+            }
+            _ => {
+                return Err(
+                    "container agent does not expose verified model effort metadata; omit --effort"
+                        .into(),
+                );
+            }
+        };
+        if !levels.iter().any(|level| level == effort) {
+            return Err(format!(
+                "{model}: effort not supported by the container agent version"
+            ));
+        }
+        Ok(())
     }
     pub fn run(
         &self,
@@ -475,6 +652,30 @@ impl Container {
                 "/bench-agent.py".into(),
             ]);
         }
+        let mut check_args = task_args(
+            &self.network,
+            &self.image,
+            workspace,
+            home,
+            &self.task,
+            credential,
+            h,
+        );
+        check_args.extend(["python3".into(), "-c".into(), "from pathlib import Path; import os; assert os.getuid()==int(os.environ['BENCH_UID']); [(p.write_text('ok'), p.unlink()) for p in [Path('/workspace/.bench-write-check'),Path('/home/bench/.bench-write-check')]]".into()]);
+        // UID is passed explicitly rather than assuming the image's user owns the binds.
+        let image_index = check_args
+            .iter()
+            .position(|a| a == &self.image)
+            .ok_or("missing agent image")?;
+        check_args.splice(
+            image_index..image_index,
+            [
+                "--env".into(),
+                format!("BENCH_UID={}", identity().split(':').next().unwrap_or("0")),
+            ],
+        );
+        docker(&check_args.iter().map(String::as_str).collect::<Vec<_>>())
+            .map_err(|_| "container UID/GID cannot write the bound workspace or home; check ownership and Docker user-namespace mappings".to_string())?;
         cmd.args(args).args(argv);
         let out = exec::run_step(cmd, None, timeout).map_err(|e| e.to_string());
         let _ = docker(&["rm", "--force", &self.task]);
@@ -486,6 +687,7 @@ impl Container {
         id: &str,
         workspace: &Path,
         timeout: Duration,
+        seed: u64,
     ) -> Result<exec::StepOutput> {
         let mut cmd = Command::new("docker");
         cmd.args([
@@ -495,12 +697,15 @@ impl Container {
             &self.task,
             "--network=none",
             "--user",
-            "1000:1000",
+            &identity(),
+            "--memory=2g",
+            "--memory-swap=2g",
+            "--pids-limit=256",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges",
             "--read-only",
             "--tmpfs",
-            "/tmp:rw,nosuid,nodev,mode=1777",
+            "/tmp:rw,nosuid,nodev,mode=1777,size=1g",
             "--workdir",
             "/workspace",
             "--env",
@@ -516,6 +721,7 @@ impl Container {
             "type=bind,src={},dst=/graders,readonly",
             suite.join("graders").display()
         ))
+        .args(["--env", &format!("BENCH_SEED={seed}")])
         .arg(&self.base)
         .arg(format!("/graders/{id}/grade"))
         .arg("/workspace");

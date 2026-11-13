@@ -2271,6 +2271,12 @@ fn vendor_trials_exclude_user_setup_but_keep_the_committed_project_setup() {
             &format!(
                 r#"
 if [ "$1" = --version ]; then echo 1; exit 0; fi
+# Authentication checks have an empty working directory and no user tool links.
+if [ "$1" = login ] || printf '%s' "$*" | grep -q -- --safe-mode; then
+ [ ! -e "$HOME/.cargo" ]
+ [ ! -e AGENTS.md ]
+ exit 0
+fi
 set -eu
 [ "$HOME" != '{user}' ]
 [ "$USERPROFILE" = "$HOME" ]
@@ -2304,6 +2310,8 @@ case '{vendor}' in
   case " $* " in *' --strict-mcp-config '*) ;; *) exit 1;; esac
   case " $* " in *" --mcp-config $PWD/.mcp.json "*) ;; *) exit 1;; esac
   case " $* " in *--safe-mode*|*--bare*|*'{user}'*) exit 1;; esac
+  printf 'renewed fake sign-in' > "$CLAUDE_CONFIG_DIR/renewed"
+  mv "$CLAUDE_CONFIG_DIR/renewed" "$CLAUDE_CONFIG_DIR/.credentials.json"
   echo '{{"type":"result","subtype":"success","total_cost_usd":0}}'
   ;;
  codex)
@@ -2315,6 +2323,8 @@ case '{vendor}' in
   [ ! -e "$CODEX_HOME/AGENTS.md" ]
   [ ! -e "$CODEX_HOME/config.toml" ]
   case " $* " in *"projects.\"$PWD\".trust_level=\"trusted\""*) ;; *) exit 1;; esac
+  printf 'renewed fake sign-in' > "$CODEX_HOME/renewed"
+  mv "$CODEX_HOME/renewed" "$CODEX_HOME/auth.json"
   echo '{{"type":"turn.completed","usage":{{"input_tokens":1,"output_tokens":1}}}}'
   ;;
 esac
@@ -2369,7 +2379,12 @@ test = "true"
             assert!(!Path::new(path).exists(), "home survived its trial");
         }
         for file in [".codex/auth.json", ".claude/.credentials.json"] {
-            assert_eq!(fs::read_to_string(user.join(file)).unwrap(), "fake sign-in");
+            let expected = if (vendor == "claude") == file.starts_with(".claude") {
+                "renewed fake sign-in"
+            } else {
+                "fake sign-in"
+            };
+            assert_eq!(fs::read_to_string(user.join(file)).unwrap(), expected);
         }
     }
 }

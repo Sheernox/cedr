@@ -16,6 +16,14 @@ pub enum Agent {
 /// Gives vendor CLIs the same filtered view of the user's tools, with private agent configuration.
 /// The caller owns the temporary directory through process exit; this is not a security sandbox.
 pub fn clean_home(kind: Agent, cmd: &mut Command, home: &Path) -> std::io::Result<()> {
+    home_inner(kind, cmd, home, true)
+}
+
+/// A host authentication check sees only its sign-in, never the user's tools or setup.
+pub fn sign_in_home(kind: Agent, cmd: &mut Command, home: &Path) -> std::io::Result<()> {
+    home_inner(kind, cmd, home, false)
+}
+fn home_inner(kind: Agent, cmd: &mut Command, home: &Path, shadow: bool) -> std::io::Result<()> {
     if kind == Agent::Command {
         return Ok(());
     }
@@ -35,7 +43,7 @@ pub fn clean_home(kind: Agent, cmd: &mut Command, home: &Path) -> std::io::Resul
         .map(std::path::PathBuf::from)
         .or_else(|| user_home.as_ref().map(|p| p.join(directory)));
     #[cfg(unix)]
-    {
+    if shadow {
         let config = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty());
         let mut data = Vec::new();
         if let Some(user) = &user_home {
@@ -65,6 +73,11 @@ pub fn clean_home(kind: Agent, cmd: &mut Command, home: &Path) -> std::io::Resul
         cmd.env("HOME", home)
             .env("USERPROFILE", home)
             .env("XDG_CONFIG_HOME", config);
+    }
+    if !shadow {
+        cmd.env("HOME", home)
+            .env("USERPROFILE", home)
+            .env("XDG_CONFIG_HOME", home.join(".config"));
     }
     let agent_home = home.join(directory);
     std::fs::create_dir_all(&agent_home)?;
@@ -97,6 +110,98 @@ pub fn clean_home(kind: Agent, cmd: &mut Command, home: &Path) -> std::io::Resul
     }
     cmd.env(variable, agent_home);
     Ok(())
+}
+
+/// Remember the original target before the vendor can replace its sign-in link.
+pub struct SignInLink {
+    link: std::path::PathBuf,
+    source: std::path::PathBuf,
+}
+impl SignInLink {
+    pub fn capture(home: &Path) -> std::io::Result<Vec<Self>> {
+        let mut links = Vec::new();
+        for name in [
+            ".claude/.credentials.json",
+            ".codex/auth.json",
+            ".config/muse/auth.json",
+            ".grok/auth.json",
+            ".gemini/oauth_creds.json",
+            ".gemini/antigravity-acp/acp_token.json",
+        ] {
+            let link = home.join(name);
+            match std::fs::read_link(&link) {
+                Ok(source) => links.push(Self { link, source }),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(links)
+    }
+    /// Stage beside the real credential for an atomic replacement, even across filesystems.
+    /// The original mode is retained; neither the file nor I/O errors expose its contents.
+    pub fn save_renewed(&self) -> std::io::Result<()> {
+        if std::fs::symlink_metadata(&self.link)?
+            .file_type()
+            .is_symlink()
+        {
+            return Ok(());
+        }
+        let metadata = std::fs::metadata(&self.source)?;
+        if !std::fs::symlink_metadata(&self.link)?.is_file() {
+            return Err(std::io::Error::other(
+                "renewed sign-in is not a regular file",
+            ));
+        }
+        let parent = self
+            .source
+            .parent()
+            .ok_or_else(|| std::io::Error::other("sign-in has no parent"))?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        std::io::copy(
+            &mut std::fs::File::open(&self.link)?,
+            temporary.as_file_mut(),
+        )?;
+        temporary
+            .as_file()
+            .set_permissions(metadata.permissions())?;
+        temporary.as_file().sync_all()?;
+        temporary.persist(&self.source).map_err(|e| e.error)?;
+        Ok(())
+    }
+}
+
+/// Non-interactive checks cannot execute tools or load user agent setup.
+pub fn sign_in_args(kind: Agent, model: &str) -> std::io::Result<Vec<String>> {
+    let args: Vec<&str> = match kind {
+        Agent::Claude => vec![
+            "claude",
+            "-p",
+            "--safe-mode",
+            "--strict-mcp-config",
+            "--tools",
+            "",
+            "--setting-sources",
+            "",
+            "--no-session-persistence",
+            "--model",
+            model,
+            "Reply OK.",
+        ],
+        Agent::Codex => vec!["codex", "login", "status"],
+        Agent::Muse => vec!["muse", "usage", "--json"],
+        Agent::Grok => vec!["grok", "models"],
+        Agent::Gemini => {
+            return Err(std::io::Error::other(
+                "Gemini has no verified tool-free host sign-in check; use GEMINI_API_KEY or GOOGLE_API_KEY",
+            ));
+        }
+        _ => {
+            return Err(std::io::Error::other(
+                "no host sign-in check for this agent",
+            ));
+        }
+    };
+    Ok(args.into_iter().map(str::to_string).collect())
 }
 
 /// Keep runtime writes outside a shadow home: ordinary entries there may link to the real home.
@@ -364,5 +469,54 @@ mod tests {
             home.join(".config")
         );
         assert!(!home.join(".config/must-not-link").exists());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod renewal_tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    #[test]
+    fn replaced_links_are_saved_atomically_and_unchanged_links_are_left_alone() {
+        for relative in [".codex/auth.json", ".claude/.credentials.json"] {
+            let dir = tempfile::tempdir().unwrap();
+            let original = dir.path().join("original");
+            std::fs::write(&original, "old fake sign-in").unwrap();
+            std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let home = dir.path().join("home");
+            let link = home.join(relative);
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            symlink(&original, &link).unwrap();
+            let links = SignInLink::capture(&home).unwrap();
+            links[0].save_renewed().unwrap();
+            assert_eq!(std::fs::read(&original).unwrap(), b"old fake sign-in");
+            std::fs::remove_file(&link).unwrap();
+            std::fs::write(&link, "renewed fake sign-in").unwrap();
+            links[0].save_renewed().unwrap();
+            assert_eq!(std::fs::read(&original).unwrap(), b"renewed fake sign-in");
+            assert_eq!(
+                std::fs::metadata(original).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+    #[test]
+    fn host_checks_never_enable_tools_or_bypass_permissions() {
+        assert!(sign_in_args(Agent::Gemini, "test-model").is_err());
+        let claude = sign_in_args(Agent::Claude, "test-model").unwrap();
+        assert!(claude.windows(2).any(|args| args == ["--tools", ""]));
+        assert!(claude.contains(&"--safe-mode".into()));
+        assert_eq!(
+            sign_in_args(Agent::Codex, "test-model").unwrap(),
+            ["codex", "login", "status"]
+        );
+        for kind in [Agent::Claude, Agent::Codex, Agent::Muse, Agent::Grok] {
+            let args = sign_in_args(kind, "test-model").unwrap();
+            assert!(
+                !args
+                    .iter()
+                    .any(|arg| arg.contains("bypass") || arg == "--yolo")
+            );
+        }
     }
 }

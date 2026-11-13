@@ -35,7 +35,7 @@ pub struct Configuration {
     /// Exact vendor version; defaults to the installed agent version
     #[arg(long)]
     agent_version: Option<String>,
-    /// Print the measured probe reference for edition.toml
+    /// Print the measured probe reference for probes/edition-<n>.toml
     #[arg(long)]
     set_reference: bool,
     /// Custom argv, one argument per flag; placeholders: {prompt_file}, {model}, {effort}
@@ -169,11 +169,46 @@ fn load(c: &Configuration) -> Result<suite::Suite, String> {
             .as_str()
             .ok_or("invalid cached edition digest")?,
     )?;
-    let suite = suite::load(&dest)?;
+    let mut suite = suite::load(&dest)?;
+    let reference_path = base.join(format!("probes/edition-{number}.toml"));
+    // HEAD resolves the repository's default branch, independently of its frozen tag.
+    let url = format!(
+        "https://raw.githubusercontent.com/Sheernox/cedr-bench/HEAD/probes/edition-{number}.toml"
+    );
+    let fresh = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .ok()
+        .and_then(|client| client.get(url).send().ok())
+        .filter(|response| response.status().is_success())
+        .and_then(|response| {
+            use std::io::Read;
+            let mut text = String::new();
+            response
+                .take(1024 * 1024 + 1)
+                .read_to_string(&mut text)
+                .ok()?;
+            Some(text)
+        });
+    suite.edition.probe = cached_references(&reference_path, fresh)?;
     if json!(suite.commit) != expected["commit"] || suite.edition.number != number {
         return Err("cached edition commit changed".into());
     }
     Ok(suite)
+}
+fn cached_references(path: &Path, fresh: Option<String>) -> Result<suite::References, String> {
+    if let Some(text) = fresh {
+        let references = suite::parse_references(&text)?;
+        settings::write_atomic(path, text.as_bytes())?;
+        return Ok(references);
+    }
+    match std::fs::read_to_string(path) {
+        Ok(text) => suite::parse_references(&text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(suite::References::default())
+        }
+        Err(error) => Err(format!("cannot read cached probe references: {error}")),
+    }
 }
 fn options(c: &Configuration) -> Result<Options, String> {
     if c.harness != Harness::Command && !c.command.is_empty() {
@@ -223,7 +258,9 @@ fn options(c: &Configuration) -> Result<Options, String> {
             .ok_or("unrecognized vendor version")?
             .to_string()
     };
-    cedr_bench::adapter::check_effort(c.harness, &c.model, c.effort.as_deref())?;
+    if c.local {
+        cedr_bench::adapter::check_effort(c.harness, &c.model, c.effort.as_deref())?;
+    }
     Ok(Options {
         harness: c.harness,
         model: c.model.clone(),
@@ -281,10 +318,10 @@ fn summary(r: &BenchResult) {
     }
 }
 fn reference(c: &Configuration, o: &Options, p: &report::Probe) -> Result<(), String> {
-    if c.set_reference {
+    if c.set_reference && p.status == report::ProbeStatus::Reference {
         let input = p.input_tokens.ok_or("probe did not report input tokens")?;
         eprintln!(
-            "\n[[probe.references]]\nharness = {:?}\nharness_version = {:?}\nmodel = {:?}",
+            "\n[[references]]\nharness = {:?}\nharness_version = {:?}\nmodel = {:?}",
             o.harness.name(),
             o.version,
             o.model
@@ -437,6 +474,13 @@ pub(crate) fn history_rows(limit: usize) -> Result<Vec<Value>, String> {
         if rows.len() == limit {
             break;
         }
+        let bytes = std::fs::read(p).map_err(|e| e.to_string())?;
+        if serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .is_none_or(|value| value["kind"] != "bench")
+        {
+            continue;
+        }
         match read_result(p.to_str().ok_or("non UTF-8 result path")?){Ok(r)=>rows.push(json!({"id":r.id,"edition":r.edition.number,"started_at":r.started_at,"complete":r.complete,"stop":r.stop,"score":r.score,"solved":r.solved,"spent_usd":r.spent_usd,"eligible":r.eligible})),Err(e)=>eprintln!("cedr: bench: skipped {e}")}
     }
     Ok(rows)
@@ -496,4 +540,34 @@ fn export(ids: &[String], out: &Path) -> Result<(), String> {
         &out.join("results.json"),
         &serde_json::to_vec_pretty(&originals).map_err(|e| e.to_string())?,
     )
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+    #[test]
+    fn remote_references_use_fresh_data_then_cache_then_no_reference_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("probes/edition-1.toml");
+        assert!(
+            cached_references(&path, None)
+                .unwrap()
+                .references
+                .is_empty()
+        );
+        let published = "[[references]]\nharness='codex'\nharness_version='test'\nmodel='test-model'\ninput_tokens=10\n";
+        assert_eq!(
+            cached_references(&path, Some(published.into()))
+                .unwrap()
+                .references[0]
+                .input_tokens,
+            10
+        );
+        assert_eq!(
+            cached_references(&path, None).unwrap().references[0].input_tokens,
+            10
+        );
+        assert!(cached_references(&path, Some(format!("{published}{published}"))).is_err());
+        assert_eq!(cached_references(&path, None).unwrap().references.len(), 1);
+    }
 }

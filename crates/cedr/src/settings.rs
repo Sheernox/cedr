@@ -67,6 +67,13 @@ impl Settings {
             .filter(|s| is_uuid(s))
     }
 
+    pub(crate) fn check_compare_budget_rename(&self) -> Result<(), String> {
+        if self.doc.contains_key("bench_budget_usd") {
+            return Err("bench_budget_usd was renamed to compare_budget_usd; rename the key before running Compare".into());
+        }
+        Ok(())
+    }
+
     /// The Compare cap the user set, if any (docs/compare.md, Budget). A broken value is an error rather
     /// than the default, because the default may be more than this person meant to spend.
     pub(crate) fn compare_budget_usd(&self) -> Result<Option<f64>, String> {
@@ -76,6 +83,7 @@ impl Settings {
                 path().display()
             ));
         }
+        self.check_compare_budget_rename()?;
         let Some(item) = self.doc.get("compare_budget_usd") else {
             return Ok(None);
         };
@@ -308,6 +316,12 @@ mod tests {
             .compare_budget_usd()
         };
         assert_eq!(budget("").unwrap(), None);
+        assert!(
+            budget("bench_budget_usd = 0.5\n")
+                .unwrap_err()
+                .contains("renamed")
+        );
+        assert!(budget("bench_budget_usd = 0.5\ncompare_budget_usd = 2\n").is_err());
         assert_eq!(budget("compare_budget_usd = 2.5\n").unwrap(), Some(2.5));
         assert_eq!(budget("compare_budget_usd = 3\n").unwrap(), Some(3.0));
         for bad in ["\"lots\"", "0.0", "-1.0", "inf"] {

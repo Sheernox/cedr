@@ -36,7 +36,8 @@ pub struct Invocation {
 }
 pub trait Backend {
     fn invoke(&mut self, prompt: &str, workspace: &Path, timeout: Duration) -> Result<Invocation>;
-    fn grade(&mut self, suite: &Suite, task: &Task, workspace: &Path) -> Result<Vec<u8>>;
+    fn grade(&mut self, suite: &Suite, task: &Task, workspace: &Path, seed: u64)
+    -> Result<Vec<u8>>;
     fn environment(&self) -> Environment;
     fn image(&self) -> Option<String> {
         None
@@ -47,7 +48,6 @@ pub struct ProcessBackend<'a> {
     container: Option<Container>,
     credential: Option<Credential>,
     healthy: bool,
-    #[cfg(not(target_os = "linux"))]
     local_grader: Option<Container>,
 }
 impl<'a> ProcessBackend<'a> {
@@ -72,7 +72,6 @@ impl<'a> ProcessBackend<'a> {
             container,
             credential,
             healthy: true,
-            #[cfg(not(target_os = "linux"))]
             local_grader: None,
         };
         if options.local && !matches!(options.harness, Harness::Command | Harness::Antigravity) {
@@ -99,6 +98,14 @@ impl<'a> ProcessBackend<'a> {
         if backend.credential.is_some() {
             backend.check_sign_in()?;
         }
+        if let Some(c) = &backend.container {
+            c.check_effort(
+                options.harness,
+                &options.model,
+                options.effort.as_deref(),
+                backend.credential.as_ref(),
+            )?;
+        }
         Ok(backend)
     }
     fn pin_local(&self, argv: &mut [String]) -> Result<()> {
@@ -124,8 +131,7 @@ impl<'a> ProcessBackend<'a> {
         }
         Ok(())
     }
-    // Renewal must use the real credential directory: vendors can replace a symlink atomically.
-    // Pure account/catalog calls are preferred; inference-only checks disable user configuration.
+    // Account checks cannot act on the host; a replaced credential link is preserved atomically.
     fn check_sign_in(&mut self) -> Result<()> {
         if self.options.harness == Harness::Antigravity {
             return crate::antigravity::check(
@@ -138,22 +144,8 @@ impl<'a> ProcessBackend<'a> {
         let workspace = scratch.path().join("workspace");
         std::fs::create_dir(&workspace).map_err(|e| e.to_string())?;
         let home = scratch.path().join("home");
-        let mut argv = adapter::argv(
-            self.options.harness,
-            &self.options.model,
-            None,
-            "Reply OK. Do not use tools.",
-            &self.options.command,
-        )?;
-        match self.options.harness {
-            Harness::Muse => argv = vec!["muse".into(), "usage".into(), "--json".into()],
-            Harness::Grok => argv = vec!["grok".into(), "models".into()],
-            Harness::Codex => {
-                argv.insert(2, "--ignore-user-config".into());
-                argv.insert(2, "--ignore-rules".into());
-            }
-            _ => {}
-        }
+        let mut argv = cedr_agent::sign_in_args(agent(self.options.harness), &self.options.model)
+            .map_err(|e| e.to_string())?;
         self.pin_local(&mut argv)?;
         let out = local(
             &argv,
@@ -216,8 +208,14 @@ fn local(
             cmd.env(k, v);
         }
     }
-    cedr_agent::clean_home(agent(h), &mut cmd, home)
-        .map_err(|e| format!("cannot prepare clean home: {e}"))?;
+    if renewal.is_some() {
+        cedr_agent::sign_in_home(agent(h), &mut cmd, home)
+    } else {
+        cedr_agent::clean_home(agent(h), &mut cmd, home)
+    }
+    .map_err(|e| format!("cannot prepare clean home: {e}"))?;
+    let links =
+        cedr_agent::SignInLink::capture(home).map_err(|_| "cannot track sign-in renewal")?;
     let runtime = home
         .parent()
         .ok_or("clean home has no private parent")?
@@ -226,34 +224,12 @@ fn local(
     if h == Harness::Claude {
         cmd.env("DISABLE_AUTOUPDATER", "1");
     }
-    if let Some(credential) = renewal {
-        let dir = credential
-            .source
-            .parent()
-            .ok_or("credential has no parent")?;
-        match h {
-            Harness::Claude => {
-                cmd.env("CLAUDE_CONFIG_DIR", dir);
-            }
-            Harness::Codex => {
-                cmd.env("CODEX_HOME", dir);
-            }
-            Harness::Grok => {
-                cmd.env("GROK_HOME", dir);
-            }
-            Harness::Muse => {
-                cmd.env(
-                    "XDG_CONFIG_HOME",
-                    dir.parent().ok_or("Muse credential root missing")?,
-                );
-            }
-            Harness::Gemini => {
-                cmd.env("GEMINI_HOME", dir);
-            }
-            _ => {}
-        }
+    let out = exec::run_step(cmd, None, timeout).map_err(|e| format!("cannot start agent: {e}"));
+    for link in links {
+        link.save_renewed()
+            .map_err(|_| "cannot preserve renewed sign-in")?;
     }
-    exec::run_step(cmd, None, timeout).map_err(|e| format!("cannot run agent: {e}"))
+    out
 }
 impl Backend for ProcessBackend<'_> {
     fn invoke(&mut self, prompt: &str, workspace: &Path, timeout: Duration) -> Result<Invocation> {
@@ -283,6 +259,9 @@ impl Backend for ProcessBackend<'_> {
                 usage: usage?,
                 duration_ms,
             });
+        }
+        if self.container.is_some() && self.credential.is_some() {
+            self.check_sign_in()?;
         }
         let home = tempfile::tempdir().map_err(|e| e.to_string())?;
         let mut argv = adapter::argv(
@@ -350,8 +329,9 @@ impl Backend for ProcessBackend<'_> {
         if matches!(status, Status::Timeout | Status::Interrupted) {
             usage.cost_usd = None;
         }
-        if self.credential.is_some() {
-            self.check_sign_in()?;
+        if status == Status::AgentError && self.container.is_some() {
+            self.healthy = false;
+            return Err("container agent failed, possibly because its sign-in expired; renewal is blocked; run again after checking the vendor sign-in".into());
         }
         Ok(Invocation {
             status,
@@ -359,44 +339,48 @@ impl Backend for ProcessBackend<'_> {
             duration_ms,
         })
     }
-    fn grade(&mut self, suite: &Suite, task: &Task, workspace: &Path) -> Result<Vec<u8>> {
+    fn grade(
+        &mut self,
+        suite: &Suite,
+        task: &Task,
+        workspace: &Path,
+        seed: u64,
+    ) -> Result<Vec<u8>> {
         let timeout = Duration::from_secs(task.timeout_seconds);
         let out = if let Some(c) = &self.container {
-            c.grade(&suite.root, &task.id, workspace, timeout)?
+            c.grade(&suite.root, &task.id, workspace, timeout, seed)?
+        } else if container::available() {
+            if self.local_grader.is_none() {
+                self.local_grader = Some(Container::grader(suite, self.options.build_image)?);
+            }
+            self.local_grader
+                .as_ref()
+                .ok_or("grader image unavailable")?
+                .grade(&suite.root, &task.id, workspace, timeout, seed)?
         } else {
-            #[cfg(target_os = "linux")]
-            {
-                let mut command = Command::new("unshare");
+            if task.kind == Kind::Visual {
+                return Err("visual tasks cannot be graded locally without Docker; install Docker and run again".into());
+            }
+            let grader = suite.root.join("graders").join(&task.id).join("grade");
+            #[cfg(windows)]
+            let mut command = {
+                let mut command = Command::new("python3");
+                command.arg(&grader);
                 command
-                    .args(["--user", "--map-root-user", "--net", "--"])
-                    .arg(suite.root.join("graders").join(&task.id).join("grade"))
-                    .arg(workspace)
-                    .current_dir(workspace)
-                    .env_clear()
-                    .env("HOME", workspace);
-                if let Some(path) = std::env::var_os("PATH") {
-                    command.env("PATH", path);
-                }
-                let output = exec::run_step(command, None, timeout).map_err(|e| {
-                    format!(
-                        "cannot establish local grader network namespace: {e}; use container mode"
-                    )
-                })?;
-                if !output.succeeded() {
-                    return Err("local grader failed; check unprivileged network namespace support or use container mode".into());
-                }
-                output
+            };
+            #[cfg(not(windows))]
+            let mut command = Command::new(&grader);
+            command
+                .arg(workspace)
+                .current_dir(workspace)
+                .env_clear()
+                .env("HOME", workspace)
+                .env("BENCH_SEED", seed.to_string());
+            if let Some(path) = std::env::var_os("PATH") {
+                command.env("PATH", path);
             }
-            #[cfg(not(target_os = "linux"))]
-            {
-                if self.local_grader.is_none() {
-                    self.local_grader = Some(Container::grader(suite, self.options.build_image)?);
-                }
-                self.local_grader
-                    .as_ref()
-                    .ok_or("grader image unavailable")?
-                    .grade(&suite.root, &task.id, workspace, timeout)?
-            }
+            exec::run_step(command, None, timeout)
+                .map_err(|e| format!("cannot run host grader: {e}"))?
         };
         if !out.succeeded() {
             return Err("grader failed or timed out".into());
@@ -423,6 +407,15 @@ impl Backend for ProcessBackend<'_> {
             .into(),
             pinned: self.container.as_ref().is_some_and(|c| c.pinned),
             agent_image: self.container.as_ref().map(|c| c.image.clone()),
+            verified: self
+                .container
+                .as_ref()
+                .map(|c| c.verified.clone())
+                .unwrap_or_default(),
+            limits: self
+                .container
+                .as_ref()
+                .map(|_| "memory=2g,pids=256,tmp=1g,swap=0".into()),
             os: std::env::consts::OS.into(),
             arch: std::env::consts::ARCH.into(),
             cli: env!("CARGO_PKG_VERSION").into(),
@@ -476,7 +469,7 @@ fn initialize(workspace: &Path) -> Result<()> {
     Ok(())
 }
 // Use the protected starting metadata, never config or helper commands an agent left in .git.
-fn patch(workspace: &Path, metadata: &Path) -> Result<String> {
+fn patch(workspace: &Path, metadata: &Path) -> Result<(Vec<u8>, Vec<TamperSignal>)> {
     if !std::fs::symlink_metadata(workspace)
         .map_err(|e| e.to_string())?
         .is_dir()
@@ -486,10 +479,25 @@ fn patch(workspace: &Path, metadata: &Path) -> Result<String> {
     let metadata = format!("--git-dir={}", metadata.display());
     let tree = format!("--work-tree={}", workspace.display());
     git(workspace, &[&metadata, &tree, "add", "--all"])?;
-    Ok(crate::sha(&git(
+    let diff = git(
         workspace,
         &[&metadata, &tree, "diff", "--cached", "--binary", "HEAD"],
-    )?))
+    )?;
+    let changed = git(
+        workspace,
+        &[
+            &metadata,
+            &tree,
+            "diff",
+            "--cached",
+            "--name-only",
+            "--diff-filter=ACMRT",
+            "-z",
+            "HEAD",
+        ],
+    )?;
+    let signals = crate::audit::scan(workspace, &changed)?;
+    Ok((diff, signals))
 }
 
 // Never open links or special files. Allow bounded trailing whitespace from native file writers.
@@ -640,6 +648,7 @@ pub fn run<B: Backend>(
             Ok(out) => out,
             Err(error) => {
                 progress(&format!("{}: agent failed: {error}", t.id));
+                r.tasks[i].error = Some(error);
                 if exec::interrupted() {
                     r.tasks[i].status = Status::Interrupted;
                     r.stop = Some(Stop::Interrupted);
@@ -657,7 +666,18 @@ pub fn run<B: Backend>(
         task.tokens = out.usage.tokens;
         task.cost_usd = out.usage.cost_usd;
         task.patch_sha256 = match patch(&workspace, &metadata) {
-            Ok(hash) => Some(hash),
+            Ok((diff, signals)) => {
+                task.tamper_signals = signals;
+                let hash = crate::sha(&diff);
+                if task.kind == Kind::Code {
+                    let directory = artifacts.join(&t.id);
+                    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+                    // This local audit artifact is deliberately absent from the exported artifact list.
+                    std::fs::write(directory.join("submission.patch"), diff)
+                        .map_err(|e| e.to_string())?;
+                }
+                Some(hash)
+            }
             Err(error) => {
                 progress(&format!("{}: cannot capture patch: {error}", t.id));
                 task.status = Status::SetupFailed;
@@ -671,8 +691,10 @@ pub fn run<B: Backend>(
         }
         if task.status == Status::Graded {
             let copy = scratch.path().join("grade");
-            let graded = suite::copy(&workspace, &copy)
-                .and_then(|()| backend.grade(suite, t, &copy))
+            let seed = u64::from_be_bytes(cedr_bench_seed()?) & ((1 << 30) - 1);
+            task.seed = Some(seed);
+            let graded = suite::copy_submission(&workspace, &copy)
+                .and_then(|()| backend.grade(suite, t, &copy, seed))
                 .and_then(|b| crate::report::grade(&b, t.kind));
             match graded {
                 Ok(g) => {
@@ -753,6 +775,13 @@ pub fn run<B: Backend>(
     r.summarize();
     r.validate()?;
     Ok(r)
+}
+
+fn cedr_bench_seed() -> Result<[u8; 8]> {
+    use sha2::{Digest, Sha256};
+    let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let bytes = Sha256::digest(temp.path().to_string_lossy().as_bytes());
+    Ok(bytes[..8].try_into().expect("fixed digest length"))
 }
 
 #[cfg(test)]

@@ -409,6 +409,37 @@ fn run_trial(input: TrialInput) -> Trial {
         return unscored(Status::SetupFailed);
     }
 
+    if variant.harness != HarnessKind::Command {
+        let kind = if variant.harness == HarnessKind::Claude {
+            cedr_agent::Agent::Claude
+        } else {
+            cedr_agent::Agent::Codex
+        };
+        let check = (|| -> std::io::Result<bool> {
+            let empty = dir.path().join("check-workspace");
+            std::fs::create_dir(&empty)?;
+            let argv = cedr_agent::sign_in_args(kind, &variant.model)?;
+            let binary = exec::find_program(&argv[0], root)
+                .ok_or_else(|| std::io::Error::other("agent not installed"))?;
+            let mut command = Command::new(binary);
+            command.args(&argv[1..]).current_dir(empty);
+            scrub(&mut command, false);
+            let home = dir.path().join("check-home");
+            cedr_agent::sign_in_home(kind, &mut command, &home)?;
+            cedr_agent::private_runtime(&mut command, &dir.path().join("check-runtime"))?;
+            let links = cedr_agent::SignInLink::capture(&home)?;
+            let out = exec::run_step(command, None, Duration::from_secs(120));
+            for link in links {
+                link.save_renewed()?;
+            }
+            Ok(out?.succeeded())
+        })();
+        if !check.unwrap_or(false) {
+            note("host sign-in check failed; repair the vendor sign-in and run again");
+            return unscored(Status::AgentError);
+        }
+    }
+
     let step = |script: &str| {
         let mut cmd = exec::shell(script);
         cmd.current_dir(&clone);
@@ -434,7 +465,21 @@ fn run_trial(input: TrialInput) -> Trial {
         note(&format!("cannot prepare the agent's clean home: {e}"));
         return unscored(Status::SetupFailed);
     }
-    let output = match exec::run_step(agent, stdin.as_deref(), timeout) {
+    let links = match cedr_agent::SignInLink::capture(&dir.path().join("home")) {
+        Ok(links) => links,
+        Err(_) => {
+            note("cannot track the agent sign-in");
+            return unscored(Status::SetupFailed);
+        }
+    };
+    let output = exec::run_step(agent, stdin.as_deref(), timeout);
+    for link in links {
+        if link.save_renewed().is_err() {
+            note("cannot preserve renewed sign-in; repair the vendor sign-in before running again");
+            return unscored(Status::AgentError);
+        }
+    }
+    let output = match output {
         Ok(output) => output,
         Err(e) => {
             note(&format!("the agent could not start: {e}"));

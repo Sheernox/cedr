@@ -12,7 +12,7 @@ fn suite() -> String {
 #[test]
 fn probe_and_usage_errors_have_stable_json_and_exit_codes() {
     let s = Scratch::new(0.0, 0.0);
-    let script = "import pathlib,json;pathlib.Path('probe.txt').write_text('cedr-bench-probe\\n');pathlib.Path('command.txt').write_text('cedr-bench-command\\n');print(json.dumps({'input_tokens':100,'output_tokens':1,'cost_usd':0}))";
+    let script = "import pathlib,json;pathlib.Path('probe.txt').write_text('cedr-bench-probe\\n');pathlib.Path('command.txt').write_text('cedr-bench-command\\n');print(json.dumps({'input_tokens':100,'cache_read_tokens':0,'cache_write_tokens':0,'output_tokens':1,'cost_usd':0}))";
     let o = s.cedr(&[
         "bench",
         "probe",
@@ -145,6 +145,8 @@ fn show_checks_consistency_and_export_preserves_objects_and_shot_layout() {
             network: "host".into(),
             pinned: false,
             agent_image: None,
+            verified: Vec::new(),
+            limits: None,
             os: "linux".into(),
             arch: "x86_64".into(),
             cli: "test".into(),
@@ -197,11 +199,20 @@ fn show_checks_consistency_and_export_preserves_objects_and_shot_layout() {
         value
     );
     let out = s.dir.path().join("export");
+    let audit = root.join(id).join("artifacts/code/submission.patch");
+    std::fs::create_dir_all(audit.parent().unwrap()).unwrap();
+    std::fs::write(&audit, "local audit patch content").unwrap();
     let exported = s.cedr(&["bench", "export", id, "--out", out.to_str().unwrap()]);
     assert!(
         exported.status.success(),
         "{}",
         String::from_utf8_lossy(&exported.stderr)
+    );
+    assert!(
+        !out.join("shots")
+            .join(id)
+            .join("code/submission.patch")
+            .exists()
     );
     let records: Value =
         serde_json::from_slice(&std::fs::read(out.join("results.json")).unwrap()).unwrap();
@@ -261,10 +272,18 @@ fn native_local_agent_state_never_reaches_the_host_data_directory() {
     let bin = s.dir.path().join("bin");
     std::fs::create_dir(&bin).unwrap();
     let program = bin.join("codex");
+    std::fs::create_dir_all(host.join(".codex")).unwrap();
+    std::fs::write(host.join(".codex/auth.json"), "fake sign-in").unwrap();
     std::fs::write(&program,r#"#!/usr/bin/env python3
 import json, os, pathlib, sys
 if "--version" in sys.argv:
     print("test");sys.exit(0)
+if sys.argv[1:3] == ['login','status']:
+    assert not pathlib.Path(os.environ['HOME'],'.cargo').exists()
+    sys.exit(0)
+auth=pathlib.Path(os.environ['CODEX_HOME'],'auth.json')
+auth.with_suffix('.new').write_text('renewed fake sign-in')
+auth.with_suffix('.new').replace(auth)
 home=pathlib.Path(os.environ['HOME'])
 data=pathlib.Path(os.environ.get('XDG_DATA_HOME',home/'.local/share'))
 data.mkdir(parents=True,exist_ok=True)
@@ -305,6 +324,10 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'cached_in
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
+        std::fs::read_to_string(host.join(".codex/auth.json")).unwrap(),
+        "renewed fake sign-in"
+    );
+    assert_eq!(
         std::fs::read_to_string(host_data.join("history.txt")).unwrap(),
         "host"
     );
@@ -314,7 +337,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'cached_in
 #[test]
 fn a_symlink_cannot_satisfy_the_probe_readiness_check() {
     let s = Scratch::new(0.0, 0.0);
-    let program = "import pathlib,json;p=pathlib.Path;p('target').write_text('cedr-bench-probe\\n');p('probe.txt').symlink_to('target');p('command.txt').write_text('cedr-bench-command\\n');print(json.dumps({'input_tokens':100,'output_tokens':1,'cost_usd':0}))";
+    let program = "import pathlib,json;p=pathlib.Path;p('target').write_text('cedr-bench-probe\\n');p('probe.txt').symlink_to('target');p('command.txt').write_text('cedr-bench-command\\n');print(json.dumps({'input_tokens':100,'cache_read_tokens':0,'cache_write_tokens':0,'output_tokens':1,'cost_usd':0}))";
     let output = s.cedr(&[
         "bench",
         "probe",
@@ -438,4 +461,155 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'cached_in
             .join(format!("{}.json", result["id"].as_str().unwrap()))
             .is_file()
     );
+}
+
+#[test]
+fn old_suite_file_commands_name_compare_and_history_ignores_old_results() {
+    let s = Scratch::new(0.0, 0.0);
+    let out = s.cedr(&["bench", "run", ".cedr/bench/suite.toml", "--no-push"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cedr compare run"));
+    let results = s.dir.path().join("state/cedr/bench");
+    std::fs::create_dir_all(&results).unwrap();
+    std::fs::write(
+        results.join("b-old.json"),
+        r#"{"version":1,"kind":"compare"}"#,
+    )
+    .unwrap();
+    std::fs::write(results.join("unrelated.json"), "not a result").unwrap();
+    let out = s.cedr(&["bench", "history", "--format", "json"]);
+    assert!(out.status.success());
+    assert_eq!(stdout(&out).trim(), "[]");
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("skipped"));
+}
+
+#[test]
+fn compare_refuses_a_legacy_cap_even_with_an_explicit_override() {
+    let s = Scratch::new(0.0, 0.0);
+    let config = s.dir.path().join("config/cedr");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("cli.toml"),
+        "telemetry=false\nauto_update=false\nbench_budget_usd=0.5\n",
+    )
+    .unwrap();
+    let out = s.cedr(&["compare", "run", "missing.toml", "--budget-usd", "2"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("bench_budget_usd was renamed to compare_budget_usd")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn local_grading_uses_the_image_when_available_and_host_tools_otherwise() {
+    use std::os::unix::fs::PermissionsExt;
+    for (available, expected) in [(true, 100.0), (false, 75.0)] {
+        let s = Scratch::new(0.0, 0.0);
+        let bin = s.dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let docker = bin.join("docker");
+        std::fs::write(
+            &docker,
+            if available {
+                r#"#!/usr/bin/env python3
+import sys,json
+args=sys.argv[1:]
+if args[0]=='info': print('29.0.0')
+elif args[0]=='image': print('sha256:'+'0'*64)
+elif args[0]=='run':
+    assert any(x.startswith('BENCH_SEED=') for x in args)
+    print(json.dumps({'checks':[{'id':str(i),'passed':True} for i in range(4)]}))
+"#
+            } else {
+                "#!/bin/sh\nexit 1\n"
+            },
+        )
+        .unwrap();
+        std::fs::set_permissions(docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut paths = vec![bin];
+        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+        let out = s.command(&["bench","run","--harness","command","--model","stub","--suite",&suite(),"--local","--set-reference","--stop-at-usd","1","--command","python3","--command","-c","--command",
+            "import pathlib,json;pathlib.Path('probe.txt').write_text('cedr-bench-probe');pathlib.Path('command.txt').write_text('cedr-bench-command');print(json.dumps(dict(input_tokens=10,cache_read_tokens=0,cache_write_tokens=0,output_tokens=1,cost_usd=0)))",
+            "--format","json"])
+            .env("PATH", std::env::join_paths(paths).unwrap()).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(result["score"], expected);
+        assert_eq!(result["complete"], true);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn container_effort_uses_the_layer_catalog_without_calling_the_host_agent() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Scratch::new(0.0, 0.0);
+    let bin = s.dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let docker = bin.join("docker");
+    std::fs::write(&docker, r#"#!/usr/bin/env python3
+import sys,json,pathlib
+args=sys.argv[1:]
+if args[0]=='version': print('29.0.0')
+elif args[0]=='info': print('[]')
+elif args[:2]==['image','inspect']: print('sha256:'+'0'*64)
+elif args[:2]==['network','inspect']:
+    if args[2]=='bridge': print('172.17.0.1')
+    else: print(json.dumps([{'Internal':True,'Options':{'com.docker.network.bridge.gateway_mode_ipv4':'isolated'}}]))
+elif args[0]=='run':
+    if '--version' in args: print('test')
+    elif '--input-format' in args:
+        print(json.dumps({'response':{'response':{'models':[{'value':'claude-haiku-5-5','supportedEffortLevels':['high']}]}}}))
+    elif '--model' in args:
+        workspace=next(a.split('src=')[1].split(',')[0] for a in args if 'dst=/workspace' in a)
+        pathlib.Path(workspace,'probe.txt').write_text('cedr-bench-probe')
+        pathlib.Path(workspace,'command.txt').write_text('cedr-bench-command')
+        print(json.dumps({'type':'result','modelUsage':{'claude-haiku-5-5':{'inputTokens':100,'cacheReadInputTokens':0,'cacheCreationInputTokens':0,'outputTokens':1}}}))
+"#).unwrap();
+    std::fs::set_permissions(docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let claude = bin.join("claude");
+    std::fs::write(
+        &claude,
+        "#!/bin/sh\necho host-agent-must-not-run >&2\nexit 17\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let out = s
+        .command(&[
+            "bench",
+            "probe",
+            "--harness",
+            "claude",
+            "--model",
+            "claude-haiku-5-5",
+            "--agent-version",
+            "test",
+            "--effort",
+            "high",
+            "--suite",
+            &suite(),
+            "--set-reference",
+            "--format",
+            "json",
+        ])
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("ANTHROPIC_API_KEY", "fake-test-key")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let probe: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(probe["status"], "reference");
+    assert_eq!(probe["tools_ok"], true);
 }

@@ -247,7 +247,19 @@ fn main() -> ExitCode {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     let started = Instant::now();
-    let matches = cli_command().get_matches();
+    let args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|s| s == "bench")
+        && args.get(2).is_some_and(|s| s == "run")
+        && args
+            .get(3)
+            .is_some_and(|s| !s.to_string_lossy().starts_with('-'))
+    {
+        eprintln!(
+            "cedr: bench run no longer accepts suite files; use cedr compare run <suite.toml>"
+        );
+        return ExitCode::from(2);
+    }
+    let matches = cli_command().get_matches_from(args);
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     let path = command_path(&matches);
     let background = match &cli.command {
