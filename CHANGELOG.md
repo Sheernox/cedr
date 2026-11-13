@@ -9,7 +9,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 - **Upgrade step:** move `.cedr/bench/` to `.cedr/compare/`, rename `bench_budget_usd` to `compare_budget_usd` and the Action inputs `bench`, `bench-budget-usd`, `bench-fail-on` and `bench-allow-unpriced` to their `compare` equivalents, and switch scripts from `cedr bench` to `cedr compare`. Older results are not read from `cedr/bench/`; move those files to `cedr/compare/` to keep them. Move `bench-pushed-<org>.txt` to `compare-pushed-<org>.txt` to keep the sent list. New result ids start with `c-`. The hosted app must move `/bench/runs` and `/bench/settings` to `/compare/runs` and `/compare/settings` in step with the release.
 
 ### Fixes
-- **Repeatable Compare trials:** Claude and Codex get a clean temporary agent home with only a linked sign-in; user instructions, settings and account MCP connectors stay out while the repo's own setup still loads. Results record `clean_home` for each variant (false for the unisolated `command` harness and older files).
+- **Repeatable Compare trials:** Claude and Codex use a shadow home that links the user's toolchains and git configuration while excluding user-level agent setup, plus a fresh agent config directory with only a linked sign-in. The repo's own setup still loads. Windows keeps the real home and isolates the agent config directory only. Results record `clean_home` for each variant (false for Windows Codex, the unisolated `command` harness and older files).
 
 ## v0.11.3 (2026-11-13)
 

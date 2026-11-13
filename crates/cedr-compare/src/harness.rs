@@ -110,7 +110,7 @@ pub fn command(
                 cmd.args(["-c", &format!("model_reasoning_effort=\"{effort}\"")]);
             }
             // --ignore-user-config also suppresses project config on supported Codex builds. The
-            // fresh home excludes user config; trust the clone so its own setup still loads.
+            // shadow home excludes user config; trust the clone so its own setup still loads.
             let project = serde_json::to_string(&clone.to_string_lossy()).ok()?;
             cmd.args(["-c", &format!("projects.{project}.trust_level=\"trusted\"")]);
             cmd.arg("-");
@@ -130,8 +130,8 @@ pub fn command(
     }
 }
 
-/// Gives a vendor CLI a private home containing only a link to its sign-in. Project files stay
-/// in the clone and load normally. The caller owns the temporary directory through process exit.
+/// Gives vendor CLIs the same filtered view of the user's tools, with private agent configuration.
+/// The caller owns the temporary directory through process exit; this is not a security sandbox.
 pub fn clean_home(kind: HarnessKind, cmd: &mut Command, home: &Path) -> std::io::Result<()> {
     if kind == HarnessKind::Command {
         return Ok(());
@@ -142,10 +142,43 @@ pub fn clean_home(kind: HarnessKind, cmd: &mut Command, home: &Path) -> std::io:
         HarnessKind::Command => unreachable!(),
     };
     let user_home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    let user_home = user_home.map(std::path::PathBuf::from);
     let source = std::env::var_os(variable)
         .filter(|v| !v.is_empty())
         .map(std::path::PathBuf::from)
-        .or_else(|| user_home.map(|p| std::path::PathBuf::from(p).join(directory)));
+        .or_else(|| user_home.as_ref().map(|p| p.join(directory)));
+    #[cfg(unix)]
+    {
+        let config = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty());
+        let mut data = Vec::new();
+        if let Some(user) = &user_home {
+            for (key, default) in [
+                ("XDG_DATA_HOME", ".local/share"),
+                ("XDG_STATE_HOME", ".local/state"),
+                ("XDG_CACHE_HOME", ".cache"),
+            ] {
+                let source = std::env::var_os(key)
+                    .filter(|v| !v.is_empty())
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| user.join(default));
+                if let Ok(relative) = source.strip_prefix(user)
+                    && contains_agent_setup(user, relative)?
+                {
+                    data.push(relative.to_path_buf());
+                    cmd.env(key, home.join(relative));
+                }
+            }
+        }
+        let config = shadow_home(
+            user_home.as_deref(),
+            home,
+            config.as_deref().map(Path::new),
+            &data,
+        )?;
+        cmd.env("HOME", home)
+            .env("USERPROFILE", home)
+            .env("XDG_CONFIG_HOME", config);
+    }
     let agent_home = home.join(directory);
     std::fs::create_dir_all(&agent_home)?;
     if let Some(source) = source {
@@ -171,14 +204,139 @@ pub fn clean_home(kind: HarnessKind, cmd: &mut Command, home: &Path) -> std::io:
             cmd.env_remove(key);
         }
     }
-    cmd.env("HOME", home)
-        .env("USERPROFILE", home)
-        .env("XDG_CONFIG_HOME", home.join(".config"))
-        .env("XDG_DATA_HOME", home.join(".local/share"))
-        .env("XDG_STATE_HOME", home.join(".local/state"))
-        .env("XDG_CACHE_HOME", home.join(".cache"))
-        .env(variable, agent_home);
+    cmd.env(variable, agent_home);
     Ok(())
+}
+
+/// Policy shared by both adapters, including the Windows fallback reported in results.
+pub fn has_clean_home(kind: HarnessKind) -> bool {
+    match kind {
+        HarnessKind::Command => false,
+        HarnessKind::Codex => cfg!(unix),
+        HarnessKind::Claude => true,
+    }
+}
+
+// Keep this list in step with docs/compare.md. Dotless spellings also cover XDG config children.
+#[cfg(unix)]
+const HIDDEN_AGENT_ROOTS: &[&str] = &[
+    ".agents",
+    ".codex",
+    ".claude",
+    ".claude.json",
+    ".gemini",
+    ".cursor",
+    ".grok",
+    ".muse",
+    ".opencode",
+    ".copilot",
+    "Antigravity",
+    "AGENTS.md",
+    "AGENTS.override.md",
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    "GEMINI.md",
+];
+
+#[cfg(unix)]
+fn hidden_agent_root(name: &std::ffi::OsStr) -> bool {
+    HIDDEN_AGENT_ROOTS.iter().any(|root| {
+        name == std::ffi::OsStr::new(root)
+            || name == std::ffi::OsStr::new(root.trim_start_matches('.'))
+    })
+}
+
+/// Only descend into real directories on the filtered paths. Ordinary entries, including symlinks,
+/// are linked without inspecting their targets, so building a view never walks out through a link.
+#[cfg(unix)]
+fn link_home_entries(
+    source: &Path,
+    target: &Path,
+    filtered: &[std::path::PathBuf],
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(target)?;
+    match std::fs::symlink_metadata(source) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    }
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if hidden_agent_root(&name) {
+            continue;
+        }
+        let branches: Vec<_> = filtered
+            .iter()
+            .filter_map(|p| p.strip_prefix(&name).ok().map(Path::to_path_buf))
+            .collect();
+        if branches.is_empty() {
+            std::os::unix::fs::symlink(entry.path(), target.join(name))?;
+        } else {
+            link_home_entries(&entry.path(), &target.join(name), &branches)?;
+        }
+    }
+    Ok(())
+}
+
+/// Inspect only in-home real directories when deciding whether XDG data needs a filtered view.
+#[cfg(unix)]
+fn contains_agent_setup(user: &Path, relative: &Path) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(user) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    }
+    let mut source = user.to_path_buf();
+    for part in relative.components() {
+        let std::path::Component::Normal(name) = part else {
+            return Ok(false);
+        };
+        source.push(name);
+        match std::fs::symlink_metadata(&source) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e),
+        }
+    }
+    for entry in std::fs::read_dir(source)? {
+        if hidden_agent_root(&entry?.file_name()) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Config paths outside HOME (or with ambiguous components) get the filtered default instead.
+/// XDG data directories need an overlay only when known agent setup is present.
+#[cfg(unix)]
+fn shadow_home(
+    user: Option<&Path>,
+    home: &Path,
+    config: Option<&Path>,
+    data: &[std::path::PathBuf],
+) -> std::io::Result<std::path::PathBuf> {
+    let config = user
+        .and_then(|user| config?.strip_prefix(user).ok())
+        .filter(|p| {
+            !p.as_os_str().is_empty()
+                && p.components().all(|c| match c {
+                    std::path::Component::Normal(name) => !hidden_agent_root(name),
+                    _ => false,
+                })
+        })
+        .unwrap_or_else(|| Path::new(".config"));
+    let mut filtered = vec![std::path::PathBuf::from(".config"), config.to_path_buf()];
+    filtered.extend_from_slice(data);
+    if let Some(user) = user {
+        link_home_entries(user, home, &filtered)?;
+    }
+    std::fs::create_dir_all(home.join(".config"))?;
+    std::fs::create_dir_all(home.join(config))?;
+    Ok(home.join(config))
 }
 
 #[cfg(unix)]
@@ -356,6 +514,123 @@ fn parse_command(text: &str) -> Usage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn shadow_home_keeps_tools_and_filters_all_agent_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user");
+        let home = dir.path().join("shadow");
+        std::fs::create_dir_all(user.join(".config")).unwrap();
+        for name in HIDDEN_AGENT_ROOTS {
+            for spelling in [*name, name.trim_start_matches('.')] {
+                std::fs::write(user.join(spelling), "user rules").unwrap();
+                std::fs::write(user.join(".config").join(spelling), "user rules").unwrap();
+            }
+        }
+        for path in [".rustup", ".cargo", ".local", ".cache", ".config/git"] {
+            std::fs::create_dir_all(user.join(path)).unwrap();
+        }
+        std::fs::write(user.join(".gitconfig"), "user tools").unwrap();
+        shadow_home(Some(&user), &home, None, &[]).unwrap();
+        for path in [
+            ".rustup",
+            ".cargo",
+            ".local",
+            ".cache",
+            ".gitconfig",
+            ".config/git",
+        ] {
+            assert_eq!(
+                std::fs::read_link(home.join(path)).unwrap(),
+                user.join(path)
+            );
+        }
+        for name in HIDDEN_AGENT_ROOTS {
+            for spelling in [*name, name.trim_start_matches('.')] {
+                assert!(!home.join(spelling).exists(), "{spelling}");
+                assert!(
+                    !home.join(".config").join(spelling).exists(),
+                    "config {spelling}"
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn xdg_data_only_needs_filtering_when_agent_setup_is_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user");
+        let data = user.join(".local/share");
+        std::fs::create_dir_all(data.join("tools")).unwrap();
+        assert!(!contains_agent_setup(&user, Path::new(".local/share")).unwrap());
+        std::fs::create_dir_all(data.join("muse/skills")).unwrap();
+        assert!(contains_agent_setup(&user, Path::new(".local/share")).unwrap());
+        let home = dir.path().join("shadow");
+        shadow_home(Some(&user), &home, None, &[".local/share".into()]).unwrap();
+        assert!(!home.join(".local/share/muse").exists());
+        assert_eq!(
+            std::fs::read_link(home.join(".local/share/tools")).unwrap(),
+            data.join("tools")
+        );
+        std::os::unix::fs::symlink(&data, user.join("linked-data")).unwrap();
+        assert!(!contains_agent_setup(&user, Path::new("linked-data")).unwrap());
+        assert!(!contains_agent_setup(&user, Path::new("../outside")).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shadow_home_filters_custom_xdg_config_without_following_links() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(user.join("nested/config")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("must-not-link"), "outside").unwrap();
+        symlink(&outside, user.join(".config")).unwrap();
+        symlink(&outside, user.join("ordinary-link")).unwrap();
+        std::fs::write(user.join("nested/config/muse"), "user config").unwrap();
+        std::fs::write(user.join("nested/config/git"), "tool config").unwrap();
+        let home = dir.path().join("shadow");
+        let config =
+            shadow_home(Some(&user), &home, Some(&user.join("nested/config")), &[]).unwrap();
+        assert_eq!(config, home.join("nested/config"));
+        assert!(!config.join("muse").exists());
+        assert_eq!(
+            std::fs::read_link(config.join("git")).unwrap(),
+            user.join("nested/config/git")
+        );
+        assert_eq!(std::fs::read_dir(home.join(".config")).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::read_link(home.join("ordinary-link")).unwrap(),
+            user.join("ordinary-link")
+        );
+        // A linked ancestor must not be traversed either, even for an explicit XDG path.
+        let home = dir.path().join("linked-xdg");
+        shadow_home(
+            Some(&user),
+            &home,
+            Some(&user.join("ordinary-link/config")),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_dir(home.join("ordinary-link/config"))
+                .unwrap()
+                .count(),
+            0
+        );
+        assert!(!outside.join("config").exists());
+        // An external XDG path cannot cause the view builder to inspect outside HOME.
+        let home = dir.path().join("external-xdg");
+        assert_eq!(
+            shadow_home(Some(&user), &home, Some(&outside), &[]).unwrap(),
+            home.join(".config")
+        );
+        assert!(!home.join(".config/must-not-link").exists());
+    }
 
     // Shapes captured from the real CLIs, reduced to the fields read here.
     const CLAUDE_OK: &str = r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.00558663,

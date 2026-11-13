@@ -82,7 +82,7 @@ fn variant_info(root: &Path, variant: &Variant) -> Result<VariantInfo> {
     let commit = exec::resolve_ref(root, &git_ref)?;
     Ok(VariantInfo {
         harness: variant.harness,
-        clean_home: variant.harness != HarnessKind::Command,
+        clean_home: harness::has_clean_home(variant.harness),
         harness_version: harness_version(variant, root),
         model: variant.model.clone(),
         effort: variant.effort.clone(),

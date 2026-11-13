@@ -2227,7 +2227,15 @@ fn vendor_trials_exclude_user_setup_but_keep_the_committed_project_setup() {
     for vendor in ["claude", "codex"] {
         let repo = Repo::new();
         let user = repo.dir.path().join("user");
-        for directory in [".codex", ".claude", ".agents/skills/user"] {
+        for directory in [
+            ".codex",
+            ".claude",
+            ".agents/skills/user",
+            ".config/muse",
+            ".cargo",
+            ".local/share/muse/skills",
+            ".cache/copilot/managed-settings",
+        ] {
             fs::create_dir_all(user.join(directory)).unwrap();
         }
         for file in [
@@ -2242,6 +2250,7 @@ fn vendor_trials_exclude_user_setup_but_keep_the_committed_project_setup() {
         ] {
             fs::write(user.join(file), "user setup must never load").unwrap();
         }
+        fs::write(user.join(".gitconfig"), "[user]\nname = tool-user\n").unwrap();
         // Synthetic sign-ins: a trial must link them, and leave the originals intact.
         fs::write(user.join(".codex/auth.json"), "fake sign-in").unwrap();
         fs::write(user.join(".claude/.credentials.json"), "fake sign-in").unwrap();
@@ -2267,16 +2276,25 @@ set -eu
 [ "$USERPROFILE" = "$HOME" ]
 [ "$XDG_CONFIG_HOME" = "$HOME/.config" ]
 [ "$XDG_DATA_HOME" = "$HOME/.local/share" ]
-[ "$XDG_STATE_HOME" = "$HOME/.local/state" ]
+[ "$XDG_STATE_HOME" = '{state}' ]
 [ "$XDG_CACHE_HOME" = "$HOME/.cache" ]
-[ ! -e "$HOME/AGENTS.md" ] && [ ! -e "$HOME/CLAUDE.md" ] && [ ! -e "$HOME/.agents" ]
+[ -L "$HOME/.cargo" ]
+[ -L "$HOME/.gitconfig" ]
+[ "$(git config user.name)" = 'tool-user' ]
+[ ! -e "$XDG_DATA_HOME/muse" ]
+[ ! -e "$XDG_CACHE_HOME/copilot" ]
+[ ! -e "$XDG_CONFIG_HOME/muse" ]
+[ ! -e "$HOME/AGENTS.md" ]
+[ ! -e "$HOME/CLAUDE.md" ]
+[ ! -e "$HOME/.agents" ]
 [ -z "${{CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD:-}}" ]
 [ -z "${{CODEX_MANAGED_CONFIG_PATH:-}}" ]
 [ -z "${{CLAUDECODE:-}}" ]
 [ -z "${{BASH_ENV:-}}" ]
 [ "$(cat AGENTS.md)" = 'base rules' ]
 [ "$(cat CLAUDE.md)" = 'project rules' ]
-[ -f .claude/settings.json ] && [ -f .codex/config.toml ]
+[ -f .claude/settings.json ]
+[ -f .codex/config.toml ]
 case '{vendor}' in
  claude)
   [ "$CLAUDE_CONFIG_DIR" = "$HOME/.claude" ]
@@ -2294,7 +2312,8 @@ case '{vendor}' in
   [ "$CODEX_HOME" = "$HOME/.codex" ]
   [ -L "$CODEX_HOME/auth.json" ]
   [ "$(readlink "$CODEX_HOME/auth.json")" = '{user}/.codex/auth.json' ]
-  [ ! -e "$CODEX_HOME/AGENTS.md" ] && [ ! -e "$CODEX_HOME/config.toml" ]
+  [ ! -e "$CODEX_HOME/AGENTS.md" ]
+  [ ! -e "$CODEX_HOME/config.toml" ]
   case " $* " in *"projects.\"$PWD\".trust_level=\"trusted\""*) ;; *) exit 1;; esac
   echo '{{"type":"turn.completed","usage":{{"input_tokens":1,"output_tokens":1}}}}'
   ;;
@@ -2302,7 +2321,8 @@ esac
 echo "$HOME" >> '{homes}'
 "#,
                 user = user.display(),
-                homes = homes.display()
+                homes = homes.display(),
+                state = repo.dir.path().join("state").display(),
             ),
         );
         let suite = repo.suite(&format!(
@@ -2324,6 +2344,9 @@ test = "true"
         let out = repo
             .cedr(&["compare", "run", &suite, "--no-push", "--format", "json"])
             .env("HOME", &user)
+            .env("XDG_CONFIG_HOME", user.join(".config"))
+            .env("XDG_DATA_HOME", user.join(".local/share"))
+            .env("XDG_CACHE_HOME", user.join(".cache"))
             .env("CODEX_HOME", user.join(".codex"))
             .env("CLAUDE_CONFIG_DIR", user.join(".claude"))
             .env("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "1")
