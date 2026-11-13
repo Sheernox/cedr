@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+cedr-agent.workspace = true
 cedr-monitor.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 serde = { version = "1", features = ["derive"] }

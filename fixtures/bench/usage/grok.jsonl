@@ -1,0 +1,1 @@
+{"modelUsage":{"grok-4.7-build":{"cacheCreationInputTokens":0,"cacheReadInputTokens":22784,"costUSD":0.026038,"inputTokens":6468,"modelCalls":2,"outputTokens":285}},"num_turns":2,"usage":{"cache_creation_input_tokens":0,"cache_read_input_tokens":22784,"input_tokens":6468,"output_tokens":285,"reasoning_tokens":155,"total_tokens":29537}}

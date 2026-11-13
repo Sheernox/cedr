@@ -225,20 +225,43 @@ pub struct ComparePlanArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
-pub struct CompareHistoryArgs {
+pub struct BenchmarkHistoryArgs {
     /// How many runs, newest first; default 20
     limit: Option<usize>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
-pub struct CompareShowArgs {
-    /// A run id from compare_history, or a result file
+pub struct BenchmarkShowArgs {
+    /// A saved run id from history, or a result file
     id: String,
 }
 
 #[tool_router]
 impl RouteServer {
+    #[tool(description = "Saved standard Bench runs with score and list spend, newest first.")]
+    async fn bench_history(
+        &self,
+        Parameters(a): Parameters<BenchmarkHistoryArgs>,
+    ) -> CallToolResult {
+        blocking(move || {
+            crate::bench::history_rows(a.limit.unwrap_or(20))
+                .map(Value::Array)
+                .map_err(cedr_route::Error::Usage)
+        })
+        .await
+    }
+    #[tool(
+        description = "Validate and read one standard Bench result, including tasks and artifacts."
+    )]
+    async fn bench_show(&self, Parameters(a): Parameters<BenchmarkShowArgs>) -> CallToolResult {
+        blocking(move || {
+            crate::bench::read_result(&a.id)
+                .map(json)
+                .map_err(cedr_route::Error::Usage)
+        })
+        .await
+    }
     #[tool(
         description = "Validate a Compare suite and show what a run would do, starting nothing."
     )]
@@ -252,7 +275,7 @@ impl RouteServer {
     #[tool(description = "Saved Compare runs with their pass counts and spend, newest first.")]
     async fn compare_history(
         &self,
-        Parameters(a): Parameters<CompareHistoryArgs>,
+        Parameters(a): Parameters<BenchmarkHistoryArgs>,
     ) -> CallToolResult {
         blocking(move || {
             crate::compare::history_rows(a.limit.unwrap_or(20))
@@ -262,7 +285,7 @@ impl RouteServer {
         .await
     }
     #[tool(description = "One saved Compare run: its variants, trials, counts and spend.")]
-    async fn compare_show(&self, Parameters(a): Parameters<CompareShowArgs>) -> CallToolResult {
+    async fn compare_show(&self, Parameters(a): Parameters<BenchmarkShowArgs>) -> CallToolResult {
         blocking(move || {
             crate::compare::read_result(&a.id)
                 .map(json)
@@ -629,6 +652,8 @@ mod tests {
                 json!({"suite": ".cedr/compare/tasks.toml", "task": ["parser"], "trials": 2}),
             ),
             ("compare_history", json!({"limit": 5})),
+            ("bench_history", json!({"limit":5})),
+            ("bench_show", json!({"id":"b-20261113T000000Z-abcdef"})),
             ("compare_show", json!({"id": "c-20261101T193000Z-abcdef"})),
         ] {
             let tool = tools.iter().find(|t| t.name == name).unwrap();

@@ -1,0 +1,1 @@
+{"payload":{"calls":3,"completed_calls":3,"kind":"run_usage","models":[{"cached_tokens":31473,"calls":3,"input_tokens":95313,"model":"muse-spark-1.3","output_tokens":234,"reasoning_tokens":55}]},"payload_type":"run.usage"}

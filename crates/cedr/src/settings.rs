@@ -91,6 +91,26 @@ impl Settings {
             })
     }
 
+    pub(crate) fn bench_stop_usd(&self) -> Result<Option<f64>, String> {
+        if !self.valid {
+            return Err(format!(
+                "{} cannot be read or does not parse",
+                path().display()
+            ));
+        }
+        self.doc
+            .get("bench_stop_usd")
+            .map(|item| {
+                item.as_float()
+                    .or_else(|| item.as_integer().map(|n| n as f64))
+                    .filter(|n| n.is_finite() && *n > 0.0)
+                    .ok_or_else(|| {
+                        format!("{}: bench_stop_usd must be above zero", path().display())
+                    })
+            })
+            .transpose()
+    }
+
     pub(crate) fn set_compare_budget_usd(&mut self, cap: Option<f64>) {
         match cap {
             Some(cap) => self.doc["compare_budget_usd"] = value(cap),

@@ -1,0 +1,1 @@
+{"type": "result", "usage": {"input_tokens": 4, "cache_creation_input_tokens": 24634, "cache_read_input_tokens": 47223, "output_tokens": 120}, "modelUsage": {"claude-haiku-5-5": {"inputTokens": 1191, "outputTokens": 137, "cacheReadInputTokens": 47223, "cacheCreationInputTokens": 24634, "costUSD": 0.00558663}}}

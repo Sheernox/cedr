@@ -1,0 +1,2 @@
+#!/bin/sh
+printf '{"checks":[{"id":"reported","passed":true},{"id":"edges","passed":true},{"id":"regressions","passed":false},{"id":"constraints","passed":true}]}\n'

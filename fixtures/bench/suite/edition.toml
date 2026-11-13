@@ -1,0 +1,5 @@
+number = 1
+goal_usd = 0.5
+image = "example.invalid/base@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+tasks = ["fix", "second"]
+[probe]

@@ -29,6 +29,7 @@ cedr sends anonymous usage events to cedr.dev so the team can see how many peopl
 | `notice` | absent | `1` once the notice above was shown |
 | `auto_update` | `true` | See [update.md](update.md) |
 | `compare_budget_usd` | absent | Compare's cap; see [compare.md](compare.md) |
+| `bench_stop_usd` | absent | Optional Bench spending stop; see [bench.md](bench.md) |
 
 ## Events
 
@@ -87,3 +88,9 @@ Replies: `200 {"accepted": n, "skipped": m}` (events outside the window below ar
 ## The app
 
 The app validates every field against this contract (commands match `^[a-z][a-z0-9-]{0,31}( [a-z][a-z0-9-]{0,31})?$`), skips events dated more than 7 days back or more than an hour ahead, and stores each event with the batch's fields and no IP address or other request metadata. Raw events are kept 90 days; the nightly job keeps one rollup row per UTC day indefinitely. Active installs are distinct non-CI install IDs per UTC day (DAU), over the 7 days (WAU) and 30 days (MAU) ending that day; CI is counted as runs.
+
+## Bench operational requests
+
+Bench sends no new telemetry fields and never uploads its results automatically. Fetching an edition contacts `github.com:443` for the public `Sheernox/cedr-bench` tag; GitHub may serve repository objects from its own object hosts. Docker pulls contact the registry named by the edition image (including its registry authentication and blob hosts). `--build-image` executes the suite Dockerfile, which may download its toolchains. Local agent layers contact the vendor installer or package registry for the requested version; they are never pushed.
+
+During a run, only the selected provider's allowlisted HTTPS hosts receive agent traffic. Host sign-in preflight and postflight calls contact that provider directly so renewal happens on the host. They use catalog/account calls or a fixed no-tool inference prompt, never task code. Renewal targets the real credential directory; inference-only checks suppress user configuration. Graders have no network. Exports write local files only. These operational requests are separate from telemetry and still occur when telemetry is off.

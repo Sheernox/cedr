@@ -1,0 +1,9 @@
+[package]
+name = "cedr-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

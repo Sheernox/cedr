@@ -176,6 +176,7 @@ dependencies = [
 name = "cedr"
 version = "0.11.3"
 dependencies = [
+ "cedr-bench",
  "cedr-compare",
  "cedr-core",
  "cedr-monitor",
@@ -201,9 +202,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "cedr-agent"
+version = "0.11.2"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
+name = "cedr-bench"
+version = "0.11.2"
+dependencies = [
+ "cedr-agent",
+ "cedr-compare",
+ "cedr-monitor",
+ "chrono",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "cedr-compare"
 version = "0.11.3"
 dependencies = [
+ "cedr-agent",
  "cedr-monitor",
  "chrono",
  "libc",

@@ -2,6 +2,7 @@
 //! verify the skills and MCP servers they load. Exit codes: 0 clean (or delegate), 1 findings,
 //! changes (or keep the work), 2 usage or I/O failure.
 
+mod bench;
 mod common;
 mod compare;
 mod council;
@@ -120,12 +121,17 @@ enum Command {
         #[command(subcommand)]
         command: GuardCommand,
     },
+    /// Run the standard coding-agent benchmark
+    Bench {
+        #[command(subcommand)]
+        command: bench::BenchCommand,
+    },
     /// Measure whether an agent configuration, skill or model change helps
     Compare {
         #[command(subcommand)]
         command: compare::CompareCommand,
     },
-    /// Serve the route, council, sync, monitor, compare and doctor tools over MCP on stdio
+    /// Serve the route, council, sync, monitor, compare, bench and doctor tools over MCP on stdio
     Mcp {
         /// routes.toml to use instead of the usual search
         #[arg(long)]
@@ -300,6 +306,7 @@ fn dispatch(command: Command) -> ExitCode {
             council::run(command, &config).map_err(|e| e.to_string())
         }
         Command::Compare { command } => compare::run(command),
+        Command::Bench { command } => bench::run(command),
         Command::Mcp { config } => mcp::serve(config)
             .map(|()| ExitCode::SUCCESS)
             .map_err(|e| format!("mcp: {e}")),

@@ -1,0 +1,1 @@
+{"stats": {"models": {"gemini-2.5-pro": {"tokens": {"prompt": 24939, "candidates": 20, "cached": 21263, "thoughts": 154}}}, "tools": {"totalCalls": 1}}}

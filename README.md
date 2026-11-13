@@ -57,6 +57,11 @@
 <td>Runs a suite of real tasks against a baseline and a candidate, with tests deciding each trial, inside a budget you set. Reports the pass rates, cost and how much the difference can be trusted, and records every version involved.</td>
 <td><code>cedr compare init</code></td>
 </tr>
+<tr valign="top">
+<td><a href="docs/bench.md"><b>Bench</b></a></td>
+<td>Runs a frozen public suite once per coding-agent configuration, reporting the code score, list cost and visual artifacts.</td>
+<td><code>cedr bench run --harness claude --model MODEL</code></td>
+</tr>
 </table>
 
 **Not sure where you stand?** `cedr doctor` checks your account, Route, MCP, Monitor, Sync and Guard setup and prints the fix for whatever is missing. It never changes anything.
@@ -228,6 +233,21 @@ Configure collection and optional automatic pushes in `~/.config/cedr/monitor.to
 </details>
 
 <details>
+<summary><b>Bench</b></summary>
+
+| Command | What it does |
+|---|---|
+| `cedr bench run --harness H --model M` | Run a public suite edition in its pinned Docker image |
+| `cedr bench probe --harness H --model M` | Verify shell/file tools and compare clean-context input tokens |
+| `cedr bench history` | Saved runs, newest first |
+| `cedr bench show ID` | Validate and show a saved run |
+| `cedr bench export ID... --out DIR` | Export unchanged results and screenshots |
+
+Use `--suite PATH` for a local suite, `--edition N` for a published edition, or `--local` for host execution with a clean agent home. Local runs cannot qualify for listing. There is no spending stop by default: `--stop-at-usd USD` checks known spend before each task. An edition's goal records `over_goal` without truncating work. Suites and graders are executable code: run only suites you intend to execute. Results stay local until you export and publish them yourself. [Bench contract](docs/bench.md).
+
+</details>
+
+<details>
 <summary><b>Compare</b></summary>
 
 | Command | What it does |
@@ -250,13 +270,13 @@ A suite is code: its `setup` and `test` commands run with your permissions, so r
 | Command | What it does |
 | --- | --- |
 | `cedr doctor` | Diagnose account setup, Route, MCP, Monitor, Sync, Guard and Compare; `--format json` for agents. Failures exit 1; warnings alone exit 0 |
-| `cedr mcp` | Serve the Route, Council, Sync, Monitor, Compare and Doctor tools over MCP on stdio |
+| `cedr mcp` | Serve the Route, Council, Sync, Monitor, Compare, Bench and Doctor tools over MCP on stdio |
 | `cedr update` | Install the latest release now; `--check` only reports, `--auto off` stops the daily update |
 | `cedr telemetry status\|off\|on` | Show or change whether cedr sends anonymous usage data |
 
 </details>
 
-Run `cedr <command> --help` for every option, and `cedr completions bash|zsh|fish|powershell|elvish` for a shell completion script. Every config field, output shape and exit code is specified in the design docs for [Route](docs/route.md), [Council](docs/council.md), [Guard](docs/design.md), [Sync](docs/sync.md), [Monitor](docs/monitor.md), [Compare](docs/compare.md) and [Doctor](docs/doctor.md).
+Run `cedr <command> --help` for every option, and `cedr completions bash|zsh|fish|powershell|elvish` for a shell completion script. Every config field, output shape and exit code is specified in the design docs for [Route](docs/route.md), [Council](docs/council.md), [Guard](docs/design.md), [Sync](docs/sync.md), [Monitor](docs/monitor.md), [Compare](docs/compare.md), [Bench](docs/bench.md) and [Doctor](docs/doctor.md).
 
 ## 🛡️ Check every pull request
 

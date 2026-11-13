@@ -1,5 +1,5 @@
 //! Isolated local collectors. Only usage metadata crosses the parser/store boundary.
-mod protobuf;
+pub mod protobuf;
 use crate::{
     Result,
     config::Config,

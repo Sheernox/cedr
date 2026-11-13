@@ -4,8 +4,11 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 ## Unreleased
 
+### Features
+- **Standard Bench:** `cedr bench run` measures one agent, model and effort on a frozen suite edition, with code scores, list cost, a context probe and visual artifacts. Docker runs use a clean home and provider-only egress; `--local` cannot qualify for listing. Read saved results through `history`, `show`, `bench_history` and `bench_show`, and publish exports yourself. The goal never stops work; `--stop-at-usd` is optional.
+
 ### Breaking
-- **Bench becomes Compare:** use `cedr compare` and its `compare_*` MCP tools. There is no command alias; the Bench name is reserved for the standard benchmark in #53. The crate is now `cedr-compare`, and the contract is [docs/compare.md](docs/compare.md).
+- **Bench becomes Compare:** use `cedr compare` and its `compare_*` MCP tools. There is no command alias; the Bench name now runs the standard benchmark. The crate is now `cedr-compare`, and the contract is [docs/compare.md](docs/compare.md).
 - **Upgrade step:** move `.cedr/bench/` to `.cedr/compare/`, rename `bench_budget_usd` to `compare_budget_usd` and the Action inputs `bench`, `bench-budget-usd`, `bench-fail-on` and `bench-allow-unpriced` to their `compare` equivalents, and switch scripts from `cedr bench` to `cedr compare`. Older results are not read from `cedr/bench/`; move those files to `cedr/compare/` to keep them. Move `bench-pushed-<org>.txt` to `compare-pushed-<org>.txt` to keep the sent list. New result ids start with `c-`. The hosted app must move `/bench/runs` and `/bench/settings` to `/compare/runs` and `/compare/settings` in step with the release.
 
 ### Fixes
