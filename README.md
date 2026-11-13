@@ -260,7 +260,7 @@ Use `--suite PATH` for a local suite, `--edition N` for a published edition, or 
 | `cedr compare show <id>` | One saved run's report, with its exit code |
 | `cedr compare budget [USD]` | Show or set the cap (default $2.00); `--pull` stores the one set in the app |
 
-A suite is code: its `setup` and `test` commands run with your permissions, so run ones you trust. Compare runs the vendors' unmodified CLIs with your own sign-in or keys, in a fresh clone for each trial. Claude and Codex use clean temporary homes, excluding your user setup and account connectors while keeping the repo's own agent files. The `command` harness is not isolated. With `[sync]` already configured, upgrading starts sending each saved run to that organization: the result, repo name, machine id and name, and GitHub PR number and run URL. Prompts, agent output and paths are never sent. Uploads reduce path-like model names to their final segment and cap bodies at 256 KiB; larger results stay saved locally. Use `--no-push` to skip automatic sending for that run; a later `cedr compare push` can still send it. Set `auto = false` to stop both Compare and Route automatic sending. `--no-record` keeps a run from being saved or sent. Bare pushes select only the current repo; `--all` explicitly selects every repo. See [Compare push](docs/compare.md#push).
+A suite is code: its `setup` and `test` commands run with your permissions, so run ones you trust. Compare runs the vendors' unmodified CLIs with your own sign-in or keys, in a fresh clone for each trial. On Linux and macOS, Claude and Codex use clean temporary homes, excluding your user setup and account connectors while keeping the repo's own agent files. Windows isolates only the agent config directory; Codex trials record `clean_home: false` because home-level user skills remain reachable. The `command` harness is not isolated. With `[sync]` already configured, upgrading starts sending each saved run to that organization: the result, repo name, machine id and name, and GitHub PR number and run URL. Prompts, agent output and paths are never sent. Uploads reduce path-like model names to their final segment and cap bodies at 256 KiB; larger results stay saved locally. Use `--no-push` to skip automatic sending for that run; a later `cedr compare push` can still send it. Set `auto = false` to stop both Compare and Route automatic sending. `--no-record` keeps a run from being saved or sent. Bare pushes select only the current repo; `--all` explicitly selects every repo. See [Compare push](docs/compare.md#push).
 
 </details>
 
@@ -295,7 +295,7 @@ Inputs: `version`, `path`, `strict`, `verify` (`auto`, `true` or `false`), `sync
 
 ## 🔌 Use it from your agent
 
-`cedr mcp` offers the Route, Council, Sync, Monitor and Doctor tools to any agent that speaks MCP:
+`cedr mcp` offers the Route, Council, Sync, Monitor, Compare, Bench and Doctor tools to any agent that speaks MCP:
 
 ```sh
 claude mcp add cedr -- cedr mcp
@@ -304,7 +304,7 @@ codex mcp add cedr -- cedr mcp
 
 ## 🔐 Your keys stay yours
 
-- cedr never reads your agents' credentials and never calls a vendor API for you. Plan usage comes from your agents' own status line and CLI, or from a feed you point it at.
+- Bench and Compare invoke your agents with your sign-in or provider keys; sign-in files are linked or mounted, never copied or printed. Container Bench limits agent egress to provider hosts. Plan usage comes from your agents' own status line and CLI, or from a feed you point it at.
 - Picks, verdicts and stats stay on your machine. `cedr route sync` sends them to cedr.dev only when you add a `[sync]` section and a cedr.dev API key.
 - `cedr guard lock` runs an MCP server only when you pass `--introspect`, and warns before it does.
 - `cedr guard push` sends names, versions, hashes and findings, never file contents, environment values or how a server is started.

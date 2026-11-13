@@ -23,7 +23,7 @@ graders/<id>/grade        the hidden grader; never copied into the workspace
 ```
 
 - **Code tasks** (ten in edition 1): short multi-file repository work. Each grader runs four named check groups and prints `{"checks":[{"id":"...","passed":true}]}`. A group passes only when every assertion in it passes. Task score is groups passed over four; a task is solved at four of four.
-- **Visual tasks** (two in edition 1): the agent writes one static file (a product page as `index.html`, a chart as `chart.svg`). The grader runs fixed gates (file rules, no script, required text, data drawn to scale) and renders screenshots with a pinned browser. Visual tasks do not count toward the score: the screenshots are published for people to judge.
+- **Visual tasks** (two in edition 1): the agent writes one static file (a product page as `index.html`, a chart as `chart.svg`). The grader runs fixed gates (file rules, no script, required text, data drawn to scale) and renders screenshots with a pinned browser. Visual tasks do not count toward the score: the screenshots are published for people to judge. Font choices and annotation limits belong to the edition's task prompts and graders, not the CLI.
 - Graders run after the agent has exited, on a copy of the workspace, with no network. The agent never sees a grader.
 
 ## Score
@@ -47,7 +47,7 @@ A result must depend on the configuration, not on whose machine ran it. Three la
 2. **The pinned image.** By default the agent and the graders run in the container image the edition names by digest: fixed toolchains, fonts and browser. The agent's network is limited to its model provider's hosts; graders get none. `--local` runs on the host instead, with the clean home only.
 3. **The probe.** Before the tasks, the runner sends a fixed fingerprint prompt in an empty workspace and records its input tokens (fresh, cache read and cache write together), followed by a separate tool-readiness prompt whose files are verified. Extra rules or tools show up as extra tokens. The edition carries a reference per harness version and model; the result records `match`, `mismatch` or `no_reference`.
 
-The result's `environment.mode` is `container` or `local`. Only a `container` run with a clean home and a probe that matches (or sets) the reference is eligible for a public listing.
+The result's `environment.mode` is `container` or `local`. The derived `eligible` field requires a complete run, a pinned container, a clean home, allowlist networking, a matching (or explicitly set) fingerprint, passing tool readiness, and a verified vendor adapter.
 
 ## Harnesses
 
@@ -72,12 +72,12 @@ Saved to `$XDG_STATE_HOME/cedr/bench/<id>.json`, with artifacts beside it in `<i
   "version": 1, "kind": "bench", "id": "b-20261113T050000Z-1a2b3c",
   "edition": {"number": 1, "suite_sha256": "...", "commit": "...", "image": "sha256:..."},
   "config": {"harness": "claude", "harness_version": "...", "model": "...", "effort": "high", "resolved_models": ["..."]},
-  "environment": {"mode": "container", "clean_home": true, "network": "allowlist", "os": "linux", "arch": "x86_64", "cli": "..."},
+  "environment": {"mode": "container", "clean_home": true, "network": "allowlist", "pinned": true, "agent_image": "sha256:...", "os": "linux", "arch": "x86_64", "cli": "..."},
   "probe": {"input_tokens": 31926, "tools": 27, "reference": 31926, "status": "match", "tools_ok": true},
   "billing": "plan",
   "started_at": "...", "finished_at": "...",
   "goal_usd": 10.0, "stop_usd": null, "spent_usd": 4.12, "over_goal": false, "unpriced_trials": 0,
-  "complete": true, "stop": null,
+  "complete": true, "stop": null, "eligible": true,
   "score": 72.5, "solved": 6, "code_tasks": 10,
   "tasks": [
     {"id": "py-ledger-rounding", "kind": "code", "status": "graded",
@@ -125,7 +125,7 @@ Probe records hold fingerprint `input_tokens`, optional readiness `tools`, `refe
 
 Container mode uses Docker CLI subprocesses only. The edition's `image` must include `@sha256:<64 hex>`. `--build-image` builds `image/Dockerfile`; an unpinned edition is allowed for this option, records `pinned: false`, and cannot qualify for listing. The actual image id and agent layer id are recorded. Agent layers are local, keyed by base digest, harness and exact version, and never pushed. Static self-contained vendor binaries may be copied into a layer; other agents use their vendor installer at the requested version. The executable version is checked before use, and Claude automatic updates are disabled for the invocation. In containers, its terminal result ends the invocation and stops remaining helpers before grading; a background shell tool cannot keep a completed response alive until the task timeout.
 
-The agent runs non-root at `/workspace` with home `/home/bench`, a read-only root, dropped capabilities, no-new-privileges and writable temporary mounts. Only provider credentials, proxy settings and the fixed tool environment are allowed. Provider hostnames are exact allowlist entries, with no wildcards. A CONNECT-only proxy on an internal Docker network with an isolated bridge gateway is the sole egress route (the Docker engine must support isolated gateway mode); the proxy alone also joins an external network. Only port 443 is accepted; loopback, private, link-local and multicast destinations are refused after DNS resolution. The agent has neither an external network nor the Docker socket. Failure to establish this topology is fatal. Graders run in the base image on a separate workspace copy, with `--network=none`, and no credential mounts.
+The agent runs non-root at `/workspace` with home `/home/bench`, a read-only root, dropped capabilities, no-new-privileges and writable temporary mounts. Only provider credentials, proxy settings and the fixed tool environment are allowed. Provider hostnames are exact allowlist entries, with no wildcards. A CONNECT-only proxy on an internal Docker network with an isolated bridge gateway is the sole egress route (the Docker engine must support isolated gateway mode); the proxy alone also joins an external network. Only port 443 is accepted; loopback, private, link-local and multicast destinations are refused after DNS resolution. The agent has neither an external network nor the Docker socket. Failure to establish this topology is fatal. The embedded `proxy.py` runs with `python3` inside the suite base image; `claude_process.py` runs with that image's Python in the derived Claude agent layer. During a benchmark, neither helper runs on the host, including with `--local`. The base image must provide Python 3 and its standard library. Missing Python or a missing or failing proxy aborts preparation when the proxy policy check fails; a missing or failing Claude launcher fails the invocation. There is no host-Python fallback or retry without the egress limit. If the proxy stops later, the isolated task network still has no other egress route. Graders run in the base image on a separate workspace copy, with `--network=none`, and no credential mounts.
 
 Sign-in files are mounted read-only for containers and linked for local runs. They are never copied into images, logged or included in results. Supported credential environment variables take precedence. Before using a sign-in mount, one host-side authenticated call allows renewal; after each call the host sign-in is checked again. Failure blocks further agent invocations. Output from these checks is discarded. Local mode reuses Compare's shared filtered shadow home, without user rules, skills, hooks, memory or MCP. Native local runs use private XDG data, state and cache directories as well; custom command runs inherit the caller environment except `CEDR_*` and `GIT_*`, record `clean_home: false`, and supply their own isolation. It is configuration isolation, not a sandbox. Linux local graders use a user/network namespace and refuse to run if it cannot be established; on other hosts the offline grader still needs Docker and the edition base image.
 
@@ -153,4 +153,4 @@ Exit 0 means complete, 3 incomplete or failed probe, 2 usage or I/O failure. No 
 
 ## Adapter verification limits
 
-Effort validation uses Claude's SDK initialize capabilities (no model turn), and the vendor CLI's generated model catalog for Codex, Muse and Grok. If Gemini or Antigravity cannot expose verifiable effort metadata, explicit `--effort` is refused; omitting it preserves the vendor default, and Antigravity model ids may already encode effort. This is a refusal, never a guessed substitution. Gemini remains documentation-derived and has no signed-in live verification. No adapter installs or updates an agent on the host as part of a run.
+Effort validation uses Claude's SDK initialize capabilities (no model turn), and the vendor CLI's generated model catalog for Codex, Muse and Grok. If Gemini or Antigravity cannot expose verifiable effort metadata, explicit `--effort` is refused; omitting it preserves the vendor default, and Antigravity model ids may already encode effort. This is a refusal, never a guessed substitution. Gemini remains documentation-derived and has no signed-in live verification. Antigravity supports `--local` only. The container path is untested on macOS and Windows. Windows local Codex trials record `clean_home: false`, because home-level user skills remain reachable. No adapter installs or updates an agent on the host as part of a run.

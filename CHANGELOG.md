@@ -1,18 +1,57 @@
 # Changelog
 
-Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/compare.md](docs/compare.md) (Compare), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
+Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/compare.md](docs/compare.md) (Compare), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
-## Unreleased
+## v0.12.0 (2026-11-13)
 
-### Features
-- **Standard Bench:** `cedr bench run` measures one agent, model and effort on a frozen suite edition, with code scores, list cost, a context probe and visual artifacts. Docker runs use a clean home and provider-only egress; `--local` cannot qualify for listing. Read saved results through `history`, `show`, `bench_history` and `bench_show`, and publish exports yourself. The goal never stops work; `--stop-at-usd` is optional.
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.12.0.png" alt="cedr v0.12.0: bench" width="770">
+
+**v0.12.0** · 11 changes from 1 contributor
+
+### Highlights
+**Benchmark one configuration.** Run `cedr bench run --harness claude --model MODEL` on a frozen public suite for code checks, list cost and visual artifacts.
+
+**Compare setups in clean agent homes.** The old Bench is now Compare; vendor trials exclude user agent setup, with platform limits below.
+
+**Upgrade step:** follow the moves and renames in Breaking before running existing suites.
 
 ### Breaking
-- **Bench becomes Compare:** use `cedr compare` and its `compare_*` MCP tools. There is no command alias; the Bench name now runs the standard benchmark. The crate is now `cedr-compare`, and the contract is [docs/compare.md](docs/compare.md).
-- **Upgrade step:** move `.cedr/bench/` to `.cedr/compare/`, rename `bench_budget_usd` to `compare_budget_usd` and the Action inputs `bench`, `bench-budget-usd`, `bench-fail-on` and `bench-allow-unpriced` to their `compare` equivalents, and switch scripts from `cedr bench` to `cedr compare`. Older results are not read from `cedr/bench/`; move those files to `cedr/compare/` to keep them. Move `bench-pushed-<org>.txt` to `compare-pushed-<org>.txt` to keep the sent list. New result ids start with `c-`. The hosted app must move `/bench/runs` and `/bench/settings` to `/compare/runs` and `/compare/settings` in step with the release.
+- **Bench becomes Compare:** no alias; switch scripts to `cedr compare` and MCP calls to `compare_plan`, `compare_history` and `compare_show`.
+  **Upgrade step:** move `.cedr/bench/` to `.cedr/compare/`, saved results from `cedr/bench/` to `cedr/compare/`, and `bench-pushed-<org>.txt` to `compare-pushed-<org>.txt`. Rename `bench_budget_usd` to `compare_budget_usd` and Action inputs `bench`, `bench-budget-usd`, `bench-fail-on`, `bench-allow-unpriced` to their `compare` equivalents. Coordinate hosted `/bench/runs` and `/bench/settings` migrations to `/compare/runs` and `/compare/settings`. New result ids start with `c-`.
+
+### Features
+- **Standard Bench:** one harness, model and effort works through a frozen edition in order. Code tasks provide a correctness gate; compare cost per solved code task and time per task, and judge the visual artifacts yourself. Run `cedr bench probe` with the same harness and model to check the context fingerprint and shell/file readiness separately. Docker pins toolchains, fonts and browser, limits agent egress to provider hosts, and keeps graders offline. Font and annotation rules belong to the suite.
+- **Local results:** use `history`, `show`, `bench_history` and `bench_show` to read saved runs, then `cedr bench export ID --out DIR` to publish results and screenshots yourself. The edition's goal never stops work; `--stop-at-usd` adds an optional stop. `--local` cannot qualify for listing; the result records `eligible`.
+- **Request-tier pricing:** Bench prices Claude cache writes by their reported lifetime and applies Haiku 5.5's fivefold rate above 100,000 prompt tokens per request. Monitor's aggregated counts still use base rates.
 
 ### Fixes
-- **Repeatable Compare trials:** Claude and Codex use a shadow home that links the user's toolchains and git configuration while excluding user-level agent setup, plus a fresh agent config directory with only a linked sign-in. The repo's own setup still loads. Windows keeps the real home and isolates the agent config directory only. Results record `clean_home` for each variant (false for Windows Codex, the unisolated `command` harness and older files).
+- **Repeatable trials:** Claude and Codex use filtered shadow homes that preserve toolchains and git configuration, plus fresh agent config directories with only linked sign-ins. User agent setup and account connectors stay out; Compare still loads the repo's setup. The custom `command` harness remains unisolated.
+- **Completed Claude runs:** a terminal response ends the container invocation even when a background tool remains alive, preserving final usage for grading.
+- **Probe and visual failures:** readiness accepts trailing whitespace only; missing visual submissions are graded task failures, while missing artifacts promised by a grader remain errors.
+
+### Verification limits
+- **Gemini CLI:** the adapter is built from its documentation and has no signed-in live verification.
+- **Antigravity:** the harness runs only with `--local` and cannot qualify for listing.
+- **Platforms:** macOS and Windows are untested for the container path. Windows isolates the agent config directory only; a Codex trial records `clean_home: false` and is not fully clean.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* feat(compare)!: rename bench and isolate vendor trial homes
+* fix(releases): preserve published banner sources
+* fix(compare): preserve toolchains in clean trial homes
+* docs(bench): define the standard benchmark contract
+* docs(bench): separate fingerprint and tool readiness probes
+* feat(bench): run standard suites with isolated coding agents
+* fix(bench): build suite images and price claude request tiers
+* fix(bench): finish claude trials after the terminal response
+* fix(bench): trim trailing whitespace in readiness files
+* fix(bench): grade missing visual submissions as task failures
+* chore(release): prepare bench and compare as cedr 0.12.0
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.11.3...v0.12.0
+</details>
 
 ## v0.11.3 (2026-11-13)
 
