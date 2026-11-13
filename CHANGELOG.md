@@ -6,7 +6,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.12.0.png" alt="cedr v0.12.0: bench" width="770">
 
-**v0.12.0** · 11 changes from 1 contributor
+**v0.12.0** · 13 changes from 1 contributor
 
 ### Highlights
 **Benchmark one configuration.** Run `cedr bench run --harness claude --model MODEL` on a frozen public suite for code checks, list cost and visual artifacts.
@@ -17,7 +17,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 ### Breaking
 - **Bench becomes Compare:** no alias; switch scripts to `cedr compare` and MCP calls to `compare_plan`, `compare_history` and `compare_show`.
-  **Upgrade step:** move `.cedr/bench/` to `.cedr/compare/`, saved results from `cedr/bench/` to `cedr/compare/`, and `bench-pushed-<org>.txt` to `compare-pushed-<org>.txt`. Rename `bench_budget_usd` to `compare_budget_usd` and Action inputs `bench`, `bench-budget-usd`, `bench-fail-on`, `bench-allow-unpriced` to their `compare` equivalents. Coordinate hosted `/bench/runs` and `/bench/settings` migrations to `/compare/runs` and `/compare/settings`. New result ids start with `c-`.
+  **Upgrade step:** move `.cedr/bench/` to `.cedr/compare/`, saved results from `cedr/bench/` to `cedr/compare/`, and `bench-pushed-<org>.txt` to `compare-pushed-<org>.txt`. Move the old results before the first new Bench run; Bench history silently ignores them. A remaining `bench_budget_usd` key blocks Compare, even with a command-line cap. Rename it to `compare_budget_usd` and rename Action inputs `bench`, `bench-budget-usd`, `bench-fail-on`, `bench-allow-unpriced` to their `compare` equivalents. Coordinate hosted `/bench/runs` and `/bench/settings` migrations to `/compare/runs` and `/compare/settings`. New result ids start with `c-`.
 
 ### Features
 - **Standard Bench:** one harness, model and effort works through a frozen edition in order. Code tasks provide a correctness gate; compare cost per solved code task and time per task, and judge the visual artifacts yourself. Run `cedr bench probe` with the same harness and model to check the context fingerprint and shell/file readiness separately. Docker pins toolchains, fonts and browser, limits agent egress to provider hosts, and keeps graders offline. Font and annotation rules belong to the suite.
@@ -29,10 +29,17 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 - **Completed Claude runs:** a terminal response ends the container invocation even when a background tool remains alive, preserving final usage for grading.
 - **Probe and visual failures:** readiness accepts trailing whitespace only; missing visual submissions are graded task failures, while missing artifacts promised by a grader remain errors.
 
+- **Verified isolation:** Docker Engine 28 or newer is required; Bench actively checks host gateway, listening host port, outside connectivity and DNS isolation before inference. Containers use the invoking UID/GID, bounded memory, process counts and temporary storage. Rootless or remapped bind ownership is refused with an explanation.
+- **Sign-in preservation:** host checks cannot run tools or load user setup. Container allowlists exclude token renewal hosts; a failed task stops without retry. Compare and local Bench atomically preserve renewed sign-ins before deleting temporary homes.
+- **Cost and reference integrity:** missing billable token classes leave cost unknown, hourly cache writes use their reported rate, and `--set-reference` cannot replace an existing fingerprint. Probe references live outside the frozen edition digest and can be published later.
+- **Auditable task results:** timeouts score zero and can complete a run; grading seeds are recorded. Workspace symlinks are skipped, local grading uses Docker when available, and code patches stay local for audit. Tamper signals preserve the score but prevent listing eligibility; export never includes those patches.
+
 ### Verification limits
-- **Gemini CLI:** the adapter is built from its documentation and has no signed-in live verification.
+- **Gemini CLI:** the adapter is built from its documentation and has no signed-in live verification. File-based sign-in is refused until a tool-free host check is verified; supported API-key credentials remain available.
 - **Antigravity:** the harness runs only with `--local` and cannot qualify for listing.
-- **Platforms:** macOS and Windows are untested for the container path. Windows isolates the agent config directory only; a Codex trial records `clean_home: false` and is not fully clean.
+- **Platforms:** macOS and Windows are untested for the container path. Claude macOS Keychain sign-in with a non-default config directory is untested. On Windows, a trial needs permission to create symbolic links; Windows isolates the agent config directory only, so a Codex trial records `clean_home: false` and is not fully clean.
+- **Grader trust:** hidden tests share the submission process. Nonces defeat early exits and printed fakes; deliberate introspection is flagged conservatively and checked by auditing local patches, rather than prevented. A process boundary is planned for a later edition.
+- **Effort and local toolchains:** container effort discovery uses the installed Claude or Codex layer; other container adapters refuse explicit effort until their metadata is verified. Without Docker, local code scores depend on host toolchains and visual tasks cannot be graded.
 
 <details>
 <summary>Full changelog</summary>
@@ -49,6 +56,8 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 * fix(bench): trim trailing whitespace in readiness files
 * fix(bench): grade missing visual submissions as task failures
 * chore(release): prepare bench and compare as cedr 0.12.0
+* fix(bench): harden isolation, accounting and audit results
+* chore(release): document benchmark verification limits
 
 **Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.11.3...v0.12.0
 </details>
