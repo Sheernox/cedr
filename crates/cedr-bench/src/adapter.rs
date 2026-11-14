@@ -580,8 +580,12 @@ fn claude_efforts(model: &str) -> Result<Vec<String>> {
         cedr_compare::exec::run_step(command, Some(request), std::time::Duration::from_secs(30))
             .map_err(|e| e.to_string())?;
     for link in links {
-        link.save_renewed()
-            .map_err(|_| "cannot preserve renewed sign-in")?;
+        if let Some(notice) = link
+            .save_renewed()
+            .map_err(|_| "cannot preserve renewed sign-in")?
+        {
+            eprintln!("{notice}");
+        }
     }
     if !output.succeeded() {
         return Err(

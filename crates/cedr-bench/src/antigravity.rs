@@ -174,8 +174,12 @@ pub fn check(credential: &Credential) -> Result<()> {
         Ok(())
     })();
     for link in links {
-        link.save_renewed()
-            .map_err(|_| "cannot preserve renewed sign-in")?;
+        if let Some(notice) = link
+            .save_renewed()
+            .map_err(|_| "cannot preserve renewed sign-in")?
+        {
+            eprintln!("{notice}");
+        }
     }
     checked
 }
@@ -199,8 +203,12 @@ pub fn invoke(
         cedr_agent::SignInLink::capture(home).map_err(|_| "cannot track sign-in renewal")?;
     let result = invoke_inner(model, prompt, workspace, home, credential, timeout);
     for link in links {
-        link.save_renewed()
-            .map_err(|_| "cannot preserve renewed sign-in")?;
+        if let Some(notice) = link
+            .save_renewed()
+            .map_err(|_| "cannot preserve renewed sign-in")?
+        {
+            eprintln!("{notice}");
+        }
     }
     result
 }

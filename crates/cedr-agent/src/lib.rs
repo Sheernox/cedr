@@ -116,31 +116,63 @@ fn home_inner(kind: Agent, cmd: &mut Command, home: &Path, shadow: bool) -> std:
 pub struct SignInLink {
     link: std::path::PathBuf,
     source: std::path::PathBuf,
-    identity: CredentialIdentity,
+    hash: Vec<u8>,
+    refresh_required: bool,
     permissions: std::fs::Permissions,
 }
 
-#[derive(PartialEq, Eq)]
-struct CredentialIdentity {
-    length: u64,
-    modified: std::time::SystemTime,
-    #[cfg(unix)]
-    inode: u64,
-    #[cfg(unix)]
-    changed: (i64, i64),
+fn content_hash(bytes: &[u8]) -> Vec<u8> {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes).to_vec()
 }
-impl CredentialIdentity {
-    fn of(metadata: &std::fs::Metadata) -> std::io::Result<Self> {
-        #[cfg(unix)]
-        use std::os::unix::fs::MetadataExt;
-        Ok(Self {
-            length: metadata.len(),
-            modified: metadata.modified()?,
-            #[cfg(unix)]
-            inode: metadata.ino(),
-            #[cfg(unix)]
-            changed: (metadata.ctime(), metadata.ctime_nsec()),
-        })
+
+// A captured refresh-token format must not degrade into a signed-out object.
+fn refresh_state(value: &serde_json::Value) -> (bool, bool) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            fields.iter().fold((false, false), |state, (key, v)| {
+                let nested = refresh_state(v);
+                let refresh = key.to_ascii_lowercase().contains("refresh");
+                (
+                    state.0 || refresh || nested.0,
+                    state.1 || (refresh && v.as_str().is_some_and(|s| !s.is_empty())) || nested.1,
+                )
+            })
+        }
+        serde_json::Value::Array(items) => items.iter().fold((false, false), |state, v| {
+            let nested = refresh_state(v);
+            (state.0 || nested.0, state.1 || nested.1)
+        }),
+        _ => (false, false),
+    }
+}
+fn usable(bytes: &[u8], refresh_required: bool) -> bool {
+    serde_json::from_slice::<serde_json::Value>(bytes).is_ok_and(|value| {
+        value.as_object().is_some_and(|o| !o.is_empty())
+            && (!refresh_required || refresh_state(&value).1)
+    })
+}
+
+// Exchange keeps the displaced sign-in available for validation and immediate rollback.
+#[cfg(target_os = "linux")]
+fn exchange(left: &Path, right: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let left = std::ffi::CString::new(left.as_os_str().as_bytes())?;
+    let right = std::ffi::CString::new(right.as_os_str().as_bytes())?;
+    // Both paths are live, NUL-terminated names, and no pointers escape the syscall.
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            left.as_ptr(),
+            libc::AT_FDCWD,
+            right.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
 }
 impl SignInLink {
@@ -157,11 +189,17 @@ impl SignInLink {
             let link = home.join(name);
             match std::fs::read_link(&link) {
                 Ok(source) => {
-                    let metadata = std::fs::metadata(&source)?;
+                    let real = std::fs::File::open(&source)?;
+                    let metadata = real.metadata()?;
+                    use std::io::Read;
+                    let mut bytes = Vec::new();
+                    (&real).read_to_end(&mut bytes)?;
                     links.push(Self {
                         link,
                         source,
-                        identity: CredentialIdentity::of(&metadata)?,
+                        hash: content_hash(&bytes),
+                        refresh_required: serde_json::from_slice(&bytes)
+                            .is_ok_and(|v| refresh_state(&v).0),
                         permissions: metadata.permissions(),
                     });
                 }
@@ -171,30 +209,28 @@ impl SignInLink {
         }
         Ok(links)
     }
-    /// Stage beside the real credential for an atomic replacement, even across filesystems.
-    /// The original mode is retained; neither the file nor I/O errors expose its contents.
-    /// A notice means the real sign-in changed and was kept; invalid renewals are errors.
+    /// Resolve by valid content and write order, retaining the real path's mode.
+    /// Linux validates the displaced file after exchange; other platforms have a
+    /// residual check-to-rename window because they cannot atomically exchange paths.
     pub fn save_renewed(&self) -> std::io::Result<Option<&'static str>> {
+        self.save_with_hook(|| {})
+    }
+    fn save_with_hook(
+        &self,
+        mut before_replace: impl FnMut(),
+    ) -> std::io::Result<Option<&'static str>> {
         let replacement = std::fs::symlink_metadata(&self.link)?;
         if replacement.file_type().is_symlink() {
             return Ok(None);
         }
-        let kept = Some("newer sign-in kept; trial renewal was not saved");
-        if CredentialIdentity::of(&std::fs::metadata(&self.source)?)? != self.identity {
-            return Ok(kept);
-        }
         if !replacement.is_file() {
-            return Err(std::io::Error::other(
-                "renewed sign-in is not a regular file",
+            return Ok(Some(
+                "trial sign-in is not a regular file; real sign-in kept",
             ));
         }
         let contents = std::fs::read(&self.link)?;
-        if !serde_json::from_slice::<serde_json::Value>(&contents)
-            .is_ok_and(|v| v.is_object() && v.as_object().is_some_and(|o| !o.is_empty()))
-        {
-            return Err(std::io::Error::other(
-                "renewed sign-in must be a non-empty JSON object; original sign-in kept",
-            ));
+        if !usable(&contents, self.refresh_required) {
+            return Ok(Some("trial sign-in is unusable; real sign-in kept"));
         }
         let parent = self
             .source
@@ -207,12 +243,55 @@ impl SignInLink {
             .as_file()
             .set_permissions(self.permissions.clone())?;
         temporary.as_file().sync_all()?;
-        // A sign-in may have completed while the renewal was validated and staged.
-        if CredentialIdentity::of(&std::fs::metadata(&self.source)?)? != self.identity {
-            return Ok(kept);
+        for _ in 0..4 {
+            let real = std::fs::File::open(&self.source)?;
+            let metadata = real.metadata()?;
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            (&real).read_to_end(&mut bytes)?;
+            let hash = content_hash(&bytes);
+            let changed = hash != self.hash;
+            if changed
+                && usable(&bytes, self.refresh_required)
+                && metadata.modified()? >= replacement.modified()?
+            {
+                return Ok(Some("newer sign-in kept; trial renewal was not saved"));
+            }
+            temporary
+                .as_file()
+                .set_permissions(metadata.permissions())?;
+            before_replace();
+            #[cfg(target_os = "linux")]
+            {
+                exchange(temporary.path(), &self.source)?;
+                let displaced = std::fs::read(temporary.path());
+                let displaced_metadata = std::fs::metadata(temporary.path());
+                use std::os::unix::fs::PermissionsExt;
+                let matches = displaced.as_ref().is_ok_and(|b| content_hash(b) == hash)
+                    && displaced_metadata.as_ref().is_ok_and(|m| {
+                        m.modified().ok() == metadata.modified().ok()
+                            && m.permissions().mode() == metadata.permissions().mode()
+                    });
+                if !matches {
+                    exchange(temporary.path(), &self.source)?;
+                    displaced?;
+                    displaced_metadata?;
+                    continue;
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                // No shared vendor lock exists: this final check is not an atomic condition.
+                if content_hash(&std::fs::read(&self.source)?) != hash {
+                    continue;
+                }
+                temporary.persist(&self.source).map_err(|e| e.error)?;
+            }
+            return Ok(changed.then_some("trial renewal saved after real sign-in changed"));
         }
-        temporary.persist(&self.source).map_err(|e| e.error)?;
-        Ok(None)
+        Ok(Some(
+            "sign-in kept after repeated concurrent writes; trial renewal was not saved",
+        ))
     }
 }
 
@@ -580,12 +659,107 @@ mod renewal_tests {
                     r#"{"token":"new"}"#
                 );
             } else {
-                assert!(links[0].save_renewed().is_err());
+                assert!(
+                    links[0]
+                        .save_renewed()
+                        .unwrap()
+                        .unwrap()
+                        .contains("unusable")
+                );
                 assert_eq!(
                     std::fs::read_to_string(original).unwrap(),
                     r#"{"token":"old"}"#
                 );
             }
+        }
+    }
+    // Explicit mtimes make order tests deterministic without waiting on filesystem clocks.
+    fn stamp(path: &Path, seconds: u64) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds)),
+            )
+            .unwrap();
+    }
+    #[test]
+    fn valid_content_and_write_order_decide_every_conflict() {
+        for (real, trial, time, expected) in [
+            (
+                r#"{"nested":{"RefreshToken":"R0"}}"#,
+                r#"{"refresh":"R2"}"#,
+                300,
+                "R2",
+            ),
+            (r#"{"refresh":""}"#, r#"{"refresh":"R2"}"#, 300, "R2"),
+            (r#"{"refresh":"R1"}"#, r#"{"refresh":"R2"}"#, 300, "R1"),
+            (r#"{"refresh":"R1"}"#, r#"{"refresh":"R2"}"#, 100, "R2"),
+            (r#"{"refresh":"R1"}"#, r#"{"refresh":"R2"}"#, 200, "R1"),
+            (r#"{"refresh":"R1"}"#, r#"{"refresh":""}"#, 100, "R1"),
+            (r#"{"refresh":"R1"}"#, r#"{"access":"only"}"#, 100, "R1"),
+            (r#"{"refresh":"R1"}"#, "null", 100, "R1"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("original");
+            std::fs::write(&source, r#"{"nested":{"RefreshToken":"R0"}}"#).unwrap();
+            let link = dir.path().join("home/.codex/auth.json");
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            symlink(&source, &link).unwrap();
+            let captured = SignInLink::capture(&dir.path().join("home")).unwrap();
+            std::fs::remove_file(&link).unwrap();
+            std::fs::write(&link, trial).unwrap();
+            stamp(&link, 200);
+            std::fs::write(&source, real).unwrap();
+            stamp(&source, time);
+            std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o640)).unwrap();
+            captured[0].save_renewed().unwrap();
+            assert!(std::fs::read_to_string(&source).unwrap().contains(expected));
+            assert_eq!(
+                std::fs::metadata(&source).unwrap().permissions().mode() & 0o777,
+                0o640
+            );
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn exchange_detects_sign_in_in_the_write_window_and_bounds_retries() {
+        for repeat in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("original");
+            std::fs::write(&source, r#"{"refresh":"R0"}"#).unwrap();
+            let link = dir.path().join("home/.codex/auth.json");
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            symlink(&source, &link).unwrap();
+            let captured = SignInLink::capture(&dir.path().join("home")).unwrap();
+            std::fs::remove_file(&link).unwrap();
+            std::fs::write(&link, r#"{"refresh":"R2"}"#).unwrap();
+            stamp(&link, 200);
+            let mut calls = 0;
+            let notice = captured[0]
+                .save_with_hook(|| {
+                    calls += 1;
+                    std::fs::write(&source, format!(r#"{{"refresh":"new-{calls}"}}"#)).unwrap();
+                    stamp(&source, if repeat { 100 } else { 300 });
+                    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600))
+                        .unwrap();
+                })
+                .unwrap();
+            assert!(notice.is_some());
+            assert_eq!(calls, if repeat { 4 } else { 1 });
+            assert!(
+                std::fs::read_to_string(&source)
+                    .unwrap()
+                    .contains(&format!("new-{calls}"))
+            );
+            assert_eq!(
+                std::fs::metadata(&source).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
         }
     }
     #[test]
