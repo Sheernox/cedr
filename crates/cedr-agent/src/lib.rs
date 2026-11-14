@@ -118,7 +118,6 @@ pub struct SignInLink {
     source: std::path::PathBuf,
     hash: Vec<u8>,
     refresh_required: bool,
-    permissions: std::fs::Permissions,
 }
 
 fn content_hash(bytes: &[u8]) -> Vec<u8> {
@@ -132,7 +131,7 @@ fn refresh_state(value: &serde_json::Value) -> (bool, bool) {
         serde_json::Value::Object(fields) => {
             fields.iter().fold((false, false), |state, (key, v)| {
                 let nested = refresh_state(v);
-                let refresh = key.to_ascii_lowercase().contains("refresh");
+                let refresh = key.to_ascii_lowercase().replace(['_', '-'], "") == "refreshtoken";
                 (
                     state.0 || refresh || nested.0,
                     state.1 || (refresh && v.as_str().is_some_and(|s| !s.is_empty())) || nested.1,
@@ -153,7 +152,7 @@ fn usable(bytes: &[u8], refresh_required: bool) -> bool {
     })
 }
 
-// Exchange keeps the displaced sign-in available for validation and immediate rollback.
+// Exchange retains the displaced candidate so it can be ranked before cleanup.
 #[cfg(target_os = "linux")]
 fn exchange(left: &Path, right: &Path) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
@@ -175,6 +174,63 @@ fn exchange(left: &Path, right: &Path) -> std::io::Result<()> {
         Err(std::io::Error::last_os_error())
     }
 }
+// Preserve each candidate's vendor write time when staging it; a fresh temporary
+// inode's timestamp must never make an older refresh token win.
+struct Candidate {
+    bytes: Vec<u8>,
+    written: std::time::SystemTime,
+    permissions: std::fs::Permissions,
+}
+impl Candidate {
+    fn read(path: &Path) -> std::io::Result<Self> {
+        use std::io::Read;
+        let mut file = std::fs::File::open(path)?;
+        let metadata = file.metadata()?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(Self {
+            bytes,
+            written: metadata.modified()?,
+            permissions: metadata.permissions(),
+        })
+    }
+    fn write(&self, path: &Path, permissions: std::fs::Permissions) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut file = std::fs::File::options()
+            .write(true)
+            .truncate(true)
+            .open(path)?;
+        file.write_all(&self.bytes)?;
+        file.set_permissions(permissions)?;
+        file.set_times(std::fs::FileTimes::new().set_modified(self.written))?;
+        file.sync_all()
+    }
+}
+fn exchange_or_fallback(left: &Path, right: &Path) -> std::io::Result<bool> {
+    #[cfg(target_os = "linux")]
+    return exchange_result(exchange(left, right));
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (left, right);
+        Ok(false)
+    }
+}
+#[cfg(target_os = "linux")]
+fn exchange_result(result: std::io::Result<()>) -> std::io::Result<bool> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(e) if exchange_unsupported(&e) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+#[cfg(target_os = "linux")]
+fn exchange_unsupported(error: &std::io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP | libc::EXDEV)
+    )
+}
+
 impl SignInLink {
     pub fn capture(home: &Path) -> std::io::Result<Vec<Self>> {
         let mut links = Vec::new();
@@ -190,7 +246,6 @@ impl SignInLink {
             match std::fs::read_link(&link) {
                 Ok(source) => {
                     let real = std::fs::File::open(&source)?;
-                    let metadata = real.metadata()?;
                     use std::io::Read;
                     let mut bytes = Vec::new();
                     (&real).read_to_end(&mut bytes)?;
@@ -200,7 +255,6 @@ impl SignInLink {
                         hash: content_hash(&bytes),
                         refresh_required: serde_json::from_slice(&bytes)
                             .is_ok_and(|v| refresh_state(&v).0),
-                        permissions: metadata.permissions(),
                     });
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -209,15 +263,17 @@ impl SignInLink {
         }
         Ok(links)
     }
-    /// Resolve by valid content and write order, retaining the real path's mode.
-    /// Linux validates the displaced file after exchange; other platforms have a
-    /// residual check-to-rename window because they cannot atomically exchange paths.
+    /// Resolve by usable content and write order, retaining the real path's mode.
+    /// Exchange ranks every displaced candidate. Unsupported platforms/filesystems
+    /// retain a final check-to-rename window without a vendor-shared lock.
     pub fn save_renewed(&self) -> std::io::Result<Option<&'static str>> {
-        self.save_with_hook(|| {})
+        self.save_with_hooks(|| {}, || {}, exchange_or_fallback)
     }
-    fn save_with_hook(
+    fn save_with_hooks(
         &self,
         mut before_replace: impl FnMut(),
+        mut after_replace: impl FnMut(),
+        mut swap: impl FnMut(&Path, &Path) -> std::io::Result<bool>,
     ) -> std::io::Result<Option<&'static str>> {
         let replacement = std::fs::symlink_metadata(&self.link)?;
         if replacement.file_type().is_symlink() {
@@ -228,70 +284,103 @@ impl SignInLink {
                 "trial sign-in is not a regular file; real sign-in kept",
             ));
         }
-        let contents = std::fs::read(&self.link)?;
-        if !usable(&contents, self.refresh_required) {
+        let mut best = Candidate::read(&self.link)?;
+        if content_hash(&best.bytes) == self.hash {
+            return Ok(None);
+        }
+        if !usable(&best.bytes, self.refresh_required) {
             return Ok(Some("trial sign-in is unusable; real sign-in kept"));
         }
         let parent = self
             .source
             .parent()
             .ok_or_else(|| std::io::Error::other("sign-in has no parent"))?;
-        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-        use std::io::Write;
-        temporary.write_all(&contents)?;
-        temporary
-            .as_file()
-            .set_permissions(self.permissions.clone())?;
-        temporary.as_file().sync_all()?;
-        for _ in 0..4 {
-            let real = std::fs::File::open(&self.source)?;
-            let metadata = real.metadata()?;
-            use std::io::Read;
-            let mut bytes = Vec::new();
-            (&real).read_to_end(&mut bytes)?;
-            let hash = content_hash(&bytes);
-            let changed = hash != self.hash;
-            if changed
-                && usable(&bytes, self.refresh_required)
-                && metadata.modified()? >= replacement.modified()?
-            {
-                return Ok(Some("newer sign-in kept; trial renewal was not saved"));
-            }
-            temporary
-                .as_file()
-                .set_permissions(metadata.permissions())?;
-            before_replace();
-            #[cfg(target_os = "linux")]
-            {
-                exchange(temporary.path(), &self.source)?;
-                let displaced = std::fs::read(temporary.path());
-                let displaced_metadata = std::fs::metadata(temporary.path());
-                use std::os::unix::fs::PermissionsExt;
-                let matches = displaced.as_ref().is_ok_and(|b| content_hash(b) == hash)
-                    && displaced_metadata.as_ref().is_ok_and(|m| {
-                        m.modified().ok() == metadata.modified().ok()
-                            && m.permissions().mode() == metadata.permissions().mode()
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?.into_temp_path();
+        // An I/O error must retain a displaced credential that could not be ranked.
+        temporary.disable_cleanup(true);
+        let outcome = (|| {
+            let mut changed = false;
+            let mut permissions = Candidate::read(&self.source)?.permissions;
+            let mut installed_hash = None;
+            for _ in 0..4 {
+                if installed_hash.is_some() {
+                    let staged = Candidate::read(&temporary)?;
+                    if self.rank(&staged) > self.rank(&best) {
+                        permissions = staged.permissions.clone();
+                        best = staged;
+                    }
+                }
+                let real = Candidate::read(&self.source)?;
+                if installed_hash.as_ref() != Some(&content_hash(&real.bytes)) {
+                    changed |= content_hash(&real.bytes) != self.hash;
+                    permissions = real.permissions.clone();
+                }
+                if self.rank(&real) >= self.rank(&best) {
+                    return Ok(if real.bytes == best.bytes {
+                        changed.then_some("trial renewal saved after real sign-in changed")
+                    } else {
+                        Some("newer sign-in kept; trial renewal was not saved")
                     });
-                if !matches {
-                    exchange(temporary.path(), &self.source)?;
-                    displaced?;
-                    displaced_metadata?;
-                    continue;
+                }
+                best.write(&temporary, permissions.clone())?;
+                installed_hash = Some(content_hash(&best.bytes));
+                before_replace();
+                if swap(&temporary, &self.source)? {
+                    after_replace();
+                    // Do not roll back blindly: that could displace an even newer renewal.
+                    // Keep the best snapshot while the next pass also ranks the real path.
+                    let displaced = Candidate::read(&temporary)?;
+                    permissions = displaced.permissions.clone();
+                    if self.rank(&displaced) > self.rank(&best) {
+                        best = displaced;
+                    }
+                } else {
+                    // A filesystem without exchange cannot close this last rename window.
+                    let latest = Candidate::read(&self.source)?;
+                    if self.rank(&latest) >= self.rank(&best) {
+                        return Ok(Some("newer sign-in kept; trial renewal was not saved"));
+                    }
+                    if latest.bytes != real.bytes || latest.written != real.written {
+                        continue;
+                    }
+                    std::fs::rename(&temporary, &self.source)?;
+                    return Ok(changed.then_some("trial renewal saved after real sign-in changed"));
                 }
             }
-            #[cfg(not(target_os = "linux"))]
-            {
-                // No shared vendor lock exists: this final check is not an atomic condition.
-                if content_hash(&std::fs::read(&self.source)?) != hash {
-                    continue;
-                }
-                temporary.persist(&self.source).map_err(|e| e.error)?;
+            // The bounded exit must install the best observed candidate, not just keep
+            // whichever inode the last exchange happened to leave at the real path.
+            let staged = Candidate::read(&temporary)?;
+            if self.rank(&staged) > self.rank(&best) {
+                permissions = staged.permissions.clone();
+                best = staged;
             }
-            return Ok(changed.then_some("trial renewal saved after real sign-in changed"));
+            let real = Candidate::read(&self.source)?;
+            if self.rank(&best) > self.rank(&real) {
+                best.write(&temporary, permissions)?;
+                std::fs::rename(&temporary, &self.source)?;
+            }
+            Ok(Some(
+                "sign-in resolved after concurrent writes by usable content and write order",
+            ))
+        })();
+        if outcome.is_ok() {
+            temporary.disable_cleanup(false);
         }
-        Ok(Some(
-            "sign-in kept after repeated concurrent writes; trial renewal was not saved",
-        ))
+        outcome.map_err(|error: std::io::Error| {
+            std::io::Error::new(
+                error.kind(),
+                format!(
+                    "cannot resolve sign-in; staged candidate retained beside real sign-in: {error}"
+                ),
+            )
+        })
+    }
+    fn rank(&self, candidate: &Candidate) -> (bool, bool, std::time::SystemTime) {
+        (
+            usable(&candidate.bytes, self.refresh_required),
+            content_hash(&candidate.bytes) != self.hash,
+            candidate.written,
+        )
     }
 }
 
@@ -690,17 +779,47 @@ mod renewal_tests {
         for (real, trial, time, expected) in [
             (
                 r#"{"nested":{"RefreshToken":"R0"}}"#,
-                r#"{"refresh":"R2"}"#,
+                r#"{"refresh_token":"R2"}"#,
                 300,
                 "R2",
             ),
-            (r#"{"refresh":""}"#, r#"{"refresh":"R2"}"#, 300, "R2"),
-            (r#"{"refresh":"R1"}"#, r#"{"refresh":"R2"}"#, 300, "R1"),
-            (r#"{"refresh":"R1"}"#, r#"{"refresh":"R2"}"#, 100, "R2"),
-            (r#"{"refresh":"R1"}"#, r#"{"refresh":"R2"}"#, 200, "R1"),
-            (r#"{"refresh":"R1"}"#, r#"{"refresh":""}"#, 100, "R1"),
-            (r#"{"refresh":"R1"}"#, r#"{"access":"only"}"#, 100, "R1"),
-            (r#"{"refresh":"R1"}"#, "null", 100, "R1"),
+            (
+                r#"{"refresh_token":""}"#,
+                r#"{"refresh_token":"R2"}"#,
+                300,
+                "R2",
+            ),
+            (
+                r#"{"refresh_token":"R1"}"#,
+                r#"{"refresh_token":"R2"}"#,
+                300,
+                "R1",
+            ),
+            (
+                r#"{"refresh_token":"R1"}"#,
+                r#"{"refresh_token":"R2"}"#,
+                100,
+                "R2",
+            ),
+            (
+                r#"{"refresh_token":"R1"}"#,
+                r#"{"refresh_token":"R2"}"#,
+                200,
+                "R1",
+            ),
+            (
+                r#"{"refresh_token":"R1"}"#,
+                r#"{"refresh_token":""}"#,
+                100,
+                "R1",
+            ),
+            (
+                r#"{"refresh_token":"R1"}"#,
+                r#"{"access":"only"}"#,
+                100,
+                "R1",
+            ),
+            (r#"{"refresh_token":"R1"}"#, "null", 100, "R1"),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let source = dir.path().join("original");
@@ -726,40 +845,115 @@ mod renewal_tests {
     }
     #[cfg(target_os = "linux")]
     #[test]
-    fn exchange_detects_sign_in_in_the_write_window_and_bounds_retries() {
+    fn exchange_ranks_both_race_windows_and_keeps_best_at_the_bound() {
         for repeat in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let source = dir.path().join("original");
-            std::fs::write(&source, r#"{"refresh":"R0"}"#).unwrap();
+            std::fs::write(&source, r#"{"refresh_token":"A"}"#).unwrap();
             let link = dir.path().join("home/.codex/auth.json");
             std::fs::create_dir_all(link.parent().unwrap()).unwrap();
             symlink(&source, &link).unwrap();
             let captured = SignInLink::capture(&dir.path().join("home")).unwrap();
             std::fs::remove_file(&link).unwrap();
-            std::fs::write(&link, r#"{"refresh":"R2"}"#).unwrap();
+            std::fs::write(&link, r#"{"refresh_token":"B"}"#).unwrap();
             stamp(&link, 200);
-            let mut calls = 0;
-            let notice = captured[0]
-                .save_with_hook(|| {
-                    calls += 1;
-                    std::fs::write(&source, format!(r#"{{"refresh":"new-{calls}"}}"#)).unwrap();
-                    stamp(&source, if repeat { 100 } else { 300 });
-                    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600))
-                        .unwrap();
-                })
+            let calls = std::cell::Cell::new(0);
+            let install = |token: &str, time| {
+                let next = dir.path().join("vendor");
+                std::fs::write(&next, format!(r#"{{"refresh_token":"{token}"}}"#)).unwrap();
+                stamp(&next, time);
+                std::fs::set_permissions(&next, std::fs::Permissions::from_mode(0o600)).unwrap();
+                std::fs::rename(next, &source).unwrap();
+            };
+            captured[0]
+                .save_with_hooks(
+                    || {
+                        calls.set(calls.get() + 1);
+                        install("C", if repeat { 300 + calls.get() * 2 } else { 300 });
+                    },
+                    || {
+                        // A second vendor rename used to land in the rollback's temp
+                        // path and be deleted, invalidating the C restored at source.
+                        if !repeat {
+                            install("D", 400);
+                        }
+                    },
+                    exchange_or_fallback,
+                )
                 .unwrap();
-            assert!(notice.is_some());
-            assert_eq!(calls, if repeat { 4 } else { 1 });
+            assert_eq!(calls.get(), if repeat { 4 } else { 1 });
             assert!(
                 std::fs::read_to_string(&source)
                     .unwrap()
-                    .contains(&format!("new-{calls}"))
+                    .contains(if repeat { "C" } else { "D" })
             );
             assert_eq!(
                 std::fs::metadata(&source).unwrap().permissions().mode() & 0o777,
                 0o600
             );
             assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+        }
+    }
+    #[test]
+    fn signed_out_shapes_and_identical_trials_never_replace_sign_in() {
+        let original = r#"{"tokens":{"refresh_token":"A"},"last_refresh":"old"}"#;
+        for trial in [
+            r#"{"tokens":{"refresh_token":""},"last_refresh":"timestamp"}"#,
+            r#"{"claudeAiOauth":{"accessToken":"","refreshToken":"","refreshTokenExpiresAt":123},"loginEnded":"timestamp"}"#,
+            original,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("original");
+            std::fs::write(&source, original).unwrap();
+            let link = dir.path().join("home/.codex/auth.json");
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            symlink(&source, &link).unwrap();
+            let captured = SignInLink::capture(&dir.path().join("home")).unwrap();
+            std::fs::remove_file(&link).unwrap();
+            std::fs::write(&link, trial).unwrap();
+            stamp(&link, 300);
+            let expected = if trial == original {
+                r#"{"refresh_token":"B"}"#
+            } else {
+                original
+            };
+            std::fs::write(&source, expected).unwrap();
+            stamp(&source, 200);
+            captured[0].save_renewed().unwrap();
+            assert_eq!(std::fs::read_to_string(&source).unwrap(), expected);
+        }
+        for key in ["refresh_at", "last_refresh", "refreshTokenExpiresAt"] {
+            assert_eq!(
+                refresh_state(&serde_json::json!({key: "timestamp"})),
+                (false, false)
+            );
+        }
+        assert_eq!(
+            refresh_state(&serde_json::json!({"Refresh-Token": "A"})),
+            (true, true)
+        );
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unsupported_exchange_uses_rechecked_rename() {
+        for code in [libc::EINVAL, libc::ENOSYS, libc::ENOTSUP, libc::EXDEV] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("original");
+            std::fs::write(&source, r#"{"refresh_token":"A"}"#).unwrap();
+            let link = dir.path().join("home/.codex/auth.json");
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            symlink(&source, &link).unwrap();
+            let captured = SignInLink::capture(&dir.path().join("home")).unwrap();
+            std::fs::remove_file(&link).unwrap();
+            std::fs::write(&link, r#"{"refresh_token":"B"}"#).unwrap();
+            captured[0]
+                .save_with_hooks(
+                    || {},
+                    || {},
+                    |_, _| exchange_result(Err(std::io::Error::from_raw_os_error(code))),
+                )
+                .unwrap();
+            assert!(std::fs::read_to_string(source).unwrap().contains('B'));
         }
     }
     #[test]
