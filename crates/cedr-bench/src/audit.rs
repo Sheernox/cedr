@@ -59,8 +59,15 @@ pub fn scan(workspace: &Path, names: &[u8], diff: &[u8]) -> Result<Vec<TamperSig
         let text = String::from_utf8_lossy(&source);
         let modules: std::collections::BTreeSet<String> = text
             .split(['\n', ';'])
-            .filter_map(|line| line.trim().strip_prefix("import "))
-            .flat_map(|line| line.split(','))
+            .filter_map(|line| {
+                let line = line.trim();
+                line.strip_prefix("import ").or_else(|| {
+                    line.strip_prefix("from ")?
+                        .split_once(" import ")
+                        .map(|(_, names)| names)
+                })
+            })
+            .flat_map(|line| line.trim_matches(['(', ')']).split(','))
             .filter_map(|part| {
                 let words: Vec<_> = part.split_whitespace().collect();
                 let name = if words.len() >= 3 && words[1] == "as" {
@@ -123,11 +130,12 @@ pub fn scan(workspace: &Path, names: &[u8], diff: &[u8]) -> Result<Vec<TamperSig
             .any(|name| compact.contains(&format!("def{name}(")));
             let module_write = compact.split(';').any(|part| {
                 part.split_once('=').is_some_and(|(left, right)| {
-                    !left.ends_with(['=', '!', '<', '>'])
-                        && !right.starts_with('=')
-                        && left
-                            .split_once('.')
-                            .is_some_and(|(module, _)| modules.contains(module))
+                    // Only a dotted identifier at statement start is an assignment
+                    // target. Calls and arrows can contain '=' without writing a module.
+                    !right.starts_with(['=', '>'])
+                        && left.split_once('.').is_some_and(|(module, attributes)| {
+                            modules.contains(module) && attributes.split('.').all(identifier)
+                        })
                 })
             }) || compact.split("setattr(").skip(1).any(|part| {
                 part.split_once(',')
@@ -194,6 +202,7 @@ pub fn scan(workspace: &Path, names: &[u8], diff: &[u8]) -> Result<Vec<TamperSig
                         "setattr(sys",
                         "sys.modules.pop",
                         "sys.settrace",
+                        "threading.settrace(",
                         "sys.setprofile",
                         "syncBuiltinESMExports",
                         "process.removeAllListeners",
@@ -228,6 +237,14 @@ pub fn scan(workspace: &Path, names: &[u8], diff: &[u8]) -> Result<Vec<TamperSig
     Ok(signals)
 }
 
+fn identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars
+        .next()
+        .is_some_and(|ch| ch == '_' || ch.is_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_alphanumeric())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +265,51 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn module_assignments_exclude_honest_calls_and_include_imported_members() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = dir.path();
+        git(w, &["init", "--quiet", "--template="]).unwrap();
+        git(w, &["commit", "--allow-empty", "--quiet", "-m", "start"]).unwrap();
+        std::fs::write(
+            w.join("code.py"),
+            concat!(
+                "import os, json, hashlib, threading\n",
+                "from pathlib import PurePath\n",
+                "os.makedirs(out, exist_ok=True)\n",
+                "json.dump(data, fh, indent=2)\n",
+                "os.value == 2\n",
+                "os.value != 2\n",
+                "os.value <= 2\n",
+                "os.value >= 2\n",
+                "local.value += 2\n",
+                "hashlib.sha256 = shim\n",
+                "PurePath.__fspath__ = f\n",
+                "setattr(PurePath, '__fspath__', f)\n",
+                "threading.settrace(None)\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            w.join("code.ts"),
+            "import fs from 'node:fs';\nfs.readdirSync(d).filter((f) => f)\n",
+        )
+        .unwrap();
+        git(w, &["add", "code.py", "code.ts"]).unwrap();
+        let signals = scan(w, b"code.py\0code.ts\0", &diff(w)).unwrap();
+        assert_eq!(
+            signals
+                .iter()
+                .map(|s| (s.path.as_str(), s.line))
+                .collect::<Vec<_>>(),
+            vec![
+                ("code.py", 10),
+                ("code.py", 11),
+                ("code.py", 12),
+                ("code.py", 13)
+            ]
+        );
+    }
     #[test]
     fn only_added_lines_signal_with_submitted_line_numbers() {
         let dir = tempfile::tempdir().unwrap();
