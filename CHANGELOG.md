@@ -6,7 +6,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.12.0.png" alt="cedr v0.12.0: bench" width="770">
 
-**v0.12.0** · 17 changes from 1 contributor
+**v0.12.0** · 18 changes from 1 contributor
 
 ### Highlights
 **Benchmark one configuration.** Run `cedr bench run --harness claude --model MODEL` on a frozen public suite for code checks, list cost and visual artifacts.
@@ -33,7 +33,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 - **Discovery cleanup:** model-capability discovery containers are stopped and verified absent before trials, so an app-server cannot keep the task container name busy.
 - **Sign-in preservation:** host checks cannot run tools or load user setup. Container allowlists exclude token renewal hosts; a failed task stops without retry. Compare and local Bench atomically preserve renewed sign-ins before deleting temporary homes.
 - **Cost and reference integrity:** missing billable token classes leave cost unknown, hourly cache writes use their reported rate, and `--set-reference` cannot replace an existing fingerprint. Probe references live outside the frozen edition digest and can be published later.
-- **Auditable task results:** timeouts score zero and can complete a run; grading seeds are recorded. Workspace symlinks are skipped, local grading uses Docker when available, and code patches stay local for audit. Tamper signals preserve the score but prevent listing eligibility; export never includes those patches.
+- **Auditable task results:** timeouts score zero and can complete a run; grading seeds are recorded. Workspace symlinks are skipped, local grading uses Docker when available, and code patches stay local for audit. The tamper scan checks added or changed lines against the starting commit, keeping submitted line numbers and dropping ordinary entry points, imports and process exits. Signals preserve correctness scores but prevent listing eligibility pending human review; export never includes those patches.
 
 ### Verification limits
 - **Gemini CLI:** the adapter is built from its documentation and has no signed-in live verification. File-based sign-in is refused until a tool-free host check is verified; supported API-key credentials remain available.
@@ -64,6 +64,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 * fix(bench): explain remapped uid failures in local graders
 * fix(bench): verify isolation after attaching the egress proxy
 * chore(release): record final benchmark verification limits
+* fix(bench): scan only submitted lines for tamper signals
 
 **Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.11.3...v0.12.0
 </details>

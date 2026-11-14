@@ -422,7 +422,7 @@ impl Backend for ProcessBackend<'_> {
         }
     }
 }
-fn git(workspace: &Path, args: &[&str]) -> Result<Vec<u8>> {
+pub(crate) fn git(workspace: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let mut c = Command::new("git");
     c.arg("-C")
         .arg(workspace)
@@ -490,13 +490,31 @@ fn patch(workspace: &Path, metadata: &Path) -> Result<(Vec<u8>, Vec<TamperSignal
             &tree,
             "diff",
             "--cached",
+            "--no-renames",
             "--name-only",
             "--diff-filter=ACMRT",
             "-z",
             "HEAD",
         ],
     )?;
-    let signals = crate::audit::scan(workspace, &changed)?;
+    let added = git(
+        workspace,
+        &[
+            &metadata,
+            &tree,
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--diff-filter=ACMRT",
+            "--text",
+            "--no-color",
+            "--unified=0",
+            "HEAD",
+        ],
+    )?;
+    let signals = crate::audit::scan(workspace, &changed, &added)?;
     Ok((diff, signals))
 }
 
