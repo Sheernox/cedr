@@ -79,6 +79,20 @@ pub enum BenchCommand {
         #[arg(long,value_enum,default_value_t=Format::Text)]
         format: Format,
     },
+    /// Record a person's review of the saved patches for a flagged run
+    Review {
+        id: String,
+        #[arg(
+            long,
+            required_unless_present = "tampered",
+            conflicts_with = "tampered"
+        )]
+        clean: bool,
+        #[arg(long)]
+        tampered: bool,
+        #[arg(long)]
+        note: String,
+    },
     /// Export unchanged results and screenshot artifacts for publishing
     Export {
         #[arg(required = true)]
@@ -312,9 +326,37 @@ fn summary(r: &BenchResult) {
             .map(|n| format!("${n:.4}"))
             .unwrap_or_else(|| "unpriced".into());
         println!("  {} {:?}: {score}, {cost}", task.id, task.status);
+        for signal in &task.tamper_signals {
+            println!(
+                "    signal {}:{}: {}",
+                signal.path, signal.line, signal.kind
+            );
+        }
+        if task.patch_sha256.is_some() && task.kind == suite::Kind::Code {
+            println!(
+                "    saved patch: {}",
+                results()
+                    .join(&r.id)
+                    .join("artifacts")
+                    .join(&task.id)
+                    .join("submission.patch")
+                    .display()
+            );
+        }
         for artifact in &task.artifacts {
             println!("    {} ({} bytes)", artifact.path, artifact.bytes);
         }
+    }
+    if let Some(review) = &r.tamper_review {
+        println!(
+            "  tamper review {:?} at {}: {}",
+            review.verdict, review.time, review.note
+        );
+    } else if r.tasks.iter().any(|task| !task.tamper_signals.is_empty()) {
+        println!(
+            "  read the saved patches, then: cedr bench review {} --clean --note <text> (or --tampered)",
+            r.id
+        );
     }
 }
 fn reference(c: &Configuration, o: &Options, p: &report::Probe) -> Result<(), String> {
@@ -433,6 +475,36 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             };
             Ok(ExitCode::SUCCESS)
         }
+        BenchCommand::Review {
+            id,
+            clean,
+            tampered: _,
+            note,
+        } => {
+            let mut r = read_result(&id)?;
+            if r.tasks.iter().all(|task| task.tamper_signals.is_empty()) {
+                return Err("run has no tamper signals to review".into());
+            }
+            let review = report::TamperReview {
+                verdict: if clean {
+                    report::TamperVerdict::Clean
+                } else {
+                    report::TamperVerdict::Tampered
+                },
+                note,
+                time: chrono::Utc::now().to_rfc3339(),
+            };
+            review.validate()?;
+            r.tamper_review = Some(review);
+            r.summarize();
+            r.validate()?;
+            settings::write_atomic(
+                &result_path(&id),
+                &serde_json::to_vec_pretty(&r).map_err(|e| e.to_string())?,
+            )?;
+            summary(&r);
+            Ok(ExitCode::SUCCESS)
+        }
         BenchCommand::Export { ids, out } => {
             export(&ids, &out)?;
             println!("exported {} results", ids.len());
@@ -440,12 +512,15 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
         }
     }
 }
-pub(crate) fn read_result(id: &str) -> Result<BenchResult, String> {
-    let path = if id.starts_with("b-") && suite::identifier(id) {
+fn result_path(id: &str) -> PathBuf {
+    if id.starts_with("b-") && suite::identifier(id) {
         results().join(format!("{id}.json"))
     } else {
         PathBuf::from(id)
-    };
+    }
+}
+pub(crate) fn read_result(id: &str) -> Result<BenchResult, String> {
+    let path = result_path(id);
     if std::fs::metadata(&path).map_err(|e| e.to_string())?.len() > 16 * 1024 * 1024 {
         return Err("result exceeds 16 MiB".into());
     }

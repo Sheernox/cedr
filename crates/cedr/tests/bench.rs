@@ -91,7 +91,7 @@ fn cached_suite_drift_is_refused_before_any_network_or_agent() {
 }
 
 #[test]
-fn show_checks_consistency_and_export_preserves_objects_and_shot_layout() {
+fn show_export_and_review_preserve_validated_results_and_local_patches() {
     use cedr_bench::report::*;
     use cedr_bench::suite::Kind;
     let s = Scratch::new(0.0, 0.0);
@@ -108,6 +108,7 @@ fn show_checks_consistency_and_export_preserves_objects_and_shot_layout() {
     task.score = Some(1.0);
     task.solved = true;
     task.cost_usd = Some(0.0);
+    task.patch_sha256 = Some(cedr_bench::sha(b"local audit patch content"));
     let mut visual = TaskResult::pending("visual", Kind::Visual);
     visual.status = Status::Graded;
     visual.cost_usd = Some(0.0);
@@ -179,6 +180,7 @@ fn show_checks_consistency_and_export_preserves_objects_and_shot_layout() {
         code_tasks: 1,
         eligible: false,
         tasks: vec![task, visual],
+        tamper_review: None,
     };
     r.summarize();
     let root = s.dir.path().join("state/cedr/bench");
@@ -221,6 +223,129 @@ fn show_checks_consistency_and_export_preserves_objects_and_shot_layout() {
         std::fs::read(out.join("shots").join(id).join("visual/screen.png")).unwrap(),
         png
     );
+    let refused = s.cedr(&["bench", "review", id, "--clean", "--note", "Read patches"]);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("no tamper signals"));
+    r.config.harness = "codex".into();
+    r.environment.mode = "container".into();
+    r.environment.pinned = true;
+    r.environment.clean_home = true;
+    r.environment.network = "allowlist".into();
+    r.tasks[0].tamper_signals.push(TamperSignal {
+        path: "answer.py".into(),
+        line: 4,
+        kind: "descriptor_access".into(),
+    });
+    r.summarize();
+    assert!(!r.eligible);
+    std::fs::write(&path, serde_json::to_vec(&r).unwrap()).unwrap();
+    let shown = stdout(&s.cedr(&["bench", "show", id]));
+    assert!(shown.contains("answer.py:4: descriptor_access"));
+    assert!(shown.contains(audit.to_str().unwrap()));
+    assert!(shown.contains("cedr bench review"));
+    let before = std::fs::read(&path).unwrap();
+    for args in [
+        vec!["bench", "review", id, "--clean"],
+        vec!["bench", "review", id, "--note", "text"],
+        vec![
+            "bench",
+            "review",
+            id,
+            "--clean",
+            "--tampered",
+            "--note",
+            "text",
+        ],
+        vec!["bench", "review", id, "--clean", "--note", ""],
+        vec!["bench", "review", id, "--clean", "--note", "two\nlines"],
+    ] {
+        assert_eq!(s.cedr(&args).status.code(), Some(2));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    for (flag, verdict, eligible) in [
+        ("--clean", "clean", true),
+        ("--tampered", "tampered", false),
+        ("--clean", "clean", true),
+    ] {
+        let reviewed = s.cedr(&[
+            "bench",
+            "review",
+            id,
+            flag,
+            "--note",
+            "Read the saved patch",
+        ]);
+        assert!(
+            reviewed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&reviewed.stderr)
+        );
+        let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["tamper_review"]["verdict"], verdict);
+        assert_eq!(saved["tamper_review"]["note"], "Read the saved patch");
+        chrono::DateTime::parse_from_rfc3339(saved["tamper_review"]["time"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(saved["eligible"], eligible);
+        assert_eq!(saved["score"], 100.0);
+        assert_eq!(saved["tasks"][0]["tamper_signals"][0]["line"], 4);
+    }
+    let destination = s.dir.path().join("reviewed-export");
+    assert!(
+        s.cedr(&[
+            "bench",
+            "export",
+            id,
+            "--out",
+            destination.to_str().unwrap()
+        ])
+        .status
+        .success()
+    );
+    let exported: Value =
+        serde_json::from_slice(&std::fs::read(destination.join("results.json")).unwrap()).unwrap();
+    assert_eq!(exported[0]["tamper_review"]["verdict"], "clean");
+    let shown = stdout(&s.cedr(&["bench", "show", id]));
+    assert!(shown.contains("tamper review Clean"));
+    assert!(!shown.contains("then: cedr bench review"));
+    {
+        use serde_json::json;
+        use std::io::{BufRead, BufReader, Write};
+        use std::process::Stdio;
+        let config = common::config();
+        let mut child = s
+            .command(&["mcp", "--config", config.to_str().unwrap()])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut receive = |id: u64| loop {
+            let row: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+            if row["id"] == id {
+                break row;
+            }
+        };
+        writeln!(input, "{}", json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}})).unwrap();
+        receive(1);
+        writeln!(
+            input,
+            "{}",
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+        )
+        .unwrap();
+        writeln!(input, "{}", json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bench_show","arguments":{"id":id}}})).unwrap();
+        let reply = receive(2);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let body: Value =
+            serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["tamper_review"], exported[0]["tamper_review"]);
+        assert_eq!(
+            body["tasks"][0]["tamper_signals"],
+            exported[0]["tasks"][0]["tamper_signals"]
+        );
+    }
     r.score = 99.0;
     std::fs::write(&path, serde_json::to_vec(&r).unwrap()).unwrap();
     let shown = s.cedr(&["bench", "show", id]);

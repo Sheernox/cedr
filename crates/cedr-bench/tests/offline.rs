@@ -755,6 +755,49 @@ fn audit_signals_keep_scores_but_prevent_listing() {
 }
 
 #[test]
+fn reviews_validate_and_restore_only_tamper_eligibility() {
+    let mut result = measure(&options(), false);
+    result.environment.mode = "container".into();
+    result.environment.network = "allowlist".into();
+    result.environment.pinned = true;
+    result.config.harness = "codex".into();
+    result.tasks[0].tamper_signals.push(TamperSignal {
+        path: "a.py".into(),
+        line: 1,
+        kind: "descriptor_access".into(),
+    });
+    result.tamper_review = Some(TamperReview {
+        verdict: TamperVerdict::Clean,
+        note: "Read both patches; ordinary I/O".into(),
+        time: "2026-11-14T01:00:00-07:00".into(),
+    });
+    result.summarize();
+    result.validate().unwrap();
+    assert!(result.eligible);
+    for note in [
+        "".into(),
+        " ".into(),
+        "a\nb".into(),
+        "a\rb".into(),
+        "a\u{2028}b".into(),
+        "x".repeat(501),
+    ] {
+        let mut bad = result.clone();
+        bad.tamper_review.as_mut().unwrap().note = note;
+        assert!(bad.validate().is_err());
+    }
+    let mut bad = result.clone();
+    bad.tamper_review.as_mut().unwrap().time = "2026-11-14T01:00:00".into();
+    assert!(bad.validate().is_err());
+    result.tamper_review.as_mut().unwrap().verdict = TamperVerdict::Tampered;
+    result.summarize();
+    result.validate().unwrap();
+    assert!(!result.eligible);
+    result.tasks[0].tamper_signals.clear();
+    assert!(result.validate().is_err());
+}
+
+#[test]
 fn reference_tolerances_are_bounded_and_applied_to_loaded_results() {
     let text =
         "[[references]]\nharness='codex'\nharness_version='test'\nmodel='stub'\ninput_tokens=100\n";

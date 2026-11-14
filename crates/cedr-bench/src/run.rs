@@ -624,6 +624,7 @@ pub fn run<B: Backend>(
         solved: 0,
         code_tasks: 0,
         eligible: false,
+        tamper_review: None,
         tasks: suite
             .tasks
             .iter()

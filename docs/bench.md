@@ -47,7 +47,7 @@ A result must depend on the configuration, not on whose machine ran it. Three la
 2. **The pinned image.** By default the agent and the graders run in the container image the edition names by digest: fixed toolchains, fonts and browser. The agent's network is limited to its model provider's hosts; graders get none. `--local` runs on the host instead, with the clean home only.
 3. **The probe.** Before the tasks, the runner sends a fixed fingerprint prompt in an empty workspace and records its input tokens (fresh, cache read and cache write together), followed by a separate tool-readiness prompt whose files are verified. Extra rules or tools show up as extra tokens. The separately published `probes/edition-<n>.toml` carries a reference per harness version, model and effort; the result records `match`, `mismatch` or `no_reference`.
 
-The result's `environment.mode` is `container` or `local`. The derived `eligible` field requires a complete run, a pinned container, a clean home, allowlist networking, a matching (or explicitly set) fingerprint, passing tool readiness, and a verified vendor adapter.
+The result's `environment.mode` is `container` or `local`. The derived `eligible` field requires a complete run, a pinned container, a clean home, allowlist networking, a matching (or explicitly set) fingerprint, passing tool readiness, a verified vendor adapter, and no unresolved tamper signals.
 
 ## Harnesses
 
@@ -79,12 +79,13 @@ Saved to `$XDG_STATE_HOME/cedr/bench/<id>.json`, with artifacts beside it in `<i
   "goal_usd": 10.0, "stop_usd": null, "spent_usd": 4.12, "over_goal": false, "unpriced_trials": 0,
   "complete": true, "stop": null, "eligible": true,
   "score": 72.5, "solved": 6, "code_tasks": 10,
+  "tamper_review": null,
   "tasks": [
     {"id": "py-ledger-rounding", "kind": "code", "status": "graded",
      "checks": [{"id": "reported-case", "passed": true}], "score": 0.75, "solved": false,
      "duration_ms": 61200, "turns": 9,
      "input_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0, "output_tokens": 0, "reasoning_tokens": null,
-     "cost_usd": 0.31, "patch_sha256": "...", "gates": [], "artifacts": []}
+     "cost_usd": 0.31, "patch_sha256": "...", "tamper_signals": [], "gates": [], "artifacts": []}
   ]
 }
 ```
@@ -99,6 +100,8 @@ A visual task has `kind: "visual"`, `gates: [{"id", "passed", "detail"}]` and `a
 - `cedr bench export <ID>... --out DIR`: writes `results.json` (the results, unchanged) and copies each screenshot to `DIR/shots/<id>/<task>/<name>.png`, for publishing.
 
 Exit codes follow Compare: 0 complete, 3 incomplete, 2 usage or I/O. There is no `--fail-on`: Bench reports, it does not gate.
+
+`cedr bench review ID --clean --note "Read each saved patch; ordinary application code"` records a person's audit of a flagged run. Use `--tampered` instead to keep it ineligible. Exactly one verdict and a single-line, nonblank note of 1-500 characters are required. Runs without signals cannot be reviewed. A later review replaces the earlier review atomically. `show` prints signals, the review, saved patch paths and review instructions when needed.
 
 MCP gains `bench_history` and `bench_show`. There is no `bench_run`, for the reason Compare has none.
 
@@ -143,9 +146,11 @@ The runner chooses and records each graded task's `seed` and passes it as `BENCH
 
 ## Persistence and consistency
 
-Saved result version is 1 and kind is `bench`. The issue's result example defines required fields. `edition.image` records the image actually used, `environment.pinned` records whether it matched the edition, and `environment.agent_image` records the local layer. `eligible` additionally requires a complete run, a pinned container, clean home, allowlist networking, a successful matching or setting fingerprint and readiness probe, and a verified vendor adapter. `billing` is `api` or `plan`, supplied with `--billing` (default `plan`).
+Saved result version is 1 and kind is `bench`. The issue's result example defines required fields. `edition.image` records the image actually used, `environment.pinned` records whether it matched the edition, and `environment.agent_image` records the local layer. `eligible` additionally requires a complete run, a pinned container, clean home, allowlist networking, a successful matching or setting fingerprint and readiness probe, and a verified vendor adapter, plus no signals or a clean human review. `billing` is `api` or `plan`, supplied with `--billing` (default `plan`).
 
-`show` validates ids, unique task ids, finite nonnegative costs, check counts, score, solved, task totals, spent, unpriced count, over_goal, completion, stop and listing eligibility against the underlying records. It refuses inconsistent results. History returns summary rows newest first. Both MCP tools use the same loader. Results contain neither prompts nor captured agent transcripts. Each code task's diff against its starting state is saved locally as `<id>/artifacts/<task>/submission.patch`, with `patch_sha256` in the result; these audit patches are never exported by `bench export` or pushed. Each task's `tamper_signals` is an array of `{"path":"src/example.py","line":12,"kind":"process_introspection"}` objects, empty when clean. Paths are relative to the task workspace; line numbers are one-based positions in the submitted file. Only lines added or changed against the task's starting commit are scanned, including every line of a new file. Categories are `process_introspection`, `descriptor_access`, `runner_modification` and `scan_limit` (a changed file above 16 MiB, reported at line 1). Ordinary entry points, process exits, `importlib`, `process.stdin`, `fileno()` and `os.close()` do not alone prompt review; the completion nonce already makes early exits score zero. Signals do not change correctness scores, but any signal makes a run ineligible pending human review.
+`show` validates ids, unique task ids, finite nonnegative costs, check counts, score, solved, task totals, spent, unpriced count, over_goal, completion, stop and listing eligibility against the underlying records. It refuses inconsistent results. History returns summary rows newest first. Both MCP tools use the same loader. Results contain neither prompts nor captured agent transcripts. Each code task's diff against its starting state is saved locally as `<id>/artifacts/<task>/submission.patch`, with `patch_sha256` in the result; these audit patches are never exported by `bench export` or pushed. Each task's `tamper_signals` is an array of `{"path":"src/example.py","line":12,"kind":"process_introspection"}` objects, empty when clean. Paths are relative to the task workspace; line numbers are one-based positions in the submitted file. Only lines added or changed against the task's starting commit are scanned, including every line of a new file. Categories are `process_introspection`, `descriptor_access`, `runner_modification` and `scan_limit` (a changed file above 16 MiB, reported at line 1). Ordinary entry points, process exits, `importlib`, `process.stdin`, `fileno()` and `os.close()` do not alone prompt review; the completion nonce already makes early exits score zero.
+
+Signals are review prompts and never change correctness scores. A run with any signal remains ineligible until a person reads its saved patches and records a clean review. The top-level `tamper_review` is null when unreviewed, otherwise `{"verdict":"clean","note":"Read each saved patch; ordinary application code","time":"2026-11-14T00:00:00+00:00"}`. Verdict is `clean` or `tampered`; notes and offset-bearing ISO-8601 times are validated when loading a result. A clean review clears only the tamper restriction, so other eligibility requirements still apply. Export and MCP `bench_show` carry the review and original signals; local patches stay local.
 
 `run` and `probe` accept `--suite`, `--edition`, `--local`, `--build-image`, `--agent-version`, `--set-reference`, `--command ARG` (repeatable for command only), and `--format text|json`. Probe results are printed but not saved as benchmark runs. `history --limit N` and `show ID` accept text and JSON. `export` copies validated screenshot artifacts and writes the original result objects, unchanged, as a JSON array. Export verifies artifact hashes and refuses overwrites. No command uploads results.
 

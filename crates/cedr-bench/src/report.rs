@@ -69,6 +69,34 @@ pub struct TamperSignal {
     pub line: u64,
     pub kind: String,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TamperVerdict {
+    Clean,
+    Tampered,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TamperReview {
+    pub verdict: TamperVerdict,
+    pub note: String,
+    pub time: String,
+}
+impl TamperReview {
+    pub fn validate(&self) -> Result<()> {
+        if self.note.trim().is_empty()
+            || self.note.chars().count() > 500
+            || self
+                .note
+                .chars()
+                .any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}'))
+        {
+            return Err("review note must be 1 to 500 characters on a single line".into());
+        }
+        chrono::DateTime::parse_from_rfc3339(&self.time).map_err(|_| "invalid review time")?;
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskResult {
@@ -242,6 +270,8 @@ pub struct BenchResult {
     pub code_tasks: usize,
     pub eligible: bool,
     pub tasks: Vec<TaskResult>,
+    #[serde(default)]
+    pub tamper_review: Option<TamperReview>,
 }
 impl BenchResult {
     pub fn summarize(&mut self) {
@@ -266,7 +296,11 @@ impl BenchResult {
                 .iter()
                 .all(|t| matches!(t.status, Status::Graded | Status::Timeout));
         self.eligible = self.complete
-            && self.tasks.iter().all(|task| task.tamper_signals.is_empty())
+            && (self.tasks.iter().all(|task| task.tamper_signals.is_empty())
+                || self
+                    .tamper_review
+                    .as_ref()
+                    .is_some_and(|review| review.verdict == TamperVerdict::Clean))
             && self.environment.mode == "container"
             && self.environment.pinned
             && self.environment.clean_home
@@ -297,6 +331,12 @@ impl BenchResult {
             || !matches!(self.billing.as_str(), "plan" | "api")
         {
             return Err("invalid environment or billing".into());
+        }
+        if let Some(review) = &self.tamper_review {
+            review.validate()?;
+            if self.tasks.iter().all(|task| task.tamper_signals.is_empty()) {
+                return Err("tamper review requires a run with signals".into());
+            }
         }
         let mut ids = BTreeSet::new();
         for t in &self.tasks {
