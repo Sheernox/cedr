@@ -58,6 +58,8 @@ impl Backend for Stub {
             usage: Usage {
                 tokens: Tokens {
                     input_tokens: Some(100),
+                    cache_read_tokens: Some(0),
+                    cache_write_tokens: Some(0),
                     ..Tokens::default()
                 },
                 cost_usd: if self.unknown || self.unknown_at == Some(self.calls) {
@@ -200,6 +202,7 @@ fn probe_tolerance_requires_the_file() {
         tokens: Tokens {
             input_tokens: Some(100),
             cache_read_tokens: Some(20),
+            cache_write_tokens: Some(0),
             ..Tokens::default()
         },
         ..Usage::default()
@@ -608,7 +611,7 @@ fn a_reference_flag_cannot_override_an_existing_mismatch() {
     assert!(!result.passed());
 }
 #[test]
-fn missing_cache_counts_are_unknown_except_explicit_plain_input_writes() {
+fn missing_cache_counts_are_unknown_including_codex_writes() {
     use cedr_bench::adapter;
     for field in [
         "cache_read_tokens",
@@ -632,7 +635,7 @@ fn missing_cache_counts_are_unknown_except_explicit_plain_input_writes() {
     assert!(
         adapter::parse(Harness::Codex, codex, "gpt-6-luna")
             .cost_usd
-            .is_some()
+            .is_none()
     );
     let missing = br#"{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":2}}"#;
     assert_eq!(
@@ -739,6 +742,7 @@ fn audit_signals_keep_scores_but_prevent_listing() {
     result.environment.mode = "container".into();
     result.environment.network = "allowlist".into();
     result.environment.pinned = true;
+    result.probe.status = ProbeStatus::Match;
     result.config.harness = "claude".into();
     result.summarize();
     assert!(result.eligible);
@@ -760,6 +764,7 @@ fn reviews_validate_and_restore_only_tamper_eligibility() {
     result.environment.mode = "container".into();
     result.environment.network = "allowlist".into();
     result.environment.pinned = true;
+    result.probe.status = ProbeStatus::Match;
     result.config.harness = "codex".into();
     result.tasks[0].tamper_signals.push(TamperSignal {
         path: "a.py".into(),
@@ -821,6 +826,8 @@ fn reference_tolerances_are_bounded_and_applied_to_loaded_results() {
     let usage = Usage {
         tokens: Tokens {
             input_tokens: Some(120),
+            cache_read_tokens: Some(0),
+            cache_write_tokens: Some(0),
             ..Tokens::default()
         },
         cost_usd: Some(0.0),
@@ -874,4 +881,56 @@ fn code_patches_are_retained_for_local_audit() {
                 .all(|artifact| !artifact.path.ends_with("submission.patch"))
         );
     }
+}
+
+#[test]
+fn incomplete_cost_and_self_set_references_never_claim_under_goal_or_listing() {
+    let mut r = measure(&options(), false);
+    r.environment.mode = "container".into();
+    r.environment.network = "allowlist".into();
+    r.environment.pinned = true;
+    r.config.harness = "codex".into();
+    r.summarize();
+    assert_eq!(r.probe.status, ProbeStatus::Reference);
+    assert!(!r.eligible);
+    r.probe.status = ProbeStatus::Match;
+    r.tasks[0].cost_usd = None;
+    r.summarize();
+    assert!(r.eligible);
+    assert!(r.over_goal);
+    assert!(
+        r.cost_text()
+            .contains("1 trials unpriced (cost incomplete)")
+    );
+    r.validate().unwrap();
+    for field in ["input_tokens", "cache_read_tokens", "cache_write_tokens"] {
+        let mut tokens = serde_json::json!({"input_tokens":100, "cache_read_tokens":0, "cache_write_tokens":0, "output_tokens":1, "reasoning_tokens":null});
+        tokens[field] = serde_json::Value::Null;
+        let usage = Usage {
+            tokens: serde_json::from_value(tokens).unwrap(),
+            ..Usage::default()
+        };
+        assert_eq!(
+            probe(&usage, Some(100), true, true).status,
+            ProbeStatus::Mismatch
+        );
+    }
+}
+
+#[test]
+fn a_missing_cache_class_in_one_turn_cannot_match_a_partial_fingerprint() {
+    let text = br#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":20,"cache_write_input_tokens":0,"output_tokens":1}}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":1}}"#;
+    let usage = cedr_bench::adapter::parse(Harness::Codex, text, "gpt-6-luna");
+    assert_eq!(usage.tokens.cache_write_tokens, None);
+    assert_eq!(usage.cost_usd, None);
+    assert_eq!(
+        probe(&usage, Some(200), false, true).status,
+        ProbeStatus::Mismatch
+    );
+    let complete = br#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":20,"cache_write_input_tokens":30,"output_tokens":1}}"#;
+    let usage = cedr_bench::adapter::parse(Harness::Codex, complete, "gpt-6-luna");
+    assert_eq!(usage.tokens.input_tokens, Some(50));
+    assert_eq!(usage.tokens.cache_write_tokens, Some(30));
+    assert!(usage.cost_usd.is_some());
 }

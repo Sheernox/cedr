@@ -18,8 +18,8 @@ pub struct Tokens {
 impl Tokens {
     pub fn input(&self) -> Option<u64> {
         self.input_tokens?
-            .checked_add(self.cache_read_tokens.unwrap_or(0))?
-            .checked_add(self.cache_write_tokens.unwrap_or(0))
+            .checked_add(self.cache_read_tokens?)?
+            .checked_add(self.cache_write_tokens?)
     }
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -274,6 +274,17 @@ pub struct BenchResult {
     pub tamper_review: Option<TamperReview>,
 }
 impl BenchResult {
+    /// Human output must not mistake a known subtotal for a fully priced run.
+    pub fn cost_text(&self) -> String {
+        if self.unpriced_trials > 0 {
+            format!(
+                "at least ${:.4}, {} trials unpriced (cost incomplete)",
+                self.spent_usd, self.unpriced_trials
+            )
+        } else {
+            format!("${:.4}", self.spent_usd)
+        }
+    }
     pub fn summarize(&mut self) {
         self.code_tasks = self.tasks.iter().filter(|t| t.kind == Kind::Code).count();
         self.score = self.tasks.iter().filter_map(|t| t.score).sum::<f64>() * 100.0
@@ -289,7 +300,7 @@ impl BenchResult {
                 .iter()
                 .filter(|t| t.status != Status::NotReached && t.cost_usd.is_none())
                 .count();
-        self.over_goal = self.spent_usd > self.goal_usd;
+        self.over_goal = self.unpriced_trials > 0 || self.spent_usd > self.goal_usd;
         self.complete = self.stop.is_none()
             && self
                 .tasks
@@ -306,10 +317,7 @@ impl BenchResult {
             && self.environment.clean_home
             && self.environment.network == "allowlist"
             && self.probe.tools_ok
-            && matches!(
-                self.probe.status,
-                ProbeStatus::Match | ProbeStatus::Reference
-            )
+            && self.probe.status == ProbeStatus::Match
             && !matches!(
                 self.config.harness.as_str(),
                 "command" | "gemini" | "antigravity"

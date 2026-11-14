@@ -299,14 +299,18 @@ fn print<T: serde::Serialize>(value: &T) -> Result<(), String> {
 }
 fn summary(r: &BenchResult) {
     println!(
-        "bench edition {}: {}, score {:.2}, solved {}/{}, ${:.4}, over_goal={} ({})",
+        "bench edition {}: {}, score {:.2}, solved {}/{}, {}, over_goal={} ({})",
         r.edition.number,
         if r.complete { "complete" } else { "incomplete" },
         r.score,
         r.solved,
         r.code_tasks,
-        r.spent_usd,
-        r.over_goal,
+        r.cost_text(),
+        if r.unpriced_trials > 0 {
+            "unknown (cost incomplete)".to_string()
+        } else {
+            r.over_goal.to_string()
+        },
         r.id
     );
     println!(
@@ -467,7 +471,7 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
                             "{} score={} spent={} complete={}",
                             r["id"].as_str().unwrap_or("unknown"),
                             r["score"],
-                            r["spent_usd"],
+                            r["cost"].as_str().unwrap_or("unknown"),
                             r["complete"]
                         );
                     }
@@ -484,6 +488,9 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             let mut r = read_result(&id)?;
             if r.tasks.iter().all(|task| task.tamper_signals.is_empty()) {
                 return Err("run has no tamper signals to review".into());
+            }
+            if clean {
+                verify_review_patches(&r)?;
             }
             let review = report::TamperReview {
                 verdict: if clean {
@@ -511,6 +518,29 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+// A clean review requires the exact retained evidence, not only its recorded hash.
+fn verify_review_patches(r: &BenchResult) -> Result<(), String> {
+    for task in r.tasks.iter().filter(|t| !t.tamper_signals.is_empty()) {
+        let path = results()
+            .join(&r.id)
+            .join("artifacts")
+            .join(&task.id)
+            .join("submission.patch");
+        let expected = task
+            .patch_sha256
+            .as_deref()
+            .ok_or_else(|| format!("missing patch digest; expected patch at {}", path.display()))?;
+        let (hash, _) = suite::artifact(
+            &results().join(&r.id).join("artifacts"),
+            &format!("{}/submission.patch", task.id),
+        )
+        .map_err(|_| format!("cannot read saved patch; expected {}", path.display()))?;
+        if hash != expected {
+            return Err(format!("saved patch digest mismatch: {}", path.display()));
+        }
+    }
+    Ok(())
 }
 fn result_path(id: &str) -> PathBuf {
     if id.starts_with("b-") && suite::identifier(id) {
@@ -556,7 +586,7 @@ pub(crate) fn history_rows(limit: usize) -> Result<Vec<Value>, String> {
         {
             continue;
         }
-        match read_result(p.to_str().ok_or("non UTF-8 result path")?){Ok(r)=>rows.push(json!({"id":r.id,"edition":r.edition.number,"started_at":r.started_at,"complete":r.complete,"stop":r.stop,"score":r.score,"solved":r.solved,"spent_usd":r.spent_usd,"eligible":r.eligible})),Err(e)=>eprintln!("cedr: bench: skipped {e}")}
+        match read_result(p.to_str().ok_or("non UTF-8 result path")?){Ok(r)=>rows.push(json!({"id":r.id,"edition":r.edition.number,"started_at":r.started_at,"complete":r.complete,"stop":r.stop,"score":r.score,"solved":r.solved,"spent_usd":r.spent_usd,"unpriced_trials":r.unpriced_trials,"over_goal":r.over_goal,"cost":r.cost_text(),"eligible":r.eligible})),Err(e)=>eprintln!("cedr: bench: skipped {e}")}
     }
     Ok(rows)
 }

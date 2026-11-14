@@ -169,9 +169,15 @@ pub struct RepoArgs {
 
 fn reply(result: cedr_route::Result<Value>) -> CallToolResult {
     match result {
-        Ok(v) => CallToolResult::success(vec![ContentBlock::text(
-            serde_json::to_string_pretty(&v).expect("value serializes"),
-        )]),
+        Ok(v) => {
+            let mut content = vec![ContentBlock::text(
+                serde_json::to_string_pretty(&v).expect("value serializes"),
+            )];
+            if v["kind"] == "bench" && v["unpriced_trials"].as_u64().is_some_and(|n| n > 0) {
+                content.push(ContentBlock::text(format!("Cost incomplete: at least ${:.4}, {} trials unpriced; cost comparisons and goal status are unknown.", v["spent_usd"].as_f64().unwrap_or(0.0), v["unpriced_trials"])));
+            }
+            CallToolResult::success(content)
+        }
         Err(e) => CallToolResult::error(vec![ContentBlock::text(e.to_string())]),
     }
 }
@@ -239,7 +245,9 @@ pub struct BenchmarkShowArgs {
 
 #[tool_router]
 impl RouteServer {
-    #[tool(description = "Saved standard Bench runs with score and list spend, newest first.")]
+    #[tool(
+        description = "Saved standard Bench runs with scores and known spend subtotals, newest first. Cost is incomplete when unpriced_trials > 0; over_goal is unknown-safe, not a cost verdict."
+    )]
     async fn bench_history(
         &self,
         Parameters(a): Parameters<BenchmarkHistoryArgs>,
@@ -252,7 +260,7 @@ impl RouteServer {
         .await
     }
     #[tool(
-        description = "Validate and read one standard Bench result, including tasks and artifacts."
+        description = "Validate and read one standard Bench result, including tasks and artifacts. spent_usd is the known subtotal; unpriced_trials > 0 means incomplete cost and over_goal cannot claim under goal."
     )]
     async fn bench_show(&self, Parameters(a): Parameters<BenchmarkShowArgs>) -> CallToolResult {
         blocking(move || {

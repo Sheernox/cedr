@@ -459,7 +459,7 @@ pub(crate) fn git(workspace: &Path, args: &[&str]) -> Result<Vec<u8>> {
 }
 fn initialize(workspace: &Path) -> Result<()> {
     git(workspace, &["init", "--quiet", "--template="])?;
-    git(workspace, &["add", "--all"])?;
+    git(workspace, &["add", "--all", "--force"])?;
     git(
         workspace,
         &[
@@ -480,9 +480,15 @@ fn patch(workspace: &Path, metadata: &Path) -> Result<(Vec<u8>, Vec<TamperSignal
     {
         return Err("workspace was replaced".into());
     }
+    // Use the same copy policy as grading: strip every .git, retaining its ordinary files.
+    // This also prevents nested repositories from becoming unaudited gitlinks.
+    let snapshot = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let submitted = snapshot.path().join("submission");
+    suite::copy_submission(workspace, &submitted)?;
+    let workspace = submitted.as_path();
     let metadata = format!("--git-dir={}", metadata.display());
     let tree = format!("--work-tree={}", workspace.display());
-    git(workspace, &[&metadata, &tree, "add", "--all"])?;
+    git(workspace, &[&metadata, &tree, "add", "--all", "--force"])?;
     let diff = git(
         workspace,
         &[&metadata, &tree, "diff", "--cached", "--binary", "HEAD"],
@@ -815,6 +821,54 @@ fn cedr_bench_seed() -> Result<[u8; 8]> {
 #[cfg(test)]
 mod live_tests {
     use super::*;
+    #[test]
+    fn ignored_helpers_and_nested_repository_contents_are_saved_hashed_and_scanned() {
+        for nested in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let workspace = dir.path().join("workspace");
+            std::fs::create_dir(&workspace).unwrap();
+            std::fs::write(workspace.join("main.py"), "pass\n").unwrap();
+            initialize(&workspace).unwrap();
+            let metadata = dir.path().join("metadata");
+            suite::copy(&workspace.join(".git"), &metadata).unwrap();
+            std::fs::create_dir(workspace.join("lib")).unwrap();
+            if nested {
+                git(&workspace.join("lib"), &["init", "--quiet", "--template="]).unwrap();
+            } else {
+                std::fs::write(workspace.join(".gitignore"), "lib/helper.py\n").unwrap();
+            }
+            std::fs::write(workspace.join("main.py"), "from lib import helper\n").unwrap();
+            std::fs::write(
+                workspace.join("lib/helper.py"),
+                "import sys\nframe = sys._getframe()\n",
+            )
+            .unwrap();
+            let (first, signals) = patch(&workspace, &metadata).unwrap();
+            assert!(String::from_utf8_lossy(&first).contains("+frame = sys._getframe()"));
+            assert!(
+                signals
+                    .iter()
+                    .any(|s| s.path == "lib/helper.py" && s.kind == "process_introspection")
+            );
+            std::fs::write(
+                workspace.join("lib/helper.py"),
+                "import sys\nframe = sys._getframe(1)\n",
+            )
+            .unwrap();
+            let (second, _) = patch(&workspace, &metadata).unwrap();
+            assert_ne!(crate::sha(&first), crate::sha(&second));
+            let replay = dir.path().join("replay");
+            std::fs::create_dir(&replay).unwrap();
+            std::fs::write(replay.join("main.py"), "pass\n").unwrap();
+            let saved = dir.path().join("submission.patch");
+            std::fs::write(&saved, &second).unwrap();
+            git(&replay, &["apply", saved.to_str().unwrap()]).unwrap();
+            assert_eq!(
+                std::fs::read(replay.join("lib/helper.py")).unwrap(),
+                std::fs::read(workspace.join("lib/helper.py")).unwrap()
+            );
+        }
+    }
     #[test]
     fn readiness_markers_trim_only_trailing_whitespace_and_remain_bounded() {
         let temp = tempfile::tempdir().unwrap();

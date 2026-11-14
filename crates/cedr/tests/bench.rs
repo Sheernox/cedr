@@ -156,6 +156,8 @@ fn show_export_and_review_preserve_validated_results_and_local_patches() {
             &Usage {
                 tokens: Tokens {
                     input_tokens: Some(100),
+                    cache_read_tokens: Some(0),
+                    cache_write_tokens: Some(0),
                     ..Tokens::default()
                 },
                 cost_usd: Some(0.0),
@@ -226,6 +228,7 @@ fn show_export_and_review_preserve_validated_results_and_local_patches() {
     let refused = s.cedr(&["bench", "review", id, "--clean", "--note", "Read patches"]);
     assert_eq!(refused.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&refused.stderr).contains("no tamper signals"));
+    r.probe.status = ProbeStatus::Match;
     r.config.harness = "codex".into();
     r.environment.mode = "container".into();
     r.environment.pinned = true;
@@ -262,6 +265,18 @@ fn show_export_and_review_preserve_validated_results_and_local_patches() {
         assert_eq!(s.cedr(&args).status.code(), Some(2));
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
+    for contents in [None, Some("changed patch")] {
+        if let Some(contents) = contents {
+            std::fs::write(&audit, contents).unwrap();
+        } else {
+            std::fs::remove_file(&audit).unwrap();
+        }
+        let refused = s.cedr(&["bench", "review", id, "--clean", "--note", "Read patches"]);
+        assert_eq!(refused.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("submission.patch"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    std::fs::write(&audit, "local audit patch content").unwrap();
     for (flag, verdict, eligible) in [
         ("--clean", "clean", true),
         ("--tampered", "tampered", false),
@@ -307,6 +322,32 @@ fn show_export_and_review_preserve_validated_results_and_local_patches() {
     let shown = stdout(&s.cedr(&["bench", "show", id]));
     assert!(shown.contains("tamper review Clean"));
     assert!(!shown.contains("then: cedr bench review"));
+    let mut incomplete: BenchResult =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    incomplete.tasks[0].cost_usd = None;
+    incomplete.summarize();
+    std::fs::write(&path, serde_json::to_vec(&incomplete).unwrap()).unwrap();
+    let shown = stdout(&s.cedr(&["bench", "show", id]));
+    assert!(shown.contains("at least $0.0000, 1 trials unpriced (cost incomplete)"));
+    assert!(shown.contains("over_goal=unknown"));
+    let history = stdout(&s.cedr(&["bench", "history"]));
+    assert!(history.contains("cost incomplete"));
+    let destination = s.dir.path().join("incomplete-export");
+    assert!(
+        s.cedr(&[
+            "bench",
+            "export",
+            id,
+            "--out",
+            destination.to_str().unwrap()
+        ])
+        .status
+        .success()
+    );
+    let unknown: Value =
+        serde_json::from_slice(&std::fs::read(destination.join("results.json")).unwrap()).unwrap();
+    assert_eq!(unknown[0]["unpriced_trials"], 1);
+    assert_eq!(unknown[0]["over_goal"], true);
     {
         use serde_json::json;
         use std::io::{BufRead, BufReader, Write};
@@ -336,6 +377,12 @@ fn show_export_and_review_preserve_validated_results_and_local_patches() {
         .unwrap();
         writeln!(input, "{}", json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bench_show","arguments":{"id":id}}})).unwrap();
         let reply = receive(2);
+        assert!(
+            reply["result"]["content"][1]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Cost incomplete")
+        );
         child.kill().unwrap();
         child.wait().unwrap();
         let body: Value =
@@ -415,7 +462,7 @@ data.mkdir(parents=True,exist_ok=True)
 (data/'history.txt').write_text('trial')
 pathlib.Path('probe.txt').write_text('cedr-bench-probe\n')
 pathlib.Path('command.txt').write_text('cedr-bench-command\n')
-print(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'cached_input_tokens':0,'output_tokens':1}}))
+print(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'cached_input_tokens':0,'cache_write_input_tokens':0,'output_tokens':1}}))
 "#).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut paths = vec![bin];
@@ -527,7 +574,7 @@ if marker.exists():
     threading.Event().wait(1)
 pathlib.Path('probe.txt').write_text('cedr-bench-probe\n')
 pathlib.Path('command.txt').write_text('cedr-bench-command\n')
-print(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'cached_input_tokens':0,'output_tokens':1}}))
+print(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'cached_input_tokens':0,'cache_write_input_tokens':0,'output_tokens':1}}))
 "#.replace("MARKER",&serde_json::to_string(&marker.to_str().unwrap()).unwrap()).replace("SOCKET",&serde_json::to_string(&socket.to_str().unwrap()).unwrap());
     let bin = s.dir.path().join("bin");
     std::fs::create_dir(&bin).unwrap();
@@ -695,9 +742,10 @@ elif args[0]=='info': print('[]')
 elif args[:2]==['image','inspect']: print('sha256:'+'0'*64)
 elif args[:2]==['network','connect']: ready.write_text('connected')
 elif args[:2]==['network','inspect']:
-    if args[2]=='bridge': print('172.17.0.1')
-    else: print(json.dumps([{'Internal':True,'Options':{'com.docker.network.bridge.gateway_mode_ipv4':'isolated'}}]))
+    if args[2]=='bridge': sys.exit('must inspect the task network gateway')
+    else: print(json.dumps([{'Internal':True,'IPAM':{'Config':[{'Gateway':'172.31.0.1'}]},'Options':{'com.docker.network.bridge.gateway_mode_ipv4':'isolated'}}]))
 elif args[0]=='run':
+    if args[-1].startswith('import socket,errno'): assert '172.31.0.1' in args[-1]
     if args[-1].startswith('import socket,errno') and not ready.exists(): sys.exit(23)
     if '--version' in args: print('test')
     elif '--input-format' in args:
@@ -776,9 +824,10 @@ elif args[0]=='version': print('29.0.0')
 elif args[0]=='info': print('[]')
 elif args[:2]==['image','inspect']: print('sha256:'+'0'*64)
 elif args[:2]==['network','inspect']:
-    if args[2]=='bridge': print('172.17.0.1')
-    else: print(json.dumps([{'Internal':True,'Options':{'com.docker.network.bridge.gateway_mode_ipv4':'isolated'}}]))
+    if args[2]=='bridge': sys.exit('must inspect the task network gateway')
+    else: print(json.dumps([{'Internal':True,'IPAM':{'Config':[{'Gateway':'172.31.0.1'}]},'Options':{'com.docker.network.bridge.gateway_mode_ipv4':'isolated'}}]))
 elif args[0]=='run':
+    if args[-1].startswith('import socket,errno'): assert '172.31.0.1' in args[-1]
     if busy.exists(): sys.exit(125)
     if '--version' in args: print('test')
     elif 'app-server' in args:
@@ -792,7 +841,7 @@ elif args[0]=='run':
         workspace=next(a.split('src=')[1].split(',')[0] for a in args if 'dst=/workspace' in a)
         pathlib.Path(workspace,'probe.txt').write_text('cedr-bench-probe')
         pathlib.Path(workspace,'command.txt').write_text('cedr-bench-command')
-        print(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'cached_input_tokens':0,'output_tokens':1}}))
+        print(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'cached_input_tokens':0,'cache_write_input_tokens':0,'output_tokens':1}}))
 "#).unwrap();
     std::fs::set_permissions(docker, std::fs::Permissions::from_mode(0o755)).unwrap();
     let codex = bin.join("codex");

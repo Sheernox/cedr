@@ -56,11 +56,13 @@ fn add(a: &mut Option<u64>, b: Option<u64>) {
     }
 }
 fn merge(a: &mut Tokens, b: &Tokens) {
-    add(&mut a.input_tokens, b.input_tokens);
-    add(&mut a.cache_read_tokens, b.cache_read_tokens);
-    add(&mut a.cache_write_tokens, b.cache_write_tokens);
-    add(&mut a.output_tokens, b.output_tokens);
-    add(&mut a.reasoning_tokens, b.reasoning_tokens);
+    let sum =
+        |left: Option<u64>, right: Option<u64>| left.zip(right).and_then(|(a, b)| a.checked_add(b));
+    a.input_tokens = sum(a.input_tokens, b.input_tokens);
+    a.cache_read_tokens = sum(a.cache_read_tokens, b.cache_read_tokens);
+    a.cache_write_tokens = sum(a.cache_write_tokens, b.cache_write_tokens);
+    a.output_tokens = sum(a.output_tokens, b.output_tokens);
+    a.reasoning_tokens = sum(a.reasoning_tokens, b.reasoning_tokens);
 }
 fn priced(model: &str, t: &Tokens) -> Option<f64> {
     let (p, _) = cedr_monitor::pricing::price(model)?;
@@ -182,7 +184,8 @@ pub fn parse(h: Harness, text: &[u8], model: &str) -> Usage {
                 if e["type"] == "turn.completed" {
                     let r = &e["usage"];
                     let read = n(r, "cached_input_tokens");
-                    let write = n(r, "cache_write_input_tokens").or(Some(0));
+                    // OpenAI bills cache writes separately; older CLI streams cannot price them.
+                    let write = n(r, "cache_write_input_tokens");
                     rows.push((
                         model.into(),
                         Tokens {
@@ -283,7 +286,7 @@ pub fn parse(h: Harness, text: &[u8], model: &str) -> Usage {
     }
     let mut models = std::collections::BTreeSet::new();
     let mut cost = if rows.is_empty() { None } else { Some(0.0) };
-    for (m, t) in rows {
+    for (index, (m, t)) in rows.into_iter().enumerate() {
         let row_cost = if h == Harness::Claude {
             events
                 .iter()
@@ -299,7 +302,11 @@ pub fn parse(h: Harness, text: &[u8], model: &str) -> Usage {
             priced(&m, &t)
         };
         cost = cost.zip(row_cost).map(|(a, b)| a + b);
-        merge(&mut out.tokens, &t);
+        if index == 0 {
+            out.tokens = t;
+        } else {
+            merge(&mut out.tokens, &t);
+        }
         models.insert(m);
     }
     out.models = models.into_iter().collect();

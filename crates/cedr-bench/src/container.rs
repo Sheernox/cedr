@@ -490,21 +490,33 @@ impl Container {
         {
             return Err("Docker did not apply the isolated internal bridge topology".into());
         }
-        let gateway = docker(&[
-            "network",
-            "inspect",
-            "bridge",
-            "--format",
-            "{{(index .IPAM.Config 0).Gateway}}",
-        ])?;
+        let configs = net["IPAM"]["Config"]
+            .as_array()
+            .filter(|configs| !configs.is_empty())
+            .ok_or("task network has no IPAM configuration")?;
+        let gateway = configs
+            .iter()
+            .find_map(|config| config["Gateway"].as_str())
+            .filter(|gateway| !gateway.is_empty());
         let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
             .map_err(|_| "cannot create host listener for isolation verification")?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        let targets = match gateway {
+            Some(gateway) => {
+                gateway
+                    .parse::<std::net::Ipv4Addr>()
+                    .map_err(|_| "task network gateway is not IPv4")?;
+                format!("[({gateway:?},{port}),({gateway:?},443),('1.1.1.1',443)]")
+            }
+            // Docker omits the gateway entirely in isolated mode. Do not claim a
+            // host-port test when there is no task-network host address to test.
+            None => "[('1.1.1.1',443)]".into(),
+        };
         // The listener is known live on the host, so a failed connection cannot
         // be mistaken for a closed service. Test direct egress without a proxy.
         let script = format!(
             r#"import socket,errno
-for host,port in [({gateway:?},{port}),({gateway:?},443),('1.1.1.1',443)]:
+for host,port in {targets}:
     try:
         s=socket.create_connection((host,port),2)
     except OSError as e:
@@ -524,11 +536,17 @@ else:
         self.verified = vec![
             "engine>=28".into(),
             "isolated-internal-bridge".into(),
-            "host-gateway-unreachable".into(),
-            "live-host-port-unreachable".into(),
             "external-ip-unreachable".into(),
             "external-dns-blocked".into(),
         ];
+        if gateway.is_some() {
+            self.verified.extend([
+                "host-gateway-unreachable".into(),
+                "live-host-port-unreachable".into(),
+            ]);
+        } else {
+            self.verified.push("task-network-gateway-absent".into());
+        }
         Ok(())
     }
     /// Killing a Docker client does not stop its container (notably app-server RPC).

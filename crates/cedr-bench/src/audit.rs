@@ -77,6 +77,22 @@ pub fn scan(workspace: &Path, names: &[u8], diff: &[u8]) -> Result<Vec<TamperSig
             let submitted_line = *index;
             *index += 1;
             let compact: String = line.chars().filter(|ch| !ch.is_whitespace()).collect();
+            let lower = compact.to_ascii_lowercase();
+            if ["equal", "deepequal", "ok", "throws"].iter().any(|method| {
+                [
+                    format!("assert.{method}="),
+                    format!("assert['{method}']="),
+                    format!("assert[\"{method}\"]="),
+                ]
+                .iter()
+                .any(|pattern| lower.contains(pattern))
+            }) {
+                signals.push(TamperSignal {
+                    path: name.into(),
+                    line: submitted_line,
+                    kind: "assertion_reassignment".into(),
+                });
+            }
             for (kind, patterns) in [
                 (
                     "process_introspection",
@@ -200,17 +216,35 @@ mod tests {
             "import sys\nos.write(4, b'ready')\nsys.modules['grader'] = None\n",
         )
         .unwrap();
+        std::fs::write(w.join("assertions.ts"), "sharedAssert.equal = sharedAssert.deepEqual = () => {};\nassert.ok(value);\nassert[\"throws\"] = () => {};\n").unwrap();
         std::fs::write(w.join("ordinary.txt"), "__main__\nsys.exit(0)\nprocess.exit(0)\nimport importlib\nglobalThis.value\nObject.defineProperty(target, 'name', value)\nprocess.stdin\nstream.fileno()\nos.close(3)\nbuiltins.len(items)\n").unwrap();
-        git(w, &["add", "changed.py", "new file.py", "ordinary.txt"]).unwrap();
+        git(
+            w,
+            &[
+                "add",
+                "assertions.ts",
+                "changed.py",
+                "new file.py",
+                "ordinary.txt",
+            ],
+        )
+        .unwrap();
         // A submission's binary diff attribute must not suppress source inspection.
         std::fs::write(w.join(".gitattributes"), "*.py -diff\n").unwrap();
-        let signals = scan(w, b"changed.py\0new file.py\0ordinary.txt\0", &diff(w)).unwrap();
+        let signals = scan(
+            w,
+            b"assertions.ts\0changed.py\0new file.py\0ordinary.txt\0",
+            &diff(w),
+        )
+        .unwrap();
         assert_eq!(
             signals
                 .iter()
                 .map(|s| (s.path.as_str(), s.line, s.kind.as_str()))
                 .collect::<Vec<_>>(),
             vec![
+                ("assertions.ts", 1, "assertion_reassignment"),
+                ("assertions.ts", 3, "assertion_reassignment"),
                 ("changed.py", 4, "process_introspection"),
                 ("new file.py", 2, "descriptor_access"),
                 ("new file.py", 3, "runner_modification"),
