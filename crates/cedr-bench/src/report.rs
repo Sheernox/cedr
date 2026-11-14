@@ -307,6 +307,11 @@ impl BenchResult {
                 .iter()
                 .all(|t| matches!(t.status, Status::Graded | Status::Timeout));
         self.eligible = self.complete
+            && !self.tasks.iter().any(|task| {
+                task.tamper_signals
+                    .iter()
+                    .any(|s| s.kind == "evidence_mismatch")
+            })
             && (self.tasks.iter().all(|task| task.tamper_signals.is_empty())
                 || self
                     .tamper_review

@@ -540,7 +540,11 @@ fn missing_visual_submission_is_graded_but_missing_promised_artifact_is_an_error
             workspace: &Path,
             timeout: Duration,
         ) -> Result<Invocation, String> {
-            self.inner.invoke(prompt, workspace, timeout)
+            let output = self.inner.invoke(prompt, workspace, timeout)?;
+            if self.inner.calls > 3 {
+                std::fs::write(workspace.join("index.html"), "<!-- sys._getframe() -->").unwrap();
+            }
+            Ok(output)
         }
         fn grade(
             &mut self,
@@ -593,6 +597,20 @@ fn missing_visual_submission_is_graded_but_missing_promised_artifact_is_an_error
         assert_eq!(result.complete, !promised);
         assert!(!task.gates[0].passed);
         assert!(task.artifacts.is_empty());
+        let saved = std::fs::read(artifacts.path().join("second/submission.patch")).unwrap();
+        assert_eq!(task.patch_sha256, Some(cedr_bench::sha(&saved)));
+        assert!(String::from_utf8_lossy(&saved).contains("sys._getframe()"));
+        assert!(
+            task.tamper_signals
+                .iter()
+                .any(|s| s.kind == "process_introspection")
+        );
+        assert!(
+            !task
+                .tamper_signals
+                .iter()
+                .any(|s| s.kind == "evidence_mismatch")
+        );
     }
 }
 
@@ -779,6 +797,11 @@ fn reviews_validate_and_restore_only_tamper_eligibility() {
     result.summarize();
     result.validate().unwrap();
     assert!(result.eligible);
+    let mut mismatch = result.clone();
+    mismatch.tasks[0].tamper_signals[0].kind = "evidence_mismatch".into();
+    mismatch.summarize();
+    mismatch.validate().unwrap();
+    assert!(!mismatch.eligible);
     for note in [
         "".into(),
         " ".into(),

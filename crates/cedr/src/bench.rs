@@ -522,6 +522,13 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
 // A clean review requires the exact retained evidence, not only its recorded hash.
 fn verify_review_patches(r: &BenchResult) -> Result<(), String> {
     for task in r.tasks.iter().filter(|t| !t.tamper_signals.is_empty()) {
+        if task
+            .tamper_signals
+            .iter()
+            .any(|s| s.kind == "evidence_mismatch")
+        {
+            return Err("evidence_mismatch cannot receive a clean review; rerun the task".into());
+        }
         let path = results()
             .join(&r.id)
             .join("artifacts")

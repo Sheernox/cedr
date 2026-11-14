@@ -457,8 +457,14 @@ pub(crate) fn git(workspace: &Path, args: &[&str]) -> Result<Vec<u8>> {
     }
     Ok(o.stdout)
 }
+// info/attributes outranks submitted attributes, including nested files and macros.
+const RAW_ATTRIBUTES: &str =
+    "* -ident -filter -text !eol !working-tree-encoding -binary -export-subst diff\n";
 fn initialize(workspace: &Path) -> Result<()> {
     git(workspace, &["init", "--quiet", "--template="])?;
+    std::fs::create_dir_all(workspace.join(".git/info")).map_err(|e| e.to_string())?;
+    std::fs::write(workspace.join(".git/info/attributes"), RAW_ATTRIBUTES)
+        .map_err(|e| e.to_string())?;
     git(workspace, &["add", "--all", "--force"])?;
     git(
         workspace,
@@ -486,12 +492,25 @@ fn patch(workspace: &Path, metadata: &Path) -> Result<(Vec<u8>, Vec<TamperSignal
     let submitted = snapshot.path().join("submission");
     suite::copy_submission(workspace, &submitted)?;
     let workspace = submitted.as_path();
+    std::fs::write(metadata.join("info/attributes"), RAW_ATTRIBUTES).map_err(|e| e.to_string())?;
     let metadata = format!("--git-dir={}", metadata.display());
     let tree = format!("--work-tree={}", workspace.display());
     git(workspace, &[&metadata, &tree, "add", "--all", "--force"])?;
     let diff = git(
         workspace,
-        &[&metadata, &tree, "diff", "--cached", "--binary", "HEAD"],
+        &[
+            &metadata,
+            &tree,
+            "diff",
+            "--cached",
+            "--binary",
+            "--text",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--unified=3",
+            "HEAD",
+        ],
     )?;
     let changed = git(
         workspace,
@@ -502,30 +521,92 @@ fn patch(workspace: &Path, metadata: &Path) -> Result<(Vec<u8>, Vec<TamperSignal
             "--cached",
             "--no-renames",
             "--name-only",
-            "--diff-filter=ACMRT",
+            "--diff-filter=ACMRTD",
             "-z",
             "HEAD",
         ],
     )?;
-    let added = git(
-        workspace,
-        &[
-            &metadata,
-            &tree,
-            "diff",
-            "--cached",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-renames",
-            "--diff-filter=ACMRT",
-            "--text",
-            "--no-color",
-            "--unified=0",
-            "HEAD",
-        ],
-    )?;
-    let signals = crate::audit::scan(workspace, &changed, &added)?;
+    let signals = crate::audit::scan(workspace, &changed, &diff)?;
     Ok((diff, signals))
+}
+
+// Replaying saved evidence must reconstruct exactly the files handed to the grader.
+// Comparing raw bytes fails closed even for future Git transformations we did not predict.
+fn verify_evidence(start: &Path, graded: &Path, saved: &Path) -> Result<bool> {
+    let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let replay = scratch.path().join("replay");
+    suite::copy_submission(start, &replay)?;
+    let bytes = std::fs::read(saved).map_err(|e| e.to_string())?;
+    if !bytes.is_empty()
+        && git(
+            &replay,
+            &[
+                "apply",
+                "--binary",
+                "--whitespace=nowarn",
+                saved.to_str().ok_or("invalid patch path")?,
+            ],
+        )
+        .is_err()
+    {
+        return Ok(false);
+    }
+    fn files(
+        root: &Path,
+        directory: &Path,
+        out: &mut std::collections::BTreeSet<std::path::PathBuf>,
+    ) -> Result<()> {
+        for entry in std::fs::read_dir(directory).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let kind = entry.file_type().map_err(|e| e.to_string())?;
+            if entry.file_name() == ".git" || kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                files(root, &entry.path(), out)?;
+            } else if kind.is_file() {
+                out.insert(
+                    entry
+                        .path()
+                        .strip_prefix(root)
+                        .map_err(|e| e.to_string())?
+                        .to_path_buf(),
+                );
+            }
+        }
+        Ok(())
+    }
+    let mut expected = std::collections::BTreeSet::new();
+    let mut actual = std::collections::BTreeSet::new();
+    files(&replay, &replay, &mut expected)?;
+    files(graded, graded, &mut actual)?;
+    if expected != actual {
+        return Ok(false);
+    }
+    for name in expected {
+        use std::io::Read;
+        let mut left = std::fs::File::open(replay.join(&name)).map_err(|e| e.to_string())?;
+        let mut right = std::fs::File::open(graded.join(name)).map_err(|e| e.to_string())?;
+        let mut remaining = left.metadata().map_err(|e| e.to_string())?.len();
+        if remaining != right.metadata().map_err(|e| e.to_string())?.len() {
+            return Ok(false);
+        }
+        let mut a = [0; 65536];
+        let mut b = [0; 65536];
+        while remaining > 0 {
+            let count = remaining.min(a.len() as u64) as usize;
+            left.read_exact(&mut a[..count])
+                .map_err(|e| e.to_string())?;
+            right
+                .read_exact(&mut b[..count])
+                .map_err(|e| e.to_string())?;
+            if a[..count] != b[..count] {
+                return Ok(false);
+            }
+            remaining -= count as u64;
+        }
+    }
+    Ok(true)
 }
 
 // Never open links or special files. Allow bounded trailing whitespace from native file writers.
@@ -703,13 +784,11 @@ pub fn run<B: Backend>(
             Ok((diff, signals)) => {
                 task.tamper_signals = signals;
                 let hash = crate::sha(&diff);
-                if task.kind == Kind::Code {
-                    let directory = artifacts.join(&t.id);
-                    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-                    // This local audit artifact is deliberately absent from the exported artifact list.
-                    std::fs::write(directory.join("submission.patch"), diff)
-                        .map_err(|e| e.to_string())?;
-                }
+                let directory = artifacts.join(&t.id);
+                std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+                // This local audit artifact is deliberately absent from the exported artifact list.
+                std::fs::write(directory.join("submission.patch"), diff)
+                    .map_err(|e| e.to_string())?;
                 Some(hash)
             }
             Err(error) => {
@@ -723,12 +802,40 @@ pub fn run<B: Backend>(
                 r.config.resolved_models.push(m);
             }
         }
+        let copy = scratch.path().join("grade");
+        if let Err(error) = suite::copy_submission(&workspace, &copy) {
+            progress(&format!(
+                "{}: cannot copy submission for grading: {error}",
+                t.id
+            ));
+            task.status = Status::SetupFailed;
+            task.error = Some(error);
+        } else if task.patch_sha256.is_some() {
+            let verified = verify_evidence(
+                &suite.root.join("tasks").join(&t.id).join("repo"),
+                &copy,
+                &artifacts.join(&t.id).join("submission.patch"),
+            );
+            match verified {
+                Ok(true) => progress(&format!("{}: evidence verified", t.id)),
+                mismatch => {
+                    let detail = mismatch
+                        .err()
+                        .unwrap_or_else(|| "replayed tree differs from grader copy".into());
+                    progress(&format!("{}: evidence_mismatch: {detail}", t.id));
+                    task.tamper_signals.push(TamperSignal {
+                        path: "submission.patch".into(),
+                        line: 1,
+                        kind: "evidence_mismatch".into(),
+                    });
+                }
+            }
+        }
         if task.status == Status::Graded {
-            let copy = scratch.path().join("grade");
             let seed = u64::from_be_bytes(cedr_bench_seed()?) & ((1 << 30) - 1);
             task.seed = Some(seed);
-            let graded = suite::copy_submission(&workspace, &copy)
-                .and_then(|()| backend.grade(suite, t, &copy, seed))
+            let graded = backend
+                .grade(suite, t, &copy, seed)
                 .and_then(|b| crate::report::grade(&b, t.kind));
             match graded {
                 Ok(g) => {
@@ -828,6 +935,8 @@ mod live_tests {
             let workspace = dir.path().join("workspace");
             std::fs::create_dir(&workspace).unwrap();
             std::fs::write(workspace.join("main.py"), "pass\n").unwrap();
+            let start = dir.path().join("start");
+            suite::copy_submission(&workspace, &start).unwrap();
             initialize(&workspace).unwrap();
             let metadata = dir.path().join("metadata");
             suite::copy(&workspace.join(".git"), &metadata).unwrap();
@@ -862,12 +971,88 @@ mod live_tests {
             std::fs::write(replay.join("main.py"), "pass\n").unwrap();
             let saved = dir.path().join("submission.patch");
             std::fs::write(&saved, &second).unwrap();
+            assert!(verify_evidence(&start, &workspace, &saved).unwrap());
             git(&replay, &["apply", saved.to_str().unwrap()]).unwrap();
             assert_eq!(
                 std::fs::read(replay.join("lib/helper.py")).unwrap(),
                 std::fs::read(workspace.join("lib/helper.py")).unwrap()
             );
         }
+    }
+    #[test]
+    fn attributes_cannot_hide_graded_bytes_and_replay_fails_closed() {
+        for attributes in [
+            "ident",
+            "-diff",
+            "binary",
+            "filter=hide",
+            "text eol=lf",
+            "working-tree-encoding=UTF-16",
+            "export-subst",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let start = dir.path().join("start");
+            std::fs::create_dir(&start).unwrap();
+            std::fs::write(start.join("main.py"), "pass\n").unwrap();
+            let workspace = dir.path().join("ws");
+            suite::copy_submission(&start, &workspace).unwrap();
+            initialize(&workspace).unwrap();
+            let metadata = dir.path().join("metadata");
+            suite::copy(&workspace.join(".git"), &metadata).unwrap();
+            let git_dir = format!("--git-dir={}", metadata.display());
+            git(
+                &workspace,
+                &[
+                    &git_dir,
+                    "config",
+                    "filter.hide.clean",
+                    "git hash-object --stdin",
+                ],
+            )
+            .unwrap();
+            std::fs::write(
+                workspace.join(".gitattributes"),
+                format!("helper.py {attributes}\n"),
+            )
+            .unwrap();
+            let code = b"s = \"$Id: \"; import sys; sys._getframe(); s = \" $\"\r\n";
+            std::fs::write(workspace.join("helper.py"), code).unwrap();
+            let (diff, signals) = patch(&workspace, &metadata).unwrap();
+            assert!(
+                diff.windows(code.len() - 2)
+                    .any(|part| part == &code[..code.len() - 2])
+            );
+            assert!(signals.iter().any(|s| s.kind == "process_introspection"));
+            let saved = dir.path().join("saved.patch");
+            std::fs::write(&saved, diff).unwrap();
+            let graded = dir.path().join("graded");
+            suite::copy_submission(&workspace, &graded).unwrap();
+            assert!(
+                verify_evidence(&start, &graded, &saved).unwrap(),
+                "{attributes}"
+            );
+            std::fs::write(graded.join("helper.py"), "hidden bytes").unwrap();
+            assert!(!verify_evidence(&start, &graded, &saved).unwrap());
+        }
+    }
+    #[test]
+    fn ordinary_submissions_verify_including_deletions_and_binary_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = dir.path().join("start");
+        std::fs::create_dir(&start).unwrap();
+        std::fs::write(start.join("removed"), "old").unwrap();
+        let ws = dir.path().join("ws");
+        suite::copy_submission(&start, &ws).unwrap();
+        initialize(&ws).unwrap();
+        let metadata = dir.path().join("metadata");
+        suite::copy(&ws.join(".git"), &metadata).unwrap();
+        std::fs::remove_file(ws.join("removed")).unwrap();
+        std::fs::write(ws.join("binary"), b"a\0b\xff").unwrap();
+        let (diff, signals) = patch(&ws, &metadata).unwrap();
+        assert!(signals.is_empty());
+        let saved = dir.path().join("saved.patch");
+        std::fs::write(&saved, diff).unwrap();
+        assert!(verify_evidence(&start, &ws, &saved).unwrap());
     }
     #[test]
     fn readiness_markers_trim_only_trailing_whitespace_and_remain_bounded() {

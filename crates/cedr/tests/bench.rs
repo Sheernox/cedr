@@ -393,6 +393,13 @@ fn show_export_and_review_preserve_validated_results_and_local_patches() {
             exported[0]["tasks"][0]["tamper_signals"]
         );
     }
+    let mut mismatch = r.clone();
+    mismatch.tasks[0].tamper_signals[0].kind = "evidence_mismatch".into();
+    mismatch.summarize();
+    std::fs::write(&path, serde_json::to_vec(&mismatch).unwrap()).unwrap();
+    let refused = s.cedr(&["bench", "review", id, "--clean", "--note", "Read patches"]);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("evidence_mismatch"));
     r.score = 99.0;
     std::fs::write(&path, serde_json::to_vec(&r).unwrap()).unwrap();
     let shown = s.cedr(&["bench", "show", id]);
