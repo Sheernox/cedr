@@ -882,8 +882,13 @@ mod renewal_tests {
                 .save_with_hooks(
                     || {
                         calls.set(calls.get() + 1);
+                        let token = if repeat {
+                            format!("C-{}", calls.get())
+                        } else {
+                            "C".into()
+                        };
                         install(
-                            "C",
+                            &token,
                             if repeat {
                                 written + calls.get() * 2
                             } else {
@@ -914,12 +919,24 @@ mod renewal_tests {
             assert!(
                 std::fs::read_to_string(&source)
                     .unwrap()
-                    .contains(if after { "D" } else { "C" })
+                    .contains(if repeat {
+                        "C-4"
+                    } else if after {
+                        "D"
+                    } else {
+                        "C"
+                    })
             );
             assert_eq!(
                 std::fs::metadata(&source).unwrap().permissions().mode() & 0o777,
                 0o600
             );
+            if repeat {
+                assert_eq!(
+                    std::fs::metadata(&source).unwrap().modified().unwrap(),
+                    std::time::UNIX_EPOCH + std::time::Duration::from_secs(308)
+                );
+            }
             assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
         }
     }
