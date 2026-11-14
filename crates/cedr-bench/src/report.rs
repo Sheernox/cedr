@@ -128,6 +128,8 @@ pub struct Probe {
     pub input_tokens: Option<u64>,
     pub tools: Option<u64>,
     pub reference: Option<u64>,
+    #[serde(default = "suite::default_tolerance")]
+    pub tolerance: u64,
     pub status: ProbeStatus,
     pub tools_ok: bool,
     pub cost_usd: Option<f64>,
@@ -140,10 +142,27 @@ impl Probe {
     }
 }
 pub fn probe(usage: &Usage, reference: Option<u64>, set: bool, tools_ok: bool) -> Probe {
+    probe_with_tolerance(
+        usage,
+        reference.map(|value| (value, suite::default_tolerance())),
+        set,
+        tools_ok,
+    )
+}
+pub fn probe_with_tolerance(
+    usage: &Usage,
+    reference: Option<(u64, u64)>,
+    set: bool,
+    tools_ok: bool,
+) -> Probe {
+    let (reference, tolerance) = reference
+        .map_or((None, suite::default_tolerance()), |(value, tolerance)| {
+            (Some(value), tolerance)
+        });
     let input = usage.tokens.input();
     let status = match (input, reference) {
         (Some(_), None) if set => ProbeStatus::Reference,
-        (Some(a), Some(b)) if a.abs_diff(b) <= 16 => ProbeStatus::Match,
+        (Some(a), Some(b)) if a.abs_diff(b) <= tolerance => ProbeStatus::Match,
         (_, Some(_)) => ProbeStatus::Mismatch,
         _ => ProbeStatus::NoReference,
     };
@@ -152,6 +171,7 @@ pub fn probe(usage: &Usage, reference: Option<u64>, set: bool, tools_ok: bool) -
         tools: usage.tools,
         reference: reference.or_else(|| set.then_some(input).flatten()),
         status,
+        tolerance,
         tools_ok,
         cost_usd: usage.cost_usd,
         fingerprint_cost_usd: usage.cost_usd,
@@ -354,6 +374,9 @@ impl BenchResult {
         {
             return Err("inconsistent probe cost".into());
         }
+        if self.probe.tolerance > 64 {
+            return Err("probe tolerance must be at most 64".into());
+        }
         if matches!(
             self.probe.status,
             ProbeStatus::Match | ProbeStatus::Reference
@@ -361,7 +384,7 @@ impl BenchResult {
             .probe
             .input_tokens
             .zip(self.probe.reference)
-            .is_none_or(|(a, b)| a.abs_diff(b) > 16)
+            .is_none_or(|(a, b)| a.abs_diff(b) > self.probe.tolerance)
         {
             return Err("inconsistent fingerprint".into());
         }

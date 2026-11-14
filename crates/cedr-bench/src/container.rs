@@ -535,15 +535,23 @@ else:
     /// Verify absence after removal so no discovery process can overlap a trial.
     fn clear_task(&self) -> Result<()> {
         if docker(&["rm", "--force", &self.task]).is_err() {
-            let remaining = docker(&[
-                "ps",
-                "--all",
-                "--quiet",
-                "--filter",
-                &format!("name=^/{}$", self.task),
-            ])?;
-            if !remaining.is_empty() {
-                return Err("cannot remove the previous task/discovery container; stop it before running again".into());
+            // --rm can already be removing a stopped discovery container. Do not race its daemon cleanup.
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let remaining = docker(&[
+                    "ps",
+                    "--all",
+                    "--quiet",
+                    "--filter",
+                    &format!("name=^/{}$", self.task),
+                ])?;
+                if remaining.is_empty() {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err("cannot remove the previous task/discovery container; stop it before running again".into());
+                }
+                std::thread::sleep(Duration::from_millis(50));
             }
         }
         Ok(())

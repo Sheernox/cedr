@@ -13,7 +13,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 pub const FINGERPRINT_PROMPT: &str = "Reply with the single word OK.";
-pub const PROBE_PROMPT: &str = "Run exactly one shell command: printf 'cedr-bench-command\\n' > command.txt. Then write probe.txt containing exactly cedr-bench-probe followed by a newline. Do not run any other shell commands.";
+pub const PROBE_PROMPT: &str = "Run exactly one shell command: printf 'cedr-bench-command\\n' > command.txt. Then use apply_patch or your native file-write tool (not the shell) to create probe.txt containing exactly cedr-bench-probe followed by a newline. Do not run any other shell commands.";
 
 pub struct Options {
     pub harness: Harness,
@@ -550,8 +550,13 @@ pub fn probe<B: Backend>(suite: &Suite, options: &Options, backend: &mut B) -> R
                 && r.model == options.model
                 && r.effort == options.effort
         })
-        .map(|r| r.input_tokens);
-    let mut p = crate::report::probe(&first.usage, reference, options.set_reference, tools_ok);
+        .map(|r| (r.input_tokens, r.tolerance));
+    let mut p = crate::report::probe_with_tolerance(
+        &first.usage,
+        reference,
+        options.set_reference,
+        tools_ok,
+    );
     p.tools = second.usage.tools;
     p.fingerprint_cost_usd = first.usage.cost_usd;
     p.tools_cost_usd = second.usage.cost_usd;

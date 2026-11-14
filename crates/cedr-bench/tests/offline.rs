@@ -755,6 +755,62 @@ fn audit_signals_keep_scores_but_prevent_listing() {
 }
 
 #[test]
+fn reference_tolerances_are_bounded_and_applied_to_loaded_results() {
+    let text =
+        "[[references]]\nharness='codex'\nharness_version='test'\nmodel='stub'\ninput_tokens=100\n";
+    assert_eq!(
+        suite::parse_references(text).unwrap().references[0].tolerance,
+        16
+    );
+    for tolerance in [0, 20, 64] {
+        assert_eq!(
+            suite::parse_references(&format!("{text}tolerance={tolerance}\n"))
+                .unwrap()
+                .references[0]
+                .tolerance,
+            tolerance
+        );
+    }
+    for value in ["65", "-1", "1.5", "'20'"] {
+        assert!(suite::parse_references(&format!("{text}tolerance={value}\n")).is_err());
+    }
+    let mut result = measure(&options(), false);
+    let usage = Usage {
+        tokens: Tokens {
+            input_tokens: Some(120),
+            ..Tokens::default()
+        },
+        cost_usd: Some(0.0),
+        ..Usage::default()
+    };
+    result.probe = probe_with_tolerance(&usage, Some((100, 20)), false, true);
+    result.summarize();
+    result.validate().unwrap();
+    assert_eq!(result.probe.status, ProbeStatus::Match);
+    assert_eq!(
+        probe_with_tolerance(&usage, Some((100, 19)), false, true).status,
+        ProbeStatus::Mismatch
+    );
+    assert_eq!(
+        probe_with_tolerance(&usage, Some((4096, 64)), false, true).status,
+        ProbeStatus::Mismatch
+    );
+    result.probe.tolerance = 19;
+    assert!(result.validate().is_err());
+    result.probe.tolerance = 65;
+    assert!(result.validate().is_err());
+    let mut value = serde_json::to_value(measure(&options(), false)).unwrap();
+    value["probe"].as_object_mut().unwrap().remove("tolerance");
+    assert_eq!(
+        parse(&serde_json::to_vec(&value).unwrap())
+            .unwrap()
+            .probe
+            .tolerance,
+        16
+    );
+}
+
+#[test]
 fn code_patches_are_retained_for_local_audit() {
     let suite = suite::load(&fixture()).unwrap();
     let directory = tempfile::tempdir().unwrap();

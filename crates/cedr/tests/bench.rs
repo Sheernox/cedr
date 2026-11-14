@@ -641,8 +641,12 @@ fn codex_discovery_cannot_leave_a_container_running_into_the_probe() {
     std::fs::write(&docker, r#"#!/usr/bin/env python3
 import sys,json,pathlib,os
 args=sys.argv[1:];busy=pathlib.Path(os.environ['BENCH_TEST_BUSY'])
-if args[0]=='rm': busy.unlink(missing_ok=True)
-elif args[0]=='ps': print('discovery' if busy.exists() else '')
+if args[0]=='rm':
+    if busy.exists():
+        busy.write_text('removing');sys.exit(1)
+elif args[0]=='ps':
+    if busy.exists():
+        print('discovery');busy.unlink()
 elif args[0]=='version': print('29.0.0')
 elif args[0]=='info': print('[]')
 elif args[:2]==['image','inspect']: print('sha256:'+'0'*64)

@@ -28,7 +28,12 @@ pub struct Reference {
     pub model: String,
     pub effort: Option<String>,
     pub input_tokens: u64,
+    #[serde(default = "default_tolerance")]
+    pub tolerance: u64,
     pub tools: Option<u64>,
+}
+pub const fn default_tolerance() -> u64 {
+    16
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -141,6 +146,9 @@ pub fn parse_references(text: &str) -> Result<References> {
         toml::from_str(text).map_err(|_| "invalid probe reference file")?;
     let mut keys = BTreeSet::new();
     for r in &references.references {
+        if r.tolerance > 64 {
+            return Err("probe reference tolerance must be an integer from 0 to 64".into());
+        }
         if r.harness.is_empty()
             || r.harness_version.is_empty()
             || r.model.is_empty()
@@ -201,6 +209,9 @@ pub fn load(root: &Path) -> Result<Suite> {
     }
     let mut keys = BTreeSet::new();
     for r in &edition.probe.references {
+        if r.tolerance > 64 {
+            return Err("probe tolerance must be at most 64".into());
+        }
         if !keys.insert((&r.harness, &r.harness_version, &r.model, &r.effort)) {
             return Err("edition.toml: duplicate probe reference".into());
         }

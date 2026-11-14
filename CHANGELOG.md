@@ -6,7 +6,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.12.0.png" alt="cedr v0.12.0: bench" width="770">
 
-**v0.12.0** · 18 changes from 1 contributor
+**v0.12.0** · 19 changes from 1 contributor
 
 ### Highlights
 **Benchmark one configuration.** Run `cedr bench run --harness claude --model MODEL` on a frozen public suite for code checks, list cost and visual artifacts.
@@ -27,12 +27,12 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 ### Fixes
 - **Repeatable trials:** Claude and Codex use filtered shadow homes that preserve toolchains and git configuration, plus fresh agent config directories with only linked sign-ins. User agent setup and account connectors stay out; Compare still loads the repo's setup. The custom `command` harness remains unisolated.
 - **Completed Claude runs:** a terminal response ends the container invocation even when a background tool remains alive, preserving final usage for grading.
-- **Probe and visual failures:** readiness accepts trailing whitespace only; missing visual submissions are graded task failures, while missing artifacts promised by a grader remain errors.
+- **Probe and visual failures:** readiness explicitly names the native patch/file-write tool and accepts trailing whitespace only; missing visual submissions are graded task failures, while missing artifacts promised by a grader remain errors.
 
 - **Verified isolation:** Docker Engine 28 or newer is required; Bench actively checks host gateway, listening host port, outside connectivity and DNS isolation after attaching the egress proxy, before inference. Containers use the invoking UID/GID, bounded memory, process counts and temporary storage. Rootless or remapped bind ownership is refused with an explanation.
-- **Discovery cleanup:** model-capability discovery containers are stopped and verified absent before trials, so an app-server cannot keep the task container name busy.
+- **Discovery cleanup:** model-capability discovery containers are stopped and verified absent before trials, including a bounded wait when Docker is already removing one, so an app-server cannot keep the task container name busy.
 - **Sign-in preservation:** host checks cannot run tools or load user setup. Container allowlists exclude token renewal hosts; a failed task stops without retry. Compare and local Bench atomically preserve renewed sign-ins before deleting temporary homes.
-- **Cost and reference integrity:** missing billable token classes leave cost unknown, hourly cache writes use their reported rate, and `--set-reference` cannot replace an existing fingerprint. Probe references live outside the frozen edition digest and can be published later.
+- **Cost and reference integrity:** missing billable token classes leave cost unknown, hourly cache writes use their reported rate, and `--set-reference` cannot replace an existing fingerprint. Probe references live outside the frozen edition digest and can be published later. Their optional `tolerance` defaults to 16 tokens, accepts at most 64, and is recorded in probe results.
 - **Auditable task results:** timeouts score zero and can complete a run; grading seeds are recorded. Workspace symlinks are skipped, local grading uses Docker when available, and code patches stay local for audit. The tamper scan checks added or changed lines against the starting commit, keeping submitted line numbers and dropping ordinary entry points, imports and process exits. Signals preserve correctness scores but prevent listing eligibility pending human review; export never includes those patches.
 
 ### Verification limits
@@ -40,7 +40,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 - **Antigravity:** the harness runs only with `--local` and cannot qualify for listing.
 - **Platforms:** macOS and Windows are untested for the container path. Claude macOS Keychain sign-in with a non-default config directory is untested. On Windows, a trial needs permission to create symbolic links; Windows isolates the agent config directory only, so a Codex trial records `clean_home: false` and is not fully clean.
 - **Grader trust:** hidden tests share the submission process. Nonces defeat early exits and printed fakes; deliberate introspection is flagged conservatively and checked by auditing local patches, rather than prevented. A process boundary is planned for a later edition.
-- **Live checks:** complete container runs used Claude Haiku and GPT-6 Luna at low effort; both sign-ins still authenticated afterward. Runs used unpinned local builds and need their flagged patches audited. A later Codex probe failed tool readiness and its fingerprint moved beyond the 16-token allowance, so a stable Codex reference is not verified.
+- **Live checks:** complete container runs used Claude Haiku and GPT-6 Luna at low effort; both sign-ins still authenticated afterward. The narrowed audit emits no signals for either saved run's code patches or any reference solution. The revised Codex readiness prompt passed six consecutive container checks without retry; six fingerprint checks each reported 13,864 input tokens. The earlier 20-token difference cannot be attributed because its request context was not retained; references remain unset until publication. Runs use unpinned local images and cannot qualify for listing.
 - **Effort and local toolchains:** container effort discovery uses the installed Claude or Codex layer; other container adapters refuse explicit effort until their metadata is verified. Without Docker, local code scores depend on host toolchains and visual tasks cannot be graded.
 
 <details>
@@ -65,6 +65,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 * fix(bench): verify isolation after attaching the egress proxy
 * chore(release): record final benchmark verification limits
 * fix(bench): scan only submitted lines for tamper signals
+* fix(bench): stabilize probes and bound fingerprint tolerance
 
 **Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.11.3...v0.12.0
 </details>

@@ -296,8 +296,8 @@ fn summary(r: &BenchResult) {
         r.id
     );
     println!(
-        "  fingerprint {:?}: {:?} input tokens; tools_ok={}",
-        r.probe.status, r.probe.input_tokens, r.probe.tools_ok
+        "  fingerprint {:?}: {:?} input tokens; tolerance={}; tools_ok={}",
+        r.probe.status, r.probe.input_tokens, r.probe.tolerance, r.probe.tools_ok
     );
     if let Some(stop) = r.stop {
         println!("  stop: {stop:?}");
@@ -398,8 +398,8 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             match config.format {
                 Format::Json => print(&p)?,
                 Format::Text => println!(
-                    "probe {:?}: input={:?}, tools={:?}, reference={:?}, tools_ok={}",
-                    p.status, p.input_tokens, p.tools, p.reference, p.tools_ok
+                    "probe {:?}: input={:?}, tools={:?}, reference={:?}, tolerance={}, tools_ok={}",
+                    p.status, p.input_tokens, p.tools, p.reference, p.tolerance, p.tools_ok
                 ),
             };
             Ok(ExitCode::from(if p.passed() { 0 } else { 3 }))
