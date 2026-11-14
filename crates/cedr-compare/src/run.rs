@@ -430,7 +430,9 @@ fn run_trial(input: TrialInput) -> Trial {
             let links = cedr_agent::SignInLink::capture(&home)?;
             let out = exec::run_step(command, None, Duration::from_secs(120));
             for link in links {
-                link.save_renewed()?;
+                if let Some(notice) = link.save_renewed()? {
+                    note(notice);
+                }
             }
             Ok(out?.succeeded())
         })();
@@ -474,9 +476,13 @@ fn run_trial(input: TrialInput) -> Trial {
     };
     let output = exec::run_step(agent, stdin.as_deref(), timeout);
     for link in links {
-        if link.save_renewed().is_err() {
-            note("cannot preserve renewed sign-in; repair the vendor sign-in before running again");
-            return unscored(Status::AgentError);
+        match link.save_renewed() {
+            Ok(Some(notice)) => note(notice),
+            Ok(None) => {}
+            Err(_) => {
+                note("cannot preserve renewed sign-in; original sign-in kept");
+                return unscored(Status::AgentError);
+            }
         }
     }
     let output = match output {

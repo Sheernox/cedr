@@ -226,8 +226,12 @@ fn local(
     }
     let out = exec::run_step(cmd, None, timeout).map_err(|e| format!("cannot start agent: {e}"));
     for link in links {
-        link.save_renewed()
-            .map_err(|_| "cannot preserve renewed sign-in")?;
+        if let Some(notice) = link
+            .save_renewed()
+            .map_err(|_| "cannot preserve renewed sign-in; original sign-in kept")?
+        {
+            eprintln!("cedr: {notice}");
+        }
     }
     out
 }

@@ -2252,8 +2252,8 @@ fn vendor_trials_exclude_user_setup_but_keep_the_committed_project_setup() {
         }
         fs::write(user.join(".gitconfig"), "[user]\nname = tool-user\n").unwrap();
         // Synthetic sign-ins: a trial must link them, and leave the originals intact.
-        fs::write(user.join(".codex/auth.json"), "fake sign-in").unwrap();
-        fs::write(user.join(".claude/.credentials.json"), "fake sign-in").unwrap();
+        fs::write(user.join(".codex/auth.json"), r#"{"token":"old"}"#).unwrap();
+        fs::write(user.join(".claude/.credentials.json"), r#"{"token":"old"}"#).unwrap();
         repo.write("CLAUDE.md", "project rules");
         repo.write(".claude/settings.json", "{}");
         repo.write(
@@ -2310,7 +2310,7 @@ case '{vendor}' in
   case " $* " in *' --strict-mcp-config '*) ;; *) exit 1;; esac
   case " $* " in *" --mcp-config $PWD/.mcp.json "*) ;; *) exit 1;; esac
   case " $* " in *--safe-mode*|*--bare*|*'{user}'*) exit 1;; esac
-  printf 'renewed fake sign-in' > "$CLAUDE_CONFIG_DIR/renewed"
+  printf '{{"token":"renewed"}}' > "$CLAUDE_CONFIG_DIR/renewed"
   mv "$CLAUDE_CONFIG_DIR/renewed" "$CLAUDE_CONFIG_DIR/.credentials.json"
   echo '{{"type":"result","subtype":"success","total_cost_usd":0}}'
   ;;
@@ -2323,7 +2323,7 @@ case '{vendor}' in
   [ ! -e "$CODEX_HOME/AGENTS.md" ]
   [ ! -e "$CODEX_HOME/config.toml" ]
   case " $* " in *"projects.\"$PWD\".trust_level=\"trusted\""*) ;; *) exit 1;; esac
-  printf 'renewed fake sign-in' > "$CODEX_HOME/renewed"
+  printf '{{"token":"renewed"}}' > "$CODEX_HOME/renewed"
   mv "$CODEX_HOME/renewed" "$CODEX_HOME/auth.json"
   echo '{{"type":"turn.completed","usage":{{"input_tokens":1,"output_tokens":1}}}}'
   ;;
@@ -2380,9 +2380,9 @@ test = "true"
         }
         for file in [".codex/auth.json", ".claude/.credentials.json"] {
             let expected = if (vendor == "claude") == file.starts_with(".claude") {
-                "renewed fake sign-in"
+                r#"{"token":"renewed"}"#
             } else {
-                "fake sign-in"
+                r#"{"token":"old"}"#
             };
             assert_eq!(fs::read_to_string(user.join(file)).unwrap(), expected);
         }

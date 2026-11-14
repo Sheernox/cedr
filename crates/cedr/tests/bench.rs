@@ -398,7 +398,7 @@ fn native_local_agent_state_never_reaches_the_host_data_directory() {
     std::fs::create_dir(&bin).unwrap();
     let program = bin.join("codex");
     std::fs::create_dir_all(host.join(".codex")).unwrap();
-    std::fs::write(host.join(".codex/auth.json"), "fake sign-in").unwrap();
+    std::fs::write(host.join(".codex/auth.json"), r#"{"token":"old"}"#).unwrap();
     std::fs::write(&program,r#"#!/usr/bin/env python3
 import json, os, pathlib, sys
 if "--version" in sys.argv:
@@ -407,7 +407,7 @@ if sys.argv[1:3] == ['login','status']:
     assert not pathlib.Path(os.environ['HOME'],'.cargo').exists()
     sys.exit(0)
 auth=pathlib.Path(os.environ['CODEX_HOME'],'auth.json')
-auth.with_suffix('.new').write_text('renewed fake sign-in')
+auth.with_suffix('.new').write_text('{"token":"renewed"}')
 auth.with_suffix('.new').replace(auth)
 home=pathlib.Path(os.environ['HOME'])
 data=pathlib.Path(os.environ.get('XDG_DATA_HOME',home/'.local/share'))
@@ -450,7 +450,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':100,'cached_in
     );
     assert_eq!(
         std::fs::read_to_string(host.join(".codex/auth.json")).unwrap(),
-        "renewed fake sign-in"
+        r#"{"token":"renewed"}"#
     );
     assert_eq!(
         std::fs::read_to_string(host_data.join("history.txt")).unwrap(),

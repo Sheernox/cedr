@@ -116,6 +116,32 @@ fn home_inner(kind: Agent, cmd: &mut Command, home: &Path, shadow: bool) -> std:
 pub struct SignInLink {
     link: std::path::PathBuf,
     source: std::path::PathBuf,
+    identity: CredentialIdentity,
+    permissions: std::fs::Permissions,
+}
+
+#[derive(PartialEq, Eq)]
+struct CredentialIdentity {
+    length: u64,
+    modified: std::time::SystemTime,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    changed: (i64, i64),
+}
+impl CredentialIdentity {
+    fn of(metadata: &std::fs::Metadata) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Ok(Self {
+            length: metadata.len(),
+            modified: metadata.modified()?,
+            #[cfg(unix)]
+            inode: metadata.ino(),
+            #[cfg(unix)]
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        })
+    }
 }
 impl SignInLink {
     pub fn capture(home: &Path) -> std::io::Result<Vec<Self>> {
@@ -130,7 +156,15 @@ impl SignInLink {
         ] {
             let link = home.join(name);
             match std::fs::read_link(&link) {
-                Ok(source) => links.push(Self { link, source }),
+                Ok(source) => {
+                    let metadata = std::fs::metadata(&source)?;
+                    links.push(Self {
+                        link,
+                        source,
+                        identity: CredentialIdentity::of(&metadata)?,
+                        permissions: metadata.permissions(),
+                    });
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e),
             }
@@ -139,17 +173,27 @@ impl SignInLink {
     }
     /// Stage beside the real credential for an atomic replacement, even across filesystems.
     /// The original mode is retained; neither the file nor I/O errors expose its contents.
-    pub fn save_renewed(&self) -> std::io::Result<()> {
-        if std::fs::symlink_metadata(&self.link)?
-            .file_type()
-            .is_symlink()
-        {
-            return Ok(());
+    /// A notice means the real sign-in changed and was kept; invalid renewals are errors.
+    pub fn save_renewed(&self) -> std::io::Result<Option<&'static str>> {
+        let replacement = std::fs::symlink_metadata(&self.link)?;
+        if replacement.file_type().is_symlink() {
+            return Ok(None);
         }
-        let metadata = std::fs::metadata(&self.source)?;
-        if !std::fs::symlink_metadata(&self.link)?.is_file() {
+        let kept = Some("newer sign-in kept; trial renewal was not saved");
+        if CredentialIdentity::of(&std::fs::metadata(&self.source)?)? != self.identity {
+            return Ok(kept);
+        }
+        if !replacement.is_file() {
             return Err(std::io::Error::other(
                 "renewed sign-in is not a regular file",
+            ));
+        }
+        let contents = std::fs::read(&self.link)?;
+        if !serde_json::from_slice::<serde_json::Value>(&contents)
+            .is_ok_and(|v| v.is_object() && v.as_object().is_some_and(|o| !o.is_empty()))
+        {
+            return Err(std::io::Error::other(
+                "renewed sign-in must be a non-empty JSON object; original sign-in kept",
             ));
         }
         let parent = self
@@ -157,16 +201,18 @@ impl SignInLink {
             .parent()
             .ok_or_else(|| std::io::Error::other("sign-in has no parent"))?;
         let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-        std::io::copy(
-            &mut std::fs::File::open(&self.link)?,
-            temporary.as_file_mut(),
-        )?;
+        use std::io::Write;
+        temporary.write_all(&contents)?;
         temporary
             .as_file()
-            .set_permissions(metadata.permissions())?;
+            .set_permissions(self.permissions.clone())?;
         temporary.as_file().sync_all()?;
+        // A sign-in may have completed while the renewal was validated and staged.
+        if CredentialIdentity::of(&std::fs::metadata(&self.source)?)? != self.identity {
+            return Ok(kept);
+        }
         temporary.persist(&self.source).map_err(|e| e.error)?;
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -481,7 +527,7 @@ mod renewal_tests {
         for relative in [".codex/auth.json", ".claude/.credentials.json"] {
             let dir = tempfile::tempdir().unwrap();
             let original = dir.path().join("original");
-            std::fs::write(&original, "old fake sign-in").unwrap();
+            std::fs::write(&original, r#"{"token":"old"}"#).unwrap();
             std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o600)).unwrap();
             let home = dir.path().join("home");
             let link = home.join(relative);
@@ -489,15 +535,57 @@ mod renewal_tests {
             symlink(&original, &link).unwrap();
             let links = SignInLink::capture(&home).unwrap();
             links[0].save_renewed().unwrap();
-            assert_eq!(std::fs::read(&original).unwrap(), b"old fake sign-in");
+            assert_eq!(std::fs::read(&original).unwrap(), br#"{"token":"old"}"#);
             std::fs::remove_file(&link).unwrap();
-            std::fs::write(&link, "renewed fake sign-in").unwrap();
+            std::fs::write(&link, r#"{"token":"renewed"}"#).unwrap();
+            let mut prior = std::fs::File::open(&original).unwrap();
             links[0].save_renewed().unwrap();
-            assert_eq!(std::fs::read(&original).unwrap(), b"renewed fake sign-in");
+            assert_eq!(std::fs::read(&original).unwrap(), br#"{"token":"renewed"}"#);
+            use std::io::Read;
+            let mut retained = String::new();
+            prior.read_to_string(&mut retained).unwrap();
+            assert_eq!(retained, r#"{"token":"old"}"#);
             assert_eq!(
                 std::fs::metadata(original).unwrap().permissions().mode() & 0o777,
                 0o600
             );
+        }
+    }
+    #[test]
+    fn concurrent_sign_in_and_invalid_renewals_preserve_the_original() {
+        for replacement in ["", "invalid", "{}", r#"{"token":"stale"}"#] {
+            let dir = tempfile::tempdir().unwrap();
+            let original = dir.path().join("original");
+            let home = dir.path().join("home");
+            let link = home.join(".codex/auth.json");
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            std::fs::write(&original, r#"{"token":"old"}"#).unwrap();
+            symlink(&original, &link).unwrap();
+            let links = SignInLink::capture(&home).unwrap();
+            std::fs::remove_file(&link).unwrap();
+            std::fs::write(&link, replacement).unwrap();
+            if replacement.contains("stale") {
+                let newer = dir.path().join("newer");
+                std::fs::write(&newer, r#"{"token":"new"}"#).unwrap();
+                std::fs::rename(newer, &original).unwrap();
+                assert!(
+                    links[0]
+                        .save_renewed()
+                        .unwrap()
+                        .unwrap()
+                        .contains("newer sign-in kept")
+                );
+                assert_eq!(
+                    std::fs::read_to_string(original).unwrap(),
+                    r#"{"token":"new"}"#
+                );
+            } else {
+                assert!(links[0].save_renewed().is_err());
+                assert_eq!(
+                    std::fs::read_to_string(original).unwrap(),
+                    r#"{"token":"old"}"#
+                );
+            }
         }
     }
     #[test]
