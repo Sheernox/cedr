@@ -315,7 +315,11 @@ impl SignInLink {
                     changed |= content_hash(&real.bytes) != self.hash;
                     permissions = real.permissions.clone();
                 }
-                if self.rank(&real) >= self.rank(&best) {
+                let real_is_installed = installed_hash.as_ref() == Some(&content_hash(&real.bytes));
+                if self.rank(&real) > self.rank(&best)
+                    || (self.rank(&real) == self.rank(&best)
+                        && (!real_is_installed || real.bytes == best.bytes))
+                {
                     return Ok(if real.bytes == best.bytes {
                         changed.then_some("trial renewal saved after real sign-in changed")
                     } else {
@@ -323,7 +327,7 @@ impl SignInLink {
                     });
                 }
                 best.write(&temporary, permissions.clone())?;
-                installed_hash = Some(content_hash(&best.bytes));
+                let prior_installed = installed_hash.replace(content_hash(&best.bytes));
                 before_replace();
                 if swap(&temporary, &self.source)? {
                     after_replace();
@@ -331,7 +335,10 @@ impl SignInLink {
                     // Keep the best snapshot while the next pass also ranks the real path.
                     let displaced = Candidate::read(&temporary)?;
                     permissions = displaced.permissions.clone();
-                    if self.rank(&displaced) > self.rank(&best) {
+                    if self.rank(&displaced) > self.rank(&best)
+                        || (self.rank(&displaced) == self.rank(&best)
+                            && prior_installed.as_ref() != Some(&content_hash(&displaced.bytes)))
+                    {
                         best = displaced;
                     }
                 } else {
@@ -355,7 +362,11 @@ impl SignInLink {
                 best = staged;
             }
             let real = Candidate::read(&self.source)?;
-            if self.rank(&best) > self.rank(&real) {
+            if self.rank(&best) > self.rank(&real)
+                || (self.rank(&best) == self.rank(&real)
+                    && installed_hash.as_ref() == Some(&content_hash(&real.bytes))
+                    && best.bytes != real.bytes)
+            {
                 best.write(&temporary, permissions)?;
                 std::fs::rename(&temporary, &self.source)?;
             }
@@ -846,7 +857,9 @@ mod renewal_tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn exchange_ranks_both_race_windows_and_keeps_best_at_the_bound() {
-        for repeat in [false, true] {
+        for (repeat, after, written) in
+            [(false, true, 300), (true, false, 300), (false, false, 200)]
+        {
             let dir = tempfile::tempdir().unwrap();
             let source = dir.path().join("original");
             std::fs::write(&source, r#"{"refresh_token":"A"}"#).unwrap();
@@ -869,23 +882,39 @@ mod renewal_tests {
                 .save_with_hooks(
                     || {
                         calls.set(calls.get() + 1);
-                        install("C", if repeat { 300 + calls.get() * 2 } else { 300 });
+                        install(
+                            "C",
+                            if repeat {
+                                written + calls.get() * 2
+                            } else {
+                                written
+                            },
+                        );
                     },
                     || {
                         // A second vendor rename used to land in the rollback's temp
                         // path and be deleted, invalidating the C restored at source.
-                        if !repeat {
+                        if after {
                             install("D", 400);
                         }
                     },
                     exchange_or_fallback,
                 )
                 .unwrap();
-            assert_eq!(calls.get(), if repeat { 4 } else { 1 });
+            assert_eq!(
+                calls.get(),
+                if repeat {
+                    4
+                } else if after {
+                    1
+                } else {
+                    2
+                }
+            );
             assert!(
                 std::fs::read_to_string(&source)
                     .unwrap()
-                    .contains(if repeat { "C" } else { "D" })
+                    .contains(if after { "D" } else { "C" })
             );
             assert_eq!(
                 std::fs::metadata(&source).unwrap().permissions().mode() & 0o777,
