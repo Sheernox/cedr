@@ -131,7 +131,7 @@ impl<'a> ProcessBackend<'a> {
         }
         Ok(())
     }
-    // Account checks cannot act on the host; a replaced credential link is preserved atomically.
+    // Proven tool-free container checks let only vendor code coordinate host renewals.
     fn check_sign_in(&mut self) -> Result<()> {
         if self.options.harness == Harness::Antigravity {
             return crate::antigravity::check(
@@ -147,14 +147,27 @@ impl<'a> ProcessBackend<'a> {
         let mut argv = cedr_agent::sign_in_args(agent(self.options.harness), &self.options.model)
             .map_err(|e| e.to_string())?;
         self.pin_local(&mut argv)?;
-        let out = local(
-            &argv,
-            self.options.harness,
-            &workspace,
-            &home,
-            Duration::from_secs(120),
-            self.credential.as_ref(),
-        )?;
+        let out = if !self.options.local
+            && matches!(
+                self.options.harness,
+                Harness::Claude | Harness::Codex | Harness::Muse | Harness::Grok
+            ) {
+            host_sign_in(
+                &argv,
+                self.options.harness,
+                &workspace,
+                self.credential.as_ref().ok_or("host sign-in missing")?,
+            )?
+        } else {
+            local(
+                &argv,
+                self.options.harness,
+                &workspace,
+                &home,
+                Duration::from_secs(120),
+                self.credential.as_ref(),
+            )?
+        };
         if !out.succeeded() {
             self.healthy = false;
             return Err(
@@ -165,6 +178,62 @@ impl<'a> ProcessBackend<'a> {
         Ok(())
     }
 }
+// These exact commands have no user tools or setup execution path. Do not use
+// this home for inference: the vendor alone owns credential writes and locking.
+fn host_sign_in(
+    argv: &[String],
+    h: Harness,
+    workspace: &Path,
+    credential: &Credential,
+) -> Result<exec::StepOutput> {
+    let binary = exec::find_program(&argv[0], Path::new("."))
+        .ok_or_else(|| format!("{} is not installed", argv[0]))?;
+    let mut cmd = Command::new(binary);
+    cmd.args(&argv[1..]).current_dir(workspace).env_clear();
+    for key in [
+        "PATH",
+        "LANG",
+        "SYSTEMROOT",
+        "WINDIR",
+        "TMP",
+        "TEMP",
+        "HOME",
+        "USERPROFILE",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            cmd.env(key, value);
+        }
+    }
+    for key in container::token_env(h) {
+        if let Some(value) = std::env::var_os(key) {
+            cmd.env(key, value);
+        }
+    }
+    let directory = credential
+        .source
+        .parent()
+        .ok_or("sign-in has no directory")?;
+    match h {
+        Harness::Claude => {
+            cmd.env("CLAUDE_CONFIG_DIR", directory)
+                .env("DISABLE_AUTOUPDATER", "1");
+        }
+        Harness::Codex => {
+            cmd.env("CODEX_HOME", directory);
+        }
+        Harness::Muse => {
+            cmd.env("MUSE_AUTH_PATH", &credential.source)
+                .env("MUSE_NO_AUTO_UPDATE", "1");
+        }
+        Harness::Grok => {
+            cmd.env("GROK_HOME", directory);
+        }
+        _ => return Err("no verified real-home check for this harness".into()),
+    }
+    exec::run_step(cmd, None, Duration::from_secs(120))
+        .map_err(|_| "cannot start host sign-in check".into())
+}
+
 fn agent(h: Harness) -> cedr_agent::Agent {
     match h {
         Harness::Claude => cedr_agent::Agent::Claude,
@@ -928,6 +997,46 @@ fn cedr_bench_seed() -> Result<[u8; 8]> {
 #[cfg(test)]
 mod live_tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn real_home_check_leaves_renewal_writes_to_vendor() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir(&config).unwrap();
+        std::fs::create_dir(&workspace).unwrap();
+        let source = config.join("auth.json");
+        std::fs::write(&source, r#"{"refresh_token":"old"}"#).unwrap();
+        let vendor = dir.path().join("vendor");
+        std::fs::write(&vendor, concat!(
+            "#!/bin/sh\n",
+            "test \"$1\" = login && test \"$2\" = status || exit 1\n",
+            "test -f \"$CODEX_HOME/auth.json\" && test ! -L \"$CODEX_HOME/auth.json\" || exit 2\n",
+            "printf '%s' '{\"refresh_token\":\"renewed\"}' > \"$CODEX_HOME/renewed\"\n",
+            "mv \"$CODEX_HOME/renewed\" \"$CODEX_HOME/auth.json\"\n",
+        )).unwrap();
+        std::fs::set_permissions(&vendor, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let argv = vec![
+            vendor.to_string_lossy().into_owned(),
+            "login".into(),
+            "status".into(),
+        ];
+        let credential = Credential {
+            source: source.clone(),
+            target: "/home/bench/.codex/auth.json",
+        };
+        assert!(
+            host_sign_in(&argv, Harness::Codex, &workspace, &credential)
+                .unwrap()
+                .succeeded()
+        );
+        assert_eq!(
+            std::fs::read_to_string(source).unwrap(),
+            r#"{"refresh_token":"renewed"}"#
+        );
+        assert_eq!(std::fs::read_dir(workspace).unwrap().count(), 0);
+    }
     #[test]
     fn ignored_helpers_and_nested_repository_contents_are_saved_hashed_and_scanned() {
         for nested in [false, true] {
