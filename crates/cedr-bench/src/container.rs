@@ -55,11 +55,6 @@ fn docker(args: &[&str]) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&o.stdout).trim().into())
 }
-pub fn available() -> bool {
-    let mut command = Command::new("docker");
-    command.args(["info", "--format", "{{.ServerVersion}}"]);
-    exec::run_step(command, None, Duration::from_secs(5)).is_ok_and(|out| out.succeeded())
-}
 pub fn supports_isolated(version: &str) -> bool {
     version
         .split('.')
@@ -77,7 +72,7 @@ fn verify_engine() -> Result<()> {
 fn verify_bind_identity() -> Result<()> {
     let security = docker(&["info", "--format", "{{json .SecurityOptions}}"])?;
     if security.contains("rootless") || security.contains("userns") {
-        return Err("Docker rootless/userns UID mapping cannot preserve the invoking UID/GID on these bind mounts; use a daemon without user-namespace remapping, or host-only --local grading with Docker stopped".into());
+        return Err("Docker rootless/userns UID mapping cannot preserve the invoking UID/GID on these bind mounts; use a daemon without user-namespace remapping".into());
     }
     Ok(())
 }
@@ -305,33 +300,9 @@ impl Container {
                 .is_ok_and(|id| id == self.base);
         Ok(())
     }
-    pub fn grader(suite: &Suite, build: bool) -> Result<Self> {
-        let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
-        let task = format!(
-            "cedr-grade-{}",
-            scratch
-                .path()
-                .file_name()
-                .ok_or("missing scratch name")?
-                .to_string_lossy()
-        );
-        let mut c = Self {
-            base: String::new(),
-            image: String::new(),
-            pinned: false,
-            verified: Vec::new(),
-            network: String::new(),
-            proxy: String::new(),
-            task,
-            _scratch: scratch,
-        };
-        verify_bind_identity()?;
-        c.set_base(suite, build)?;
-        Ok(c)
-    }
     pub fn prepare(suite: &Suite, h: Harness, version: &str, build: bool) -> Result<Self> {
         if matches!(h, Harness::Antigravity | Harness::Command) {
-            return Err("this harness supports --local only".into());
+            return Err("Bench requires a container-capable harness; use Compare for local comparisons. Antigravity container support is a follow-up".into());
         }
         let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
         let suffix = scratch
@@ -725,7 +696,7 @@ else:
         docker(&check_args.iter().map(String::as_str).collect::<Vec<_>>())
             .map_err(|_| "container UID/GID cannot write the bound workspace or home; check ownership and Docker user-namespace mappings".to_string())?;
         cmd.args(args).args(argv);
-        let out = exec::run_step(cmd, None, timeout).map_err(|e| e.to_string());
+        let out = exec::run_step_complete(cmd, None, timeout).map_err(|e| e.to_string());
         self.clear_task()?;
         out
     }

@@ -205,9 +205,6 @@ dependencies = [
 name = "cedr-agent"
 version = "0.12.0"
 dependencies = [
- "libc",
- "serde_json",
- "sha2",
  "tempfile",
 ]
 

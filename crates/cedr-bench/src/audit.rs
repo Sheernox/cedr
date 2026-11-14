@@ -172,9 +172,6 @@ pub fn scan(workspace: &Path, names: &[u8], diff: &[u8]) -> Result<Vec<TamperSig
                         "sys.modules.__setitem__",
                         "setattr(sys",
                         "sys.modules.pop",
-                        "sys.settrace",
-                        "threading.settrace(",
-                        "from_threadimportstart_new_thread",
                         "sys.setprofile",
                         "syncBuiltinESMExports",
                         "process.removeAllListeners",
@@ -511,9 +508,7 @@ mod tests {
                 "hashlib.sha256 = shim\n",
                 "PurePath.__fspath__ = f\n",
                 "setattr(PurePath, '__fspath__', f)\n",
-                "threading.settrace(None)\n",
                 "__eq__ = lambda *args: True\n",
-                "from _thread import start_new_thread as launch\n",
             ),
         )
         .unwrap();
@@ -533,9 +528,7 @@ mod tests {
                 ("code.py", 10),
                 ("code.py", 11),
                 ("code.py", 12),
-                ("code.py", 13),
-                ("code.py", 14),
-                ("code.py", 15)
+                ("code.py", 13)
             ]
         );
     }

@@ -20,19 +20,19 @@ pub struct Options {
     pub model: String,
     pub effort: Option<String>,
     pub version: String,
-    pub local: bool,
     pub build_image: bool,
     pub set_reference: bool,
     pub stop_usd: Option<f64>,
     pub allow_unpriced: bool,
     pub tasks: Vec<String>,
-    pub command: Vec<String>,
     pub billing: String,
 }
 pub struct Invocation {
     pub status: Status,
     pub usage: Usage,
     pub duration_ms: u64,
+    pub transcript: Vec<u8>,
+    pub credentials: Vec<String>,
 }
 pub trait Backend {
     fn invoke(&mut self, prompt: &str, workspace: &Path, timeout: Duration) -> Result<Invocation>;
@@ -45,70 +45,37 @@ pub trait Backend {
 }
 pub struct ProcessBackend<'a> {
     options: &'a Options,
-    container: Option<Container>,
+    container: Container,
     credential: Option<Credential>,
     healthy: bool,
-    local_grader: Option<Container>,
 }
 impl<'a> ProcessBackend<'a> {
     pub fn new(suite: &Suite, options: &'a Options) -> Result<Self> {
-        let credential = if options.harness == Harness::Antigravity {
-            Some(crate::antigravity::credential()?)
-        } else {
-            container::credential(options.harness)?
-        };
-        let container = if options.local {
-            None
-        } else {
-            Some(Container::prepare(
-                suite,
-                options.harness,
-                &options.version,
-                options.build_image,
-            )?)
-        };
+        let credential = container::credential(options.harness)?;
+        let container = Container::prepare(
+            suite,
+            options.harness,
+            &options.version,
+            options.build_image,
+        )?;
         let mut backend = Self {
             options,
             container,
             credential,
             healthy: true,
-            local_grader: None,
         };
-        if options.local && !matches!(options.harness, Harness::Command | Harness::Antigravity) {
-            let check = tempfile::tempdir().map_err(|e| e.to_string())?;
-            let mut argv = vec![options.harness.name().to_string(), "--version".into()];
-            backend.pin_local(&mut argv)?;
-            let out = local(
-                &argv,
-                options.harness,
-                check.path(),
-                &check.path().join("home"),
-                Duration::from_secs(15),
-                None,
-            )?;
-            if !out.succeeded()
-                || !container::version_matches(
-                    &String::from_utf8_lossy(&out.stdout),
-                    &options.version,
-                )
-            {
-                return Err("installed agent version differs from --agent-version; install that version or omit the flag".into());
-            }
-        }
         if backend.credential.is_some() {
             backend.check_sign_in()?;
         }
-        if let Some(c) = &backend.container {
-            c.check_effort(
-                options.harness,
-                &options.model,
-                options.effort.as_deref(),
-                backend.credential.as_ref(),
-            )?;
-        }
+        backend.container.check_effort(
+            options.harness,
+            &options.model,
+            options.effort.as_deref(),
+            backend.credential.as_ref(),
+        )?;
         Ok(backend)
     }
-    fn pin_local(&self, argv: &mut [String]) -> Result<()> {
+    fn pin_host_check(&self, argv: &mut [String]) -> Result<()> {
         if self.options.harness == Harness::Muse {
             let launcher =
                 exec::find_program("muse", Path::new(".")).ok_or("Muse is not installed")?;
@@ -133,36 +100,11 @@ impl<'a> ProcessBackend<'a> {
     }
     // Proven tool-free container checks let only vendor code coordinate host renewals.
     fn check_sign_in(&mut self) -> Result<()> {
-        if self.options.harness == Harness::Antigravity {
-            return crate::antigravity::check(
-                self.credential
-                    .as_ref()
-                    .ok_or("Antigravity sign-in missing")?,
-            );
-        }
         let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
-        let workspace = scratch.path().join("workspace");
-        std::fs::create_dir(&workspace).map_err(|e| e.to_string())?;
-        let home = scratch.path().join("home");
         let mut argv = cedr_agent::sign_in_args(agent(self.options.harness), &self.options.model)
             .map_err(|e| e.to_string())?;
-        self.pin_local(&mut argv)?;
-        let out = if !self.options.local
-            && matches!(
-                self.options.harness,
-                Harness::Claude | Harness::Codex | Harness::Muse | Harness::Grok
-            ) {
-            host_sign_in(&argv, self.options.harness, &workspace)?
-        } else {
-            local(
-                &argv,
-                self.options.harness,
-                &workspace,
-                &home,
-                Duration::from_secs(120),
-                self.credential.as_ref(),
-            )?
-        };
+        self.pin_host_check(&mut argv)?;
+        let out = host_sign_in(&argv, self.options.harness, scratch.path())?;
         if !out.succeeded() {
             self.healthy = false;
             return Err(
@@ -219,113 +161,22 @@ fn agent(h: Harness) -> cedr_agent::Agent {
         _ => cedr_agent::Agent::Command,
     }
 }
-fn local(
-    argv: &[String],
-    h: Harness,
-    workspace: &Path,
-    home: &Path,
-    timeout: Duration,
-    renewal: Option<&Credential>,
-) -> Result<exec::StepOutput> {
-    let binary = exec::find_program(&argv[0], Path::new("."))
-        .ok_or_else(|| format!("{} is not installed", argv[0]))?;
-    let mut cmd = Command::new(binary);
-    cmd.args(&argv[1..]).current_dir(workspace);
-    if h == Harness::Command {
-        for (key, _) in std::env::vars_os() {
-            let name = key.to_string_lossy();
-            if name.starts_with("CEDR_") || name.starts_with("GIT_") {
-                cmd.env_remove(key);
-            }
-        }
-        return exec::run_step(cmd, None, timeout)
-            .map_err(|e| format!("cannot run command harness: {e}"));
-    }
-    cmd.env_clear();
-    for k in ["PATH", "LANG", "SYSTEMROOT", "WINDIR", "TMP", "TEMP"] {
-        if let Some(v) = std::env::var_os(k) {
-            cmd.env(k, v);
-        }
-    }
-    for k in container::token_env(h) {
-        if let Some(v) = std::env::var_os(k) {
-            cmd.env(k, v);
-        }
-    }
-    if renewal.is_some() {
-        cedr_agent::sign_in_home(agent(h), &mut cmd, home)
-    } else {
-        cedr_agent::clean_home(agent(h), &mut cmd, home)
-    }
-    .map_err(|e| format!("cannot prepare clean home: {e}"))?;
-    let links =
-        cedr_agent::SignInLink::capture(home).map_err(|_| "cannot track sign-in renewal")?;
-    let runtime = home
-        .parent()
-        .ok_or("clean home has no private parent")?
-        .join("runtime");
-    cedr_agent::private_runtime(&mut cmd, &runtime).map_err(|e| e.to_string())?;
-    if h == Harness::Claude {
-        cmd.env("DISABLE_AUTOUPDATER", "1");
-    }
-    let out = exec::run_step(cmd, None, timeout).map_err(|e| format!("cannot start agent: {e}"));
-    for link in links {
-        if let Some(notice) = link.save_renewed().map_err(|e| e.to_string())? {
-            eprintln!("cedr: {notice}");
-        }
-    }
-    out
-}
 impl Backend for ProcessBackend<'_> {
     fn invoke(&mut self, prompt: &str, workspace: &Path, timeout: Duration) -> Result<Invocation> {
         if !self.healthy {
             return Err("host sign-in failed; no further invocations allowed".into());
         }
-        if self.options.harness == Harness::Antigravity {
-            let home = tempfile::tempdir().map_err(|e| e.to_string())?;
-            let start = Instant::now();
-            let usage = crate::antigravity::invoke(
-                &self.options.model,
-                prompt,
-                workspace,
-                &home.path().join("home"),
-                self.credential
-                    .as_ref()
-                    .ok_or("Antigravity sign-in missing")?,
-                timeout,
-            );
-            let duration_ms = start.elapsed().as_millis().min(u64::MAX as u128) as u64;
-            if let Err(e) = self.check_sign_in() {
-                self.healthy = false;
-                return Err(e);
-            }
-            return Ok(Invocation {
-                status: Status::Graded,
-                usage: usage?,
-                duration_ms,
-            });
-        }
-        if self.container.is_some() && self.credential.is_some() {
+        if self.credential.is_some() {
             self.check_sign_in()?;
         }
         let home = tempfile::tempdir().map_err(|e| e.to_string())?;
-        let mut argv = adapter::argv(
+        let argv = adapter::argv(
             self.options.harness,
             &self.options.model,
             self.options.effort.as_deref(),
             prompt,
-            &self.options.command,
+            &[],
         )?;
-        if self.container.is_none() {
-            self.pin_local(&mut argv)?;
-        }
-        let prompt_file = home.path().join("prompt");
-        if self.options.harness == Harness::Command {
-            std::fs::write(&prompt_file, prompt).map_err(|e| e.to_string())?;
-            for a in &mut argv {
-                *a = a.replace("/tmp/bench-prompt", &prompt_file.to_string_lossy());
-            }
-        }
         for name in [
             ".codex",
             ".claude",
@@ -338,28 +189,17 @@ impl Backend for ProcessBackend<'_> {
         ] {
             std::fs::create_dir_all(home.path().join(name)).map_err(|e| e.to_string())?;
         }
+        let credentials =
+            crate::evidence::credential_values(self.credential.as_ref(), self.options.harness)?;
         let start = Instant::now();
-        let out = if let Some(c) = &self.container {
-            c.run(
-                &argv,
-                workspace,
-                home.path(),
-                self.credential.as_ref(),
-                self.options.harness,
-                timeout,
-            )
-        } else {
-            // The shared home builder needs an empty directory; vendor dirs above are container-only.
-            let local_home = home.path().join("local");
-            local(
-                &argv,
-                self.options.harness,
-                workspace,
-                &local_home,
-                timeout,
-                None,
-            )
-        }?;
+        let out = self.container.run(
+            &argv,
+            workspace,
+            home.path(),
+            self.credential.as_ref(),
+            self.options.harness,
+            timeout,
+        )?;
         let duration_ms = start.elapsed().as_millis().min(u64::MAX as u128) as u64;
         let mut usage = adapter::parse(self.options.harness, &out.stdout, &self.options.model);
         let status = if exec::interrupted() {
@@ -371,17 +211,21 @@ impl Backend for ProcessBackend<'_> {
         } else {
             Status::AgentError
         };
-        if matches!(status, Status::Timeout | Status::Interrupted) {
+        if matches!(
+            status,
+            Status::Timeout | Status::Interrupted | Status::AgentError
+        ) {
             usage.cost_usd = None;
         }
-        if status == Status::AgentError && self.container.is_some() {
+        if status == Status::AgentError {
             self.healthy = false;
-            return Err("container agent failed, possibly because its sign-in expired; renewal is blocked; run again after checking the vendor sign-in".into());
         }
         Ok(Invocation {
             status,
             usage,
             duration_ms,
+            transcript: out.stdout,
+            credentials,
         })
     }
     fn grade(
@@ -392,75 +236,26 @@ impl Backend for ProcessBackend<'_> {
         seed: u64,
     ) -> Result<Vec<u8>> {
         let timeout = Duration::from_secs(task.timeout_seconds);
-        let out = if let Some(c) = &self.container {
-            c.grade(&suite.root, &task.id, workspace, timeout, seed)?
-        } else if container::available() {
-            if self.local_grader.is_none() {
-                self.local_grader = Some(Container::grader(suite, self.options.build_image)?);
-            }
-            self.local_grader
-                .as_ref()
-                .ok_or("grader image unavailable")?
-                .grade(&suite.root, &task.id, workspace, timeout, seed)?
-        } else {
-            if task.kind == Kind::Visual {
-                return Err("visual tasks cannot be graded locally without Docker; install Docker and run again".into());
-            }
-            let grader = suite.root.join("graders").join(&task.id).join("grade");
-            #[cfg(windows)]
-            let mut command = {
-                let mut command = Command::new("python3");
-                command.arg(&grader);
-                command
-            };
-            #[cfg(not(windows))]
-            let mut command = Command::new(&grader);
-            command
-                .arg(workspace)
-                .current_dir(workspace)
-                .env_clear()
-                .env("HOME", workspace)
-                .env("BENCH_SEED", seed.to_string());
-            if let Some(path) = std::env::var_os("PATH") {
-                command.env("PATH", path);
-            }
-            exec::run_step(command, None, timeout)
-                .map_err(|e| format!("cannot run host grader: {e}"))?
-        };
+        let out = self
+            .container
+            .grade(&suite.root, &task.id, workspace, timeout, seed)?;
         if !out.succeeded() {
             return Err("grader failed or timed out".into());
         }
         Ok(out.stdout)
     }
     fn image(&self) -> Option<String> {
-        self.container.as_ref().map(|c| c.base.clone())
+        Some(self.container.base.clone())
     }
     fn environment(&self) -> Environment {
         Environment {
-            mode: if self.container.is_some() {
-                "container"
-            } else {
-                "local"
-            }
-            .into(),
-            clean_home: self.options.harness != Harness::Command && cfg!(unix),
-            network: if self.container.is_some() {
-                "allowlist"
-            } else {
-                "host"
-            }
-            .into(),
-            pinned: self.container.as_ref().is_some_and(|c| c.pinned),
-            agent_image: self.container.as_ref().map(|c| c.image.clone()),
-            verified: self
-                .container
-                .as_ref()
-                .map(|c| c.verified.clone())
-                .unwrap_or_default(),
-            limits: self
-                .container
-                .as_ref()
-                .map(|_| "memory=2g,pids=256,tmp=1g,swap=0".into()),
+            mode: "container".into(),
+            clean_home: cfg!(unix),
+            network: "allowlist".into(),
+            pinned: self.container.pinned,
+            agent_image: Some(self.container.image.clone()),
+            verified: self.container.verified.clone(),
+            limits: Some("memory=2g,pids=256,tmp=1g,swap=0".into()),
             os: std::env::consts::OS.into(),
             arch: std::env::consts::ARCH.into(),
             cli: env!("CARGO_PKG_VERSION").into(),
@@ -827,10 +622,31 @@ pub fn run<B: Backend>(
                 let hash = crate::sha(&diff);
                 let directory = artifacts.join(&t.id);
                 std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-                // This local audit artifact is deliberately absent from the exported artifact list.
-                std::fs::write(directory.join("submission.patch"), diff)
-                    .map_err(|e| e.to_string())?;
-                Some(hash)
+                if crate::evidence::exposed(&out.credentials, &[&out.transcript, &diff]) {
+                    task.transcript_withheld = Some("credential_exposed".into());
+                    task.tamper_signals.push(TamperSignal {
+                        path: "transcript.jsonl".into(),
+                        line: 1,
+                        kind: "descriptor_access".into(),
+                    });
+                    // Neither evidence file may persist a credential. Keep the task held for review.
+                    if crate::evidence::exposed(&out.credentials, &[&diff]) {
+                        task.status = Status::SetupFailed;
+                        None
+                    } else {
+                        crate::evidence::write_private(&directory.join("submission.patch"), &diff)?;
+                        Some(hash)
+                    }
+                } else {
+                    crate::evidence::write_private(&directory.join("submission.patch"), &diff)?;
+                    crate::evidence::write_private(
+                        &directory.join("transcript.jsonl"),
+                        &out.transcript,
+                    )?;
+                    task.transcript_sha256 = Some(crate::sha(&out.transcript));
+                    task.transcript_bytes = Some(out.transcript.len() as u64);
+                    Some(hash)
+                }
             }
             Err(error) => {
                 progress(&format!("{}: cannot capture patch: {error}", t.id));
@@ -839,7 +655,9 @@ pub fn run<B: Backend>(
             }
         };
         for m in out.usage.models {
-            if !r.config.resolved_models.contains(&m) {
+            if !crate::evidence::exposed(&out.credentials, &[m.as_bytes()])
+                && !r.config.resolved_models.contains(&m)
+            {
                 r.config.resolved_models.push(m);
             }
         }
@@ -946,7 +764,10 @@ pub fn run<B: Backend>(
             };
             task.solved = false;
         }
-        if task.status == Status::Interrupted {
+        if task.status == Status::AgentError {
+            task.error = Some("container agent failed, possibly because its sign-in expired; renewal is blocked; check the vendor sign-in before running again".into());
+            r.stop = Some(Stop::UnknownCost);
+        } else if task.status == Status::Interrupted {
             r.stop = Some(Stop::Interrupted);
         } else if task.cost_usd.is_none() && !options.allow_unpriced {
             r.stop = Some(Stop::UnknownCost);
@@ -1219,30 +1040,6 @@ mod live_tests {
         assert!(!PROBE_PROMPT.contains("cedr-bench-command\\\\n"));
     }
 
-    #[test]
-    #[ignore = "requires Antigravity sign-in, network and paid inference"]
-    fn antigravity_local_probe() {
-        let suite =
-            suite::load(Path::new(&std::env::var("CEDR_BENCH_LIVE_SUITE").unwrap())).unwrap();
-        let options = Options {
-            harness: Harness::Antigravity,
-            model: "gemini-3.8-flash-high".into(),
-            effort: None,
-            version: "1.3.0".into(),
-            local: true,
-            build_image: false,
-            set_reference: true,
-            stop_usd: None,
-            allow_unpriced: false,
-            tasks: Vec::new(),
-            command: Vec::new(),
-            billing: "plan".into(),
-        };
-        let mut b = ProcessBackend::new(&suite, &options).unwrap();
-        let p = probe(&suite, &options, &mut b).unwrap();
-        println!("Antigravity probe: {p:?}");
-        assert!(p.tools_ok);
-    }
     /// Opt-in fixture capture, restricted to the four inexpensive vendor models. This test never
     /// prints agent content: only reduced usage events are written under the explicit scratch dir.
     #[test]
@@ -1267,13 +1064,11 @@ mod live_tests {
             model: model.into(),
             effort: effort.map(str::to_string),
             version,
-            local: false,
             build_image: true,
             set_reference: true,
             stop_usd: None,
             allow_unpriced: false,
             tasks: Vec::new(),
-            command: Vec::new(),
             billing: "plan".into(),
         };
         let mut b = ProcessBackend::new(&suite, &options).unwrap();
@@ -1288,8 +1083,6 @@ mod live_tests {
         let argv = adapter::argv(h, model, effort, PROBE_PROMPT, &[]).unwrap();
         let output = b
             .container
-            .as_ref()
-            .unwrap()
             .run(
                 &argv,
                 &workspace,

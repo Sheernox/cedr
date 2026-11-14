@@ -2378,13 +2378,12 @@ test = "true"
         for path in paths {
             assert!(!Path::new(path).exists(), "home survived its trial");
         }
+        assert!(String::from_utf8_lossy(&out.stderr).contains("sign-in renewal was not saved"));
         for file in [".codex/auth.json", ".claude/.credentials.json"] {
-            let expected = if (vendor == "claude") == file.starts_with(".claude") {
-                r#"{"token":"renewed"}"#
-            } else {
+            assert_eq!(
+                fs::read_to_string(user.join(file)).unwrap(),
                 r#"{"token":"old"}"#
-            };
-            assert_eq!(fs::read_to_string(user.join(file)).unwrap(), expected);
+            );
         }
     }
 }

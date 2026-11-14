@@ -427,12 +427,9 @@ fn run_trial(input: TrialInput) -> Trial {
             let home = dir.path().join("check-home");
             cedr_agent::sign_in_home(kind, &mut command, &home)?;
             cedr_agent::private_runtime(&mut command, &dir.path().join("check-runtime"))?;
-            let links = cedr_agent::SignInLink::capture(&home)?;
             let out = exec::run_step(command, None, Duration::from_secs(120));
-            for link in links {
-                if let Some(notice) = link.save_renewed()? {
-                    note(&notice);
-                }
+            if let Some(notice) = cedr_agent::renewal_notice(&home)? {
+                note(notice);
             }
             Ok(out?.succeeded())
         })();
@@ -474,23 +471,11 @@ fn run_trial(input: TrialInput) -> Trial {
         note(&format!("cannot prepare the agent's clean home: {e}"));
         return unscored(Status::SetupFailed);
     }
-    let links = match cedr_agent::SignInLink::capture(&dir.path().join("home")) {
-        Ok(links) => links,
-        Err(_) => {
-            note("cannot track the agent sign-in");
-            return unscored(Status::SetupFailed);
-        }
-    };
     let output = exec::run_step(agent, stdin.as_deref(), timeout);
-    for link in links {
-        match link.save_renewed() {
-            Ok(Some(notice)) => note(&notice),
-            Ok(None) => {}
-            Err(error) => {
-                note(&error.to_string());
-                return unscored(Status::AgentError);
-            }
-        }
+    match cedr_agent::renewal_notice(&dir.path().join("home")) {
+        Ok(Some(notice)) => note(notice),
+        Ok(None) => {}
+        Err(error) => note(&format!("cannot check sign-in link: {error}")),
     }
     let output = match output {
         Ok(output) => output,

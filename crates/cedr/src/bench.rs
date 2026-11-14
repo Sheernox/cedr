@@ -14,7 +14,7 @@ use std::time::Duration;
 
 #[derive(Args)]
 pub struct Configuration {
-    /// claude, codex, muse, grok, gemini, antigravity (local), or command (local)
+    /// claude, codex, muse, grok, or gemini (container-capable harnesses)
     #[arg(long)]
     harness: Harness,
     #[arg(long)]
@@ -26,9 +26,6 @@ pub struct Configuration {
     suite: Option<PathBuf>,
     #[arg(long)]
     edition: Option<u32>,
-    /// Run the agent on this host with a clean home
-    #[arg(long)]
-    local: bool,
     /// Build the edition's image/Dockerfile instead of pulling its pinned image
     #[arg(long)]
     build_image: bool,
@@ -38,9 +35,6 @@ pub struct Configuration {
     /// Print the measured probe reference for probes/edition-<n>.toml
     #[arg(long)]
     set_reference: bool,
-    /// Custom argv, one argument per flag; placeholders: {prompt_file}, {model}, {effort}
-    #[arg(long = "command", allow_hyphen_values = true)]
-    command: Vec<String>,
     #[arg(long,value_enum,default_value_t=Format::Text)]
     format: Format,
 }
@@ -225,25 +219,11 @@ fn cached_references(path: &Path, fresh: Option<String>) -> Result<suite::Refere
     }
 }
 fn options(c: &Configuration) -> Result<Options, String> {
-    if c.harness != Harness::Command && !c.command.is_empty() {
-        return Err("--command requires --harness command".into());
-    }
-    let detected_anti = if c.harness == Harness::Antigravity {
-        Some(cedr_bench::antigravity::version()?)
-    } else {
-        None
-    };
-    if c.agent_version
-        .as_ref()
-        .zip(detected_anti.as_ref())
-        .is_some_and(|(a, b)| a != b)
-    {
-        return Err("requested Antigravity version differs from installed ACP version".into());
+    if matches!(c.harness, Harness::Antigravity | Harness::Command) {
+        return Err("Bench requires a container-capable harness; use Compare for local comparisons. Antigravity container support is a follow-up".into());
     }
     let version = if let Some(v) = &c.agent_version {
         v.clone()
-    } else if let Some(v) = detected_anti {
-        v
     } else if c.harness == Harness::Muse {
         let launcher = cedr_compare::exec::find_program("muse", Path::new("."))
             .ok_or("Muse is not installed")?;
@@ -256,8 +236,6 @@ fn options(c: &Configuration) -> Result<Options, String> {
         .map_err(|_| "Muse version marker missing; use --agent-version")?
         .trim()
         .to_string()
-    } else if c.harness == Harness::Command {
-        "custom".into()
     } else {
         let mut cmd = Command::new(c.harness.name());
         cmd.arg("--version");
@@ -272,21 +250,16 @@ fn options(c: &Configuration) -> Result<Options, String> {
             .ok_or("unrecognized vendor version")?
             .to_string()
     };
-    if c.local {
-        cedr_bench::adapter::check_effort(c.harness, &c.model, c.effort.as_deref())?;
-    }
     Ok(Options {
         harness: c.harness,
         model: c.model.clone(),
         effort: c.effort.clone(),
         version,
-        local: c.local,
         build_image: c.build_image,
         set_reference: c.set_reference,
         stop_usd: None,
         allow_unpriced: false,
         tasks: Vec::new(),
-        command: c.command.clone(),
         billing: "plan".into(),
     })
 }
@@ -617,6 +590,7 @@ fn export(ids: &[String], out: &Path) -> Result<(), String> {
                 .map_err(|e| e.to_string())
         })
         .collect::<Result<Vec<_>, String>>()?;
+    let staged = cedr_bench::evidence::stage(&records, &results())?;
     // Validate every source before creating the destination.
     for r in &records {
         for t in &r.tasks {
@@ -632,6 +606,7 @@ fn export(ids: &[String], out: &Path) -> Result<(), String> {
         }
     }
     std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
+    suite::copy(&staged.path().join("evidence"), &out.join("evidence"))?;
     for r in &records {
         for t in &r.tasks {
             for a in &t.artifacts {

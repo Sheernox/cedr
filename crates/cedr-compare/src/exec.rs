@@ -76,9 +76,27 @@ impl StepOutput {
 /// Windows there is no group: `taskkill` walks the tree of a running process, so after a normal exit
 /// a helper the step left behind keeps running.
 pub fn run_step(
+    cmd: Command,
+    stdin: Option<&str>,
+    timeout: Duration,
+) -> std::io::Result<StepOutput> {
+    run_step_inner(cmd, stdin, timeout, false)
+}
+
+/// Capture complete evidence within the existing memory limit; never accept a truncated stream.
+pub fn run_step_complete(
+    cmd: Command,
+    stdin: Option<&str>,
+    timeout: Duration,
+) -> std::io::Result<StepOutput> {
+    run_step_inner(cmd, stdin, timeout, true)
+}
+
+fn run_step_inner(
     mut cmd: Command,
     stdin: Option<&str>,
     timeout: Duration,
+    complete: bool,
 ) -> std::io::Result<StepOutput> {
     // Stdin is a file, not a pipe: `cedr` runs with the default SIGPIPE, so writing to a child that
     // exits without reading would kill the whole run.
@@ -98,21 +116,28 @@ pub fn run_step(
     let mut child = cmd.spawn()?;
     let pid = child.id();
     let captured = Arc::new(Mutex::new(VecDeque::new()));
+    let overflow = Arc::new(AtomicBool::new(false));
     let (drained_tx, drained_rx) = mpsc::channel();
     if let Some(mut pipe) = child.stdout.take() {
         let captured = Arc::clone(&captured);
+        let overflow = Arc::clone(&overflow);
         std::thread::spawn(move || {
             let mut chunk = [0u8; 65536];
-            while let Ok(n) = pipe.read(&mut chunk) {
-                if n == 0 {
-                    break;
-                }
+            let drained = loop {
+                let n = match pipe.read(&mut chunk) {
+                    Ok(0) => break Ok(()),
+                    Ok(n) => n,
+                    Err(error) => break Err(error),
+                };
                 let mut buf = captured.lock().unwrap_or_else(|e| e.into_inner());
                 buf.extend(&chunk[..n]);
                 let over = buf.len().saturating_sub(MAX_OUTPUT);
+                if over > 0 {
+                    overflow.store(true, Ordering::Relaxed);
+                }
                 buf.drain(..over);
-            }
-            let _ = drained_tx.send(());
+            };
+            let _ = drained_tx.send(drained);
         });
     }
     let (done_tx, done_rx) = mpsc::channel();
@@ -129,7 +154,10 @@ pub fn run_step(
             Ok(done) => break Some(done),
             Err(mpsc::RecvTimeoutError::Disconnected) => break None,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if interrupted() || deadline.is_some_and(|d| Instant::now() >= d) {
+                if complete && overflow.load(Ordering::Relaxed)
+                    || interrupted()
+                    || deadline.is_some_and(|d| Instant::now() >= d)
+                {
                     break None;
                 }
             }
@@ -152,7 +180,16 @@ pub fn run_step(
         kill_tree(pid);
     }
     drop(held);
-    let _ = drained_rx.recv_timeout(DRAIN_GRACE);
+    let drained = drained_rx.recv_timeout(DRAIN_GRACE);
+    if complete {
+        drained
+            .map_err(|_| std::io::Error::other("agent transcript did not finish draining"))??;
+    }
+    if complete && overflow.load(Ordering::Relaxed) {
+        return Err(std::io::Error::other(
+            "agent transcript exceeds 16 MiB; no partial transcript was saved",
+        ));
+    }
     let stdout = captured
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -456,6 +493,29 @@ fn remove_link(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn complete_capture_refuses_overflow_instead_of_saving_a_tail() {
+        let out = run_step_complete(
+            shell("printf 'begin\n'; head -c 16777217 /dev/zero"),
+            None,
+            Duration::from_secs(10),
+        );
+        assert!(
+            out.err()
+                .unwrap()
+                .to_string()
+                .contains("no partial transcript")
+        );
+        let out = run_step_complete(
+            shell("printf 'begin\nend\n'"),
+            None,
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert_eq!(out.stdout, b"begin\nend\n");
+    }
 
     #[test]
     fn a_timeout_too_long_to_represent_waits_for_the_step() {

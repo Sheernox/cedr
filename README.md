@@ -241,9 +241,9 @@ Configure collection and optional automatic pushes in `~/.config/cedr/monitor.to
 | `cedr bench probe --harness H --model M` | Verify shell/file tools and compare clean-context input tokens |
 | `cedr bench history` | Saved runs, newest first |
 | `cedr bench show ID` | Validate and show a saved run |
-| `cedr bench export ID... --out DIR` | Export unchanged results and screenshots |
+| `cedr bench export ID... --out DIR` | Export unchanged results, screenshots and evidence |
 
-Use `--suite PATH` for a local suite, `--edition N` for a published edition, or `--local` for host execution with a clean agent home. Local runs cannot qualify for listing. There is no spending stop by default: `--stop-at-usd USD` checks known spend before each task. An edition's goal records `over_goal` without truncating work. Suites and graders are executable code: run only suites you intend to execute. Results stay local until you export and publish them yourself. [Bench contract](docs/bench.md).
+Use `--suite PATH` for a local suite or `--edition N` for a published edition. Bench runs agents and graders only in containers; use Compare for local comparisons. Patches and guarded transcripts accompany exported runs. There is no spending stop by default: `--stop-at-usd USD` checks known spend before each task. An edition's goal records `over_goal` without truncating work. Suites and graders are executable code: run only suites you intend to execute. Results stay local until you export and publish them yourself. [Bench contract](docs/bench.md).
 
 </details>
 
