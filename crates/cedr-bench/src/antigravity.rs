@@ -96,28 +96,22 @@ pub fn credential() -> Result<Credential> {
         target: "/home/bench/.gemini/antigravity-acp/acp_token.json",
     })
 }
-fn connection(
+// Prepare the filtered home and selected credential before capture and RPC.
+fn trial_command(
+    binary: &Path,
     home: &Path,
     workspace: &Path,
     credential: &Credential,
-    timeout: Duration,
-) -> Result<Rpc> {
-    let mut c = Command::new(program()?);
+) -> Result<Command> {
+    let mut c = Command::new(binary);
     c.env_clear().current_dir(workspace);
     for key in ["PATH", "LANG", "SYSTEMROOT", "WINDIR", "TMP", "TEMP"] {
         if let Some(value) = std::env::var_os(key) {
             c.env(key, value);
         }
     }
-    if !home.join(".gemini/antigravity-acp/acp_token.json").exists() {
-        cedr_agent::clean_home(cedr_agent::Agent::Antigravity, &mut c, home)
-            .map_err(|e| e.to_string())?;
-    } else {
-        c.env("HOME", home)
-            .env("USERPROFILE", home)
-            .env("GEMINI_HOME", home.join(".gemini"))
-            .env("XDG_CONFIG_HOME", home.join(".config"));
-    }
+    cedr_agent::clean_home(cedr_agent::Agent::Antigravity, &mut c, home)
+        .map_err(|e| e.to_string())?;
     cedr_agent::private_runtime(
         &mut c,
         &home
@@ -136,6 +130,10 @@ fn connection(
         std::os::windows::fs::symlink_file(&credential.source, &target)
             .map_err(|e| e.to_string())?;
     }
+    Ok(c)
+}
+
+fn connection(c: Command, timeout: Duration) -> Result<Rpc> {
     let mut rpc = Rpc::start(c, timeout)?;
     rpc.call("initialize",json!({"protocolVersion":1,"clientInfo":{"name":"cedr-bench","version":env!("CARGO_PKG_VERSION")},"clientCapabilities":{}}))?;
     rpc.call("authenticate", json!({"methodId":"oauth-personal"}))?;
@@ -174,10 +172,7 @@ pub fn check(credential: &Credential) -> Result<()> {
         Ok(())
     })();
     for link in links {
-        if let Some(notice) = link
-            .save_renewed()
-            .map_err(|_| "cannot preserve renewed sign-in")?
-        {
+        if let Some(notice) = link.save_renewed().map_err(|e| e.to_string())? {
             eprintln!("{notice}");
         }
     }
@@ -192,21 +187,13 @@ pub fn invoke(
     credential: &Credential,
     timeout: Duration,
 ) -> Result<Usage> {
-    let target = home.join(".gemini/antigravity-acp/acp_token.json");
-    std::fs::create_dir_all(target.parent().ok_or("missing sign-in parent")?)
-        .map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&credential.source, &target).map_err(|e| e.to_string())?;
-    #[cfg(windows)]
-    std::os::windows::fs::symlink_file(&credential.source, &target).map_err(|e| e.to_string())?;
+    // Populate the filtered home before linking/capturing the selected token.
+    let command = trial_command(&program()?, home, workspace, credential)?;
     let links =
         cedr_agent::SignInLink::capture(home).map_err(|_| "cannot track sign-in renewal")?;
-    let result = invoke_inner(model, prompt, workspace, home, credential, timeout);
+    let result = invoke_inner(model, prompt, workspace, home, command, timeout);
     for link in links {
-        if let Some(notice) = link
-            .save_renewed()
-            .map_err(|_| "cannot preserve renewed sign-in")?
-        {
+        if let Some(notice) = link.save_renewed().map_err(|e| e.to_string())? {
             eprintln!("{notice}");
         }
     }
@@ -218,10 +205,10 @@ fn invoke_inner(
     prompt: &str,
     workspace: &Path,
     home: &Path,
-    credential: &Credential,
+    command: Command,
     timeout: Duration,
 ) -> Result<Usage> {
-    let mut rpc = connection(home, workspace, credential, timeout)?;
+    let mut rpc = connection(command, timeout)?;
     let session = rpc.call("session/new", json!({"cwd":workspace,"mcpServers":[]}))?;
     let id = session["sessionId"]
         .as_str()
@@ -287,4 +274,34 @@ fn invoke_inner(
     let mut usage = adapter::parse(Harness::Antigravity, text.as_bytes(), model);
     usage.tools = Some(tools);
     Ok(usage)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    #[test]
+    fn trial_home_is_populated_before_credential_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let source = dir.path().join("token.json");
+        std::fs::write(&source, "{}").unwrap();
+        let credential = Credential {
+            source,
+            target: "/home/bench/.gemini/antigravity-acp/acp_token.json",
+        };
+        let command =
+            trial_command(Path::new("unused-acp"), &home, dir.path(), &credential).unwrap();
+        assert!(home.join(".config").is_dir());
+        assert_eq!(cedr_agent::SignInLink::capture(&home).unwrap().len(), 1);
+        if let Some(user_home) = std::env::var_os("HOME") {
+            let user_home = PathBuf::from(user_home);
+            for name in [".cargo", ".local", ".gitconfig"] {
+                if user_home.join(name).exists() {
+                    assert!(home.join(name).exists(), "missing shadow-home entry {name}");
+                }
+            }
+        }
+        assert!(command.get_envs().any(|(key, value)| key == "XDG_DATA_HOME"
+            && value.is_some_and(|p| Path::new(p).starts_with(dir.path().join("runtime")))));
+    }
 }

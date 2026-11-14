@@ -152,12 +152,7 @@ impl<'a> ProcessBackend<'a> {
                 self.options.harness,
                 Harness::Claude | Harness::Codex | Harness::Muse | Harness::Grok
             ) {
-            host_sign_in(
-                &argv,
-                self.options.harness,
-                &workspace,
-                self.credential.as_ref().ok_or("host sign-in missing")?,
-            )?
+            host_sign_in(&argv, self.options.harness, &workspace)?
         } else {
             local(
                 &argv,
@@ -180,58 +175,38 @@ impl<'a> ProcessBackend<'a> {
 }
 // These exact commands have no user tools or setup execution path. Do not use
 // this home for inference: the vendor alone owns credential writes and locking.
-fn host_sign_in(
-    argv: &[String],
-    h: Harness,
-    workspace: &Path,
-    credential: &Credential,
-) -> Result<exec::StepOutput> {
+fn host_sign_in(argv: &[String], h: Harness, workspace: &Path) -> Result<exec::StepOutput> {
     let binary = exec::find_program(&argv[0], Path::new("."))
         .ok_or_else(|| format!("{} is not installed", argv[0]))?;
+    let cmd = host_sign_in_command(&binary, &argv[1..], h, workspace)?;
+    exec::run_step(cmd, None, Duration::from_secs(120))
+        .map_err(|_| "cannot start host sign-in check".into())
+}
+
+// Preserve the caller's locations, including unresolved symlinks and XDG paths.
+// These status commands and Claude's tool-free flags do not load user setup.
+fn host_sign_in_command(
+    binary: &Path,
+    args: &[String],
+    h: Harness,
+    workspace: &Path,
+) -> Result<Command> {
     let mut cmd = Command::new(binary);
-    cmd.args(&argv[1..]).current_dir(workspace).env_clear();
-    for key in [
-        "PATH",
-        "LANG",
-        "SYSTEMROOT",
-        "WINDIR",
-        "TMP",
-        "TEMP",
-        "HOME",
-        "USERPROFILE",
-    ] {
-        if let Some(value) = std::env::var_os(key) {
-            cmd.env(key, value);
-        }
-    }
-    for key in container::token_env(h) {
-        if let Some(value) = std::env::var_os(key) {
-            cmd.env(key, value);
-        }
-    }
-    let directory = credential
-        .source
-        .parent()
-        .ok_or("sign-in has no directory")?;
+    cmd.args(args).current_dir(workspace);
     match h {
         Harness::Claude => {
-            cmd.env("CLAUDE_CONFIG_DIR", directory)
-                .env("DISABLE_AUTOUPDATER", "1");
+            cmd.env_remove("CLAUDECODE").env("DISABLE_AUTOUPDATER", "1");
         }
-        Harness::Codex => {
-            cmd.env("CODEX_HOME", directory);
-        }
+        Harness::Codex => {}
         Harness::Muse => {
-            cmd.env("MUSE_AUTH_PATH", &credential.source)
-                .env("MUSE_NO_AUTO_UPDATE", "1");
+            cmd.env("MUSE_NO_AUTO_UPDATE", "1");
         }
         Harness::Grok => {
-            cmd.env("GROK_HOME", directory);
+            cmd.env("GROK_DISABLE_AUTOUPDATER", "1");
         }
         _ => return Err("no verified real-home check for this harness".into()),
     }
-    exec::run_step(cmd, None, Duration::from_secs(120))
-        .map_err(|_| "cannot start host sign-in check".into())
+    Ok(cmd)
 }
 
 fn agent(h: Harness) -> cedr_agent::Agent {
@@ -295,10 +270,7 @@ fn local(
     }
     let out = exec::run_step(cmd, None, timeout).map_err(|e| format!("cannot start agent: {e}"));
     for link in links {
-        if let Some(notice) = link
-            .save_renewed()
-            .map_err(|_| "cannot preserve renewed sign-in; original sign-in kept")?
-        {
+        if let Some(notice) = link.save_renewed().map_err(|e| e.to_string())? {
             eprintln!("cedr: {notice}");
         }
     }
@@ -1017,17 +989,18 @@ mod live_tests {
             "mv \"$CODEX_HOME/renewed\" \"$CODEX_HOME/auth.json\"\n",
         )).unwrap();
         std::fs::set_permissions(&vendor, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let argv = vec![
+        let argv = [
             vendor.to_string_lossy().into_owned(),
             "login".into(),
             "status".into(),
         ];
-        let credential = Credential {
-            source: source.clone(),
-            target: "/home/bench/.codex/auth.json",
-        };
+        let mut cmd =
+            host_sign_in_command(&vendor, &argv[1..], Harness::Codex, &workspace).unwrap();
+        cmd.env_clear()
+            .env("CODEX_HOME", &config)
+            .env("PATH", "/usr/bin:/bin");
         assert!(
-            host_sign_in(&argv, Harness::Codex, &workspace, &credential)
+            exec::run_step(cmd, None, Duration::from_secs(10))
                 .unwrap()
                 .succeeded()
         );
@@ -1036,6 +1009,68 @@ mod live_tests {
             r#"{"refresh_token":"renewed"}"#
         );
         assert_eq!(std::fs::read_dir(workspace).unwrap().count(), 0);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn real_home_checks_preserve_configured_locations_and_disable_updates() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let config = home.join(".codex");
+        std::fs::create_dir_all(&config).unwrap();
+        let vault = dir.path().join("vault.json");
+        std::fs::write(&vault, "{}").unwrap();
+        symlink(&vault, config.join("auth.json")).unwrap();
+        for h in [
+            Harness::Claude,
+            Harness::Codex,
+            Harness::Muse,
+            Harness::Grok,
+        ] {
+            let cmd = host_sign_in_command(Path::new("vendor"), &[], h, dir.path()).unwrap();
+            let overrides: std::collections::BTreeMap<_, _> = cmd.get_envs().collect();
+            for key in [
+                "HOME",
+                "USERPROFILE",
+                "CODEX_HOME",
+                "CLAUDE_CONFIG_DIR",
+                "MUSE_HOME",
+                "MUSE_AUTH_PATH",
+                "GROK_HOME",
+                "XDG_CONFIG_HOME",
+            ] {
+                assert!(!overrides.contains_key(std::ffi::OsStr::new(key)));
+            }
+        }
+        let mut cmd = host_sign_in_command(
+            Path::new("/bin/sh"),
+            &[
+                "-c".into(),
+                "test -L \"$CODEX_HOME/auth.json\" && test -f \"$CODEX_HOME/auth.json\"".into(),
+            ],
+            Harness::Codex,
+            dir.path(),
+        )
+        .unwrap();
+        cmd.env_clear()
+            .env("HOME", &home)
+            .env("CODEX_HOME", &config);
+        assert!(
+            exec::run_step(cmd, None, Duration::from_secs(10))
+                .unwrap()
+                .succeeded()
+        );
+        for (h, key) in [
+            (Harness::Claude, "DISABLE_AUTOUPDATER"),
+            (Harness::Muse, "MUSE_NO_AUTO_UPDATE"),
+            (Harness::Grok, "GROK_DISABLE_AUTOUPDATER"),
+        ] {
+            let cmd = host_sign_in_command(Path::new("vendor"), &[], h, dir.path()).unwrap();
+            assert!(
+                cmd.get_envs()
+                    .any(|(k, v)| k == key && v == Some(std::ffi::OsStr::new("1")))
+            );
+        }
     }
     #[test]
     fn ignored_helpers_and_nested_repository_contents_are_saved_hashed_and_scanned() {

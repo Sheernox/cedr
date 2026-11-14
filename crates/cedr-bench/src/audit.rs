@@ -57,27 +57,8 @@ pub fn scan(workspace: &Path, names: &[u8], diff: &[u8]) -> Result<Vec<TamperSig
         }
         let source = std::fs::read(&path).map_err(|e| e.to_string())?;
         let text = String::from_utf8_lossy(&source);
-        let modules: std::collections::BTreeSet<String> = text
-            .split(['\n', ';'])
-            .filter_map(|line| {
-                let line = line.trim();
-                line.strip_prefix("import ").or_else(|| {
-                    line.strip_prefix("from ")?
-                        .split_once(" import ")
-                        .map(|(_, names)| names)
-                })
-            })
-            .flat_map(|line| line.trim_matches(['(', ')']).split(','))
-            .filter_map(|part| {
-                let words: Vec<_> = part.split_whitespace().collect();
-                let name = if words.len() >= 3 && words[1] == "as" {
-                    words[2]
-                } else {
-                    words.first()?.split('.').next()?
-                };
-                Some(name.trim_end_matches(';').to_string())
-            })
-            .collect();
+        let modules = protected_imports(&text);
+        let module_writes = module_writes(&text, &modules);
         let mut number = None;
         for line in section.lines() {
             if line.starts_with("@@ ") {
@@ -127,20 +108,10 @@ pub fn scan(workspace: &Path, names: &[u8], diff: &[u8]) -> Result<Vec<TamperSig
                 "__getattribute__",
             ]
             .iter()
-            .any(|name| compact.contains(&format!("def{name}(")));
-            let module_write = compact.split(';').any(|part| {
-                part.split_once('=').is_some_and(|(left, right)| {
-                    // Only a dotted identifier at statement start is an assignment
-                    // target. Calls and arrows can contain '=' without writing a module.
-                    !right.starts_with(['=', '>'])
-                        && left.split_once('.').is_some_and(|(module, attributes)| {
-                            modules.contains(module) && attributes.split('.').all(identifier)
-                        })
-                })
-            }) || compact.split("setattr(").skip(1).any(|part| {
-                part.split_once(',')
-                    .is_some_and(|(module, _)| modules.contains(module))
+            .any(|name| {
+                compact.contains(&format!("def{name}(")) || compact.contains(&format!("{name}="))
             });
+            let module_write = module_writes.contains(&submitted_line);
             let prototype_write = [
                 "Object", "Array", "String", "Number", "Boolean", "Function", "Promise", "Map",
                 "Set", "Date", "RegExp", "Error",
@@ -203,6 +174,7 @@ pub fn scan(workspace: &Path, names: &[u8], diff: &[u8]) -> Result<Vec<TamperSig
                         "sys.modules.pop",
                         "sys.settrace",
                         "threading.settrace(",
+                        "from_threadimportstart_new_thread",
                         "sys.setprofile",
                         "syncBuiltinESMExports",
                         "process.removeAllListeners",
@@ -235,6 +207,259 @@ pub fn scan(workspace: &Path, names: &[u8], diff: &[u8]) -> Result<Vec<TamperSig
     }
     signals.dedup_by(|a, b| a.path == b.path && a.line == b.line && a.kind == b.kind);
     Ok(signals)
+}
+
+// Lex strings as opaque values: punctuation in a literal is not Python syntax.
+fn tokens(source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut chars = source.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '#' {
+            for next in chars.by_ref() {
+                if next == '\n' {
+                    break;
+                }
+            }
+            out.push(";".into());
+        } else if ch == '\'' || ch == '"' {
+            let mut value = String::from(ch);
+            while let Some(next) = chars.next() {
+                value.push(next);
+                if next == '\\' {
+                    if let Some(escaped) = chars.next() {
+                        value.push(escaped);
+                    }
+                } else if next == ch {
+                    break;
+                }
+            }
+            out.push(value);
+        } else if ch == '_' || ch.is_alphabetic() {
+            let mut word = String::from(ch);
+            while chars
+                .peek()
+                .is_some_and(|c| *c == '_' || c.is_alphanumeric())
+            {
+                word.push(chars.next().expect("peeked character"));
+            }
+            out.push(word);
+        } else if ch == '\n' || ch == ';' {
+            out.push(";".into());
+        } else if !ch.is_whitespace() && ch != '\\' {
+            let mut operator = String::from(ch);
+            if chars.peek() == Some(&'=') && "=!<>+-*/%&|^:".contains(ch) {
+                operator.push(chars.next().expect("peeked equals"));
+            } else if ch == '=' && chars.peek() == Some(&'>') {
+                operator.push(chars.next().expect("peeked arrow"));
+            }
+            out.push(operator);
+        }
+    }
+    out
+}
+
+// Match only interpreter/test-runner imports. Project objects are not runner
+// targets, and TS type imports do not bind runtime modules.
+fn protected_module(name: &str) -> bool {
+    // Union of the pinned grader Python and current host Python standard libraries.
+    const STANDARD: &str = "__future__ _abc _aix_support _android_support _apple_support _ast _ast_unparse _asyncio _bisect _blake2 _bootsubprocess _bz2 _codecs _codecs_cn _codecs_hk _codecs_iso2022 _codecs_jp _codecs_kr _codecs_tw _collections _collections_abc _colorize _compat_pickle _compression _contextvars _crypt _csv _ctypes _curses _curses_panel _datetime _dbm _decimal _elementtree _frozen_importlib _frozen_importlib_external _functools _gdbm _hashlib _heapq _hmac _imp _interpchannels _interpqueues _interpreters _io _ios_support _json _locale _lsprof _lzma _markupbase _md5 _msi _multibytecodec _multiprocessing _opcode _opcode_metadata _operator _osx_support _overlapped _pickle _posixshmem _posixsubprocess _py_abc _py_warnings _pydatetime _pydecimal _pyio _pylong _pyrepl _queue _random _remote_debugging _scproxy _sha1 _sha2 _sha256 _sha3 _sha512 _signal _sitebuiltins _socket _sqlite3 _sre _ssl _stat _statistics _string _strptime _struct _suggestions _symtable _sysconfig _thread _threading_local _tkinter _tokenize _tracemalloc _types _typing _uuid _warnings _weakref _weakrefset _winapi _wmi _zoneinfo _zstd abc aifc annotationlib antigravity argparse array ast asynchat asyncio asyncore atexit audioop base64 bdb binascii bisect builtins bz2 cProfile calendar cgi cgitb chunk cmath cmd code codecs codeop collections colorsys compileall compression concurrent configparser contextlib contextvars copy copyreg crypt csv ctypes curses dataclasses datetime dbm decimal difflib dis distutils doctest email encodings ensurepip enum errno faulthandler fcntl filecmp fileinput fnmatch fractions ftplib functools gc genericpath getopt getpass gettext glob graphlib grp gzip hashlib heapq hmac html http idlelib imaplib imghdr imp importlib inspect io ipaddress itertools json keyword lib2to3 linecache locale logging lzma mailbox mailcap marshal math mimetypes mmap modulefinder msilib msvcrt multiprocessing netrc nis nntplib nt ntpath nturl2path numbers opcode operator optparse os ossaudiodev pathlib pdb pickle pickletools pipes pkgutil platform plistlib poplib posix posixpath pprint profile pstats pty pwd py_compile pyclbr pydoc pydoc_data pyexpat queue quopri random re readline reprlib resource rlcompleter runpy sched secrets select selectors shelve shlex shutil signal site smtpd smtplib sndhdr socket socketserver spwd sqlite3 sre_compile sre_constants sre_parse ssl stat statistics string stringprep struct subprocess sunau symtable sys sysconfig syslog tabnanny tarfile telnetlib tempfile termios textwrap this threading time timeit tkinter token tokenize tomllib trace traceback tracemalloc tty turtle turtledemo types typing unicodedata unittest urllib uu uuid venv warnings wave weakref webbrowser winreg winsound wsgiref xdrlib xml xmlrpc zipapp zipfile zipimport zlib zoneinfo";
+    STANDARD.split_whitespace().any(|module| module == name)
+        || matches!(
+            name,
+            "pytest" | "_pytest" | "_harness" | "node:assert" | "node:fs"
+        )
+}
+fn protected_imports(source: &str) -> std::collections::BTreeSet<String> {
+    let words = tokens(source);
+    let mut names = std::collections::BTreeSet::new();
+    let mut i = 0;
+    while i < words.len() {
+        let from = words[i] == "from";
+        if from || words[i] == "import" {
+            i += 1;
+            let mut permitted = true;
+            if from {
+                permitted = words.get(i).is_some_and(|m| protected_module(m));
+                while i < words.len() && words[i] != "import" && words[i] != ";" {
+                    i += 1;
+                }
+                i += 1;
+            }
+            let mut parens = 0;
+            while i < words.len() && (words[i] != ";" || parens > 0) {
+                if words[i] == "(" {
+                    parens += 1;
+                    i += 1;
+                    continue;
+                }
+                if words[i] == ")" {
+                    parens -= 1;
+                    i += 1;
+                    continue;
+                }
+                if identifier(&words[i]) {
+                    let module = words[i].clone();
+                    let mut bound = module.clone();
+                    i += 1;
+                    while words.get(i).is_some_and(|w| w == ".") {
+                        i += 2;
+                    }
+                    if words.get(i).is_some_and(|w| w == "as") {
+                        i += 1;
+                        if let Some(alias) = words.get(i) {
+                            bound = alias.clone();
+                            i += 1;
+                        }
+                    }
+                    if permitted && (from || protected_module(&module)) {
+                        names.insert(bound);
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    // ES runtime imports bind names only for Node builtins or the test runner.
+    for statement in words.split(|word| word == ";") {
+        if statement.first().is_some_and(|w| w == "import")
+            && !statement.get(1).is_some_and(|w| w == "type")
+            && let Some(from) = statement.iter().position(|word| word == "from")
+            && let Some(module) = statement.get(from + 1)
+        {
+            let module = module.trim_matches(['\'', '"']);
+            if module.starts_with("node:") || matches!(module, "assert" | "fs" | "vitest") {
+                for (i, word) in statement[1..from].iter().enumerate() {
+                    if identifier(word)
+                        && !matches!(word.as_str(), "as" | "type")
+                        && statement.get(i + 2).is_none_or(|w| w != "as")
+                    {
+                        names.insert(word.clone());
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
+// A local binding shadows an imported object. Keep function/class scopes
+// separate so an unrelated local named field or page cannot taint the audit.
+fn module_writes(
+    source: &str,
+    imports: &std::collections::BTreeSet<String>,
+) -> std::collections::BTreeSet<u64> {
+    let mut scopes = vec![(None, std::collections::BTreeSet::new())];
+    let mut shadowed = std::collections::BTreeMap::<String, usize>::new();
+    let mut writes = std::collections::BTreeSet::new();
+    for (number, line) in source.lines().enumerate() {
+        let indent = line.len() - line.trim_start().len();
+        let words = tokens(line);
+        if !words.is_empty() {
+            while scopes
+                .last()
+                .is_some_and(|(level, _)| level.is_some_and(|level| indent <= level))
+            {
+                let (_, names) = scopes.pop().expect("nested scope");
+                for name in names {
+                    if let Some(count) = shadowed.get_mut(&name) {
+                        *count -= 1;
+                        if *count == 0 {
+                            shadowed.remove(&name);
+                        }
+                    }
+                }
+            }
+        }
+        if words.first().is_some_and(|w| w == "def" || w == "class") {
+            scopes.push((Some(indent), std::collections::BTreeSet::new()));
+        }
+        let (_, bindings) = scopes.last_mut().expect("global scope");
+        let mut bind = |name: &String| {
+            if bindings.insert(name.clone()) {
+                *shadowed.entry(name.clone()).or_default() += 1;
+            }
+        };
+        // Plain assignment and loop targets bind locals; dotted targets do not.
+        for (i, word) in words.iter().enumerate() {
+            if identifier(word)
+                && (i == 0 || matches!(words[i - 1].as_str(), ";" | ":" | "for" | "," | "("))
+                && words
+                    .get(i + 1)
+                    .is_some_and(|next| next == "=" || next == "in")
+            {
+                bind(word);
+            }
+        }
+        if words.first().is_some_and(|w| w == "def") {
+            let mut depth = 0;
+            for (i, word) in words.iter().enumerate() {
+                if word == "(" {
+                    depth += 1;
+                }
+                if word == ")" {
+                    depth -= 1;
+                }
+                if depth == 1
+                    && identifier(word)
+                    && i > 0
+                    && matches!(words[i - 1].as_str(), "(" | "," | "*")
+                {
+                    bind(word);
+                }
+            }
+        }
+        if write_where(&words, |name| {
+            imports.contains(name) && !shadowed.contains_key(name)
+        }) {
+            writes.insert(number as u64 + 1);
+        }
+    }
+    writes
+}
+
+#[cfg(test)]
+fn protected_write(source: &str, names: &std::collections::BTreeSet<String>) -> bool {
+    write_where(&tokens(source), |name| names.contains(name))
+}
+
+fn write_where(words: &[String], protected: impl Fn(&str) -> bool) -> bool {
+    // setattr/delattr may address an imported member as well as a module.
+    for window in words.windows(3) {
+        if matches!(window[0].as_str(), "setattr" | "delattr")
+            && window[1] == "("
+            && protected(&window[2])
+        {
+            return true;
+        }
+    }
+    // Split assignments only at statement level. Keyword arguments and arrow
+    // expressions are never assignment targets. Colons cover one-line suites.
+    let mut start = 0;
+    let mut depth = 0_i32;
+    for (i, word) in words.iter().enumerate() {
+        match word.as_str() {
+            "(" | "[" | "{" => depth += 1,
+            ")" | "]" | "}" => depth -= 1,
+            ";" | ":" if depth == 0 => start = i + 1,
+            "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" if depth == 0 => {
+                let target = &words[start..i];
+                for (index, name) in target.iter().enumerate() {
+                    if protected(name)
+                        && (index == 0 || matches!(target[index - 1].as_str(), "(" | ","))
+                        && target.get(index + 1).is_some_and(|w| w == "." || w == "[")
+                    {
+                        return true;
+                    }
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn identifier(value: &str) -> bool {
@@ -287,6 +512,8 @@ mod tests {
                 "PurePath.__fspath__ = f\n",
                 "setattr(PurePath, '__fspath__', f)\n",
                 "threading.settrace(None)\n",
+                "__eq__ = lambda *args: True\n",
+                "from _thread import start_new_thread as launch\n",
             ),
         )
         .unwrap();
@@ -306,8 +533,84 @@ mod tests {
                 ("code.py", 10),
                 ("code.py", 11),
                 ("code.py", 12),
-                ("code.py", 13)
+                ("code.py", 13),
+                ("code.py", 14),
+                ("code.py", 15)
             ]
+        );
+    }
+    #[test]
+    fn protected_import_and_write_forms_cover_review_sequences() {
+        let names = protected_imports(concat!(
+            "import hashlib as hashes\n",
+            "from pathlib import (\n PurePath,\n)\n",
+            "from dataclasses import dataclass, field\n",
+            "from .config import settings\n",
+            "from config import preferences\n",
+            "from .table import ordered, page\n",
+            "from .rows import latest\n",
+            "from .manifest import members, describe, summary\n",
+            "import type { X } from './document.ts';\n",
+            "import fs from 'node:fs';\n",
+        ));
+        for line in [
+            "hashes.sha256 = shim",
+            "hashes.__dict__['sha256'] = shim",
+            "hashes.sha256, x = shim, 1",
+            "(x, hashes.sha256) = pair",
+            "if True: hashes.sha256 = shim",
+            "_ = hashes.sha256 = shim",
+            "hashes.sha256 += shim",
+            "hashes['sha256'] = shim",
+            "PurePath.__fspath__ = shim",
+            "setattr(PurePath, '__fspath__', shim)",
+            "delattr(hashes.sha256, 'x')",
+            "fs.readFile = shim",
+        ] {
+            assert!(protected_write(line, &names), "missed {line}");
+        }
+        for line in [
+            "settings.debug = True",
+            "preferences.debug = True",
+            "page.items = x",
+            "latest.end = x",
+            "summary.data = x",
+            "type.kind = x",
+            "hashes.sha256 == shim",
+            "hashes.sha256 != shim",
+            "hashes.sha256 <= x",
+            "hashes.func(value=2)",
+            "call(hashes.sha256, value=2)",
+            "text = 'hashes.sha256 = shim'",
+            "local.value += 2",
+        ] {
+            assert!(!protected_write(line, &names), "false signal {line}");
+        }
+        assert!(names.contains("field"));
+        assert!(names.contains("PurePath"));
+        assert!(!names.contains("type"));
+        assert!(!names.contains("settings"));
+    }
+    #[test]
+    fn locals_shadow_imported_values_without_hiding_other_scopes() {
+        let source = concat!(
+            "from dataclasses import field\n",
+            "import hashlib\n",
+            "def honest(field):\n",
+            "    field.default = 2\n",
+            "def other():\n",
+            "    field.default = 2\n",
+            "def local():\n",
+            "    field = object()\n",
+            "    field.default = 2\n",
+            "def loop():\n",
+            "    for field in fields:\n",
+            "        field.default = 2\n",
+            "hashlib.sha256 = shim\n",
+        );
+        assert_eq!(
+            module_writes(source, &protected_imports(source)),
+            [6, 13].into_iter().collect()
         );
     }
     #[test]

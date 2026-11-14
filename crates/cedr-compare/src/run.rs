@@ -431,12 +431,19 @@ fn run_trial(input: TrialInput) -> Trial {
             let out = exec::run_step(command, None, Duration::from_secs(120));
             for link in links {
                 if let Some(notice) = link.save_renewed()? {
-                    note(notice);
+                    note(&notice);
                 }
             }
             Ok(out?.succeeded())
         })();
-        if !check.unwrap_or(false) {
+        let passed = match check {
+            Ok(passed) => passed,
+            Err(error) => {
+                note(&error.to_string());
+                false
+            }
+        };
+        if !passed {
             note("host sign-in check failed; repair the vendor sign-in and run again");
             return unscored(Status::AgentError);
         }
@@ -477,10 +484,10 @@ fn run_trial(input: TrialInput) -> Trial {
     let output = exec::run_step(agent, stdin.as_deref(), timeout);
     for link in links {
         match link.save_renewed() {
-            Ok(Some(notice)) => note(notice),
+            Ok(Some(notice)) => note(&notice),
             Ok(None) => {}
-            Err(_) => {
-                note("cannot preserve renewed sign-in; original sign-in kept");
+            Err(error) => {
+                note(&error.to_string());
                 return unscored(Status::AgentError);
             }
         }

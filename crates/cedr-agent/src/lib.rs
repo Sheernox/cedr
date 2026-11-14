@@ -194,14 +194,9 @@ impl Candidate {
             permissions: metadata.permissions(),
         })
     }
-    fn write(&self, path: &Path, permissions: std::fs::Permissions) -> std::io::Result<()> {
+    fn write_new(&self, file: &mut std::fs::File) -> std::io::Result<()> {
         use std::io::Write;
-        let mut file = std::fs::File::options()
-            .write(true)
-            .truncate(true)
-            .open(path)?;
         file.write_all(&self.bytes)?;
-        file.set_permissions(permissions)?;
         file.set_times(std::fs::FileTimes::new().set_modified(self.written))?;
         file.sync_all()
     }
@@ -229,6 +224,18 @@ fn exchange_unsupported(error: &std::io::Error) -> bool {
         error.raw_os_error(),
         Some(libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP | libc::EXDEV)
     )
+}
+
+// A displaced real file can have broader permissions than a recovery copy.
+fn private_candidate(path: &Path) -> std::io::Result<()> {
+    #[cfg(not(unix))]
+    let _ = path;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
 }
 
 impl SignInLink {
@@ -263,125 +270,200 @@ impl SignInLink {
         }
         Ok(links)
     }
-    /// Resolve by usable content and write order, retaining the real path's mode.
-    /// Exchange ranks every displaced candidate. Unsupported platforms/filesystems
-    /// retain a final check-to-rename window without a vendor-shared lock.
-    pub fn save_renewed(&self) -> std::io::Result<Option<&'static str>> {
+    /// Rank usable content, then changed content, then vendor write time; ties keep
+    /// the real file. Byte-identical trial rewrites never replace the captured file.
+    /// Every staging file is exclusively created with mode 0600 and synced before
+    /// use. Candidate files are never reopened for writing or renamed over.
+    /// Exchange is the only real-path mutation when supported, including the last
+    /// attempt. No candidate is deleted before the outcome and losing content are
+    /// known. Exhaustion leaves the real path untouched and names retained better
+    /// candidates; I/O errors name every retained file. Unsupported filesystems
+    /// retain the documented final check-to-rename window without a vendor lock.
+    pub fn save_renewed(&self) -> std::io::Result<Option<String>> {
         self.save_with_hooks(|| {}, || {}, exchange_or_fallback)
     }
     fn save_with_hooks(
         &self,
+        before_replace: impl FnMut(),
+        after_replace: impl FnMut(),
+        swap: impl FnMut(&Path, &Path) -> std::io::Result<bool>,
+    ) -> std::io::Result<Option<String>> {
+        self.save_with_stage_hooks(before_replace, after_replace, swap, |_| Ok(()), || {})
+    }
+    fn save_with_stage_hooks(
+        &self,
         mut before_replace: impl FnMut(),
         mut after_replace: impl FnMut(),
         mut swap: impl FnMut(&Path, &Path) -> std::io::Result<bool>,
-    ) -> std::io::Result<Option<&'static str>> {
+        mut before_write: impl FnMut(&Path) -> std::io::Result<()>,
+        mut before_finish: impl FnMut(),
+    ) -> std::io::Result<Option<String>> {
         let replacement = std::fs::symlink_metadata(&self.link)?;
         if replacement.file_type().is_symlink() {
             return Ok(None);
         }
         if !replacement.is_file() {
             return Ok(Some(
-                "trial sign-in is not a regular file; real sign-in kept",
+                "trial sign-in is not a regular file; real sign-in kept".into(),
             ));
         }
-        let mut best = Candidate::read(&self.link)?;
-        if content_hash(&best.bytes) == self.hash {
+        let trial = Candidate::read(&self.link)?;
+        if content_hash(&trial.bytes) == self.hash {
             return Ok(None);
         }
-        if !usable(&best.bytes, self.refresh_required) {
-            return Ok(Some("trial sign-in is unusable; real sign-in kept"));
+        if !usable(&trial.bytes, self.refresh_required) {
+            return Ok(Some("trial sign-in is unusable; real sign-in kept".into()));
         }
+        let trial_bytes = trial.bytes.clone();
         let parent = self
             .source
             .parent()
             .ok_or_else(|| std::io::Error::other("sign-in has no parent"))?;
-        let mut temporary = tempfile::NamedTempFile::new_in(parent)?.into_temp_path();
-        // An I/O error must retain a displaced credential that could not be ranked.
-        temporary.disable_cleanup(true);
-        let outcome = (|| {
+        let mut retained: Vec<tempfile::TempPath> = Vec::new();
+        // Temp paths deliberately survive errors, including a partially written new
+        // file. Previously displaced files are never the next write's destination.
+        let outcome: std::io::Result<_> = (|| {
+            let mut best = trial;
+            let mut installed: Option<Vec<u8>> = None;
             let mut changed = false;
+            let mut tied_displaced = false;
+            let mut exchanged = false;
             let mut permissions = Candidate::read(&self.source)?.permissions;
-            let mut installed_hash = None;
             for _ in 0..4 {
-                if installed_hash.is_some() {
-                    let staged = Candidate::read(&temporary)?;
-                    if self.rank(&staged) > self.rank(&best) {
-                        permissions = staged.permissions.clone();
-                        best = staged;
-                    }
-                }
                 let real = Candidate::read(&self.source)?;
-                if installed_hash.as_ref() != Some(&content_hash(&real.bytes)) {
-                    changed |= content_hash(&real.bytes) != self.hash;
+                let ours = installed.as_ref() == Some(&content_hash(&real.bytes));
+                changed |= !ours && content_hash(&real.bytes) != self.hash;
+                if !ours {
                     permissions = real.permissions.clone();
                 }
-                let real_is_installed = installed_hash.as_ref() == Some(&content_hash(&real.bytes));
                 if self.rank(&real) > self.rank(&best)
                     || (self.rank(&real) == self.rank(&best)
-                        && (!real_is_installed || real.bytes == best.bytes))
+                        && (!ours || !tied_displaced || real.bytes == best.bytes))
                 {
-                    return Ok(if real.bytes == best.bytes {
-                        changed.then_some("trial renewal saved after real sign-in changed")
-                    } else {
-                        Some("newer sign-in kept; trial renewal was not saved")
-                    });
+                    return Ok((real, changed, false));
                 }
-                best.write(&temporary, permissions.clone())?;
-                let prior_installed = installed_hash.replace(content_hash(&best.bytes));
+                let staged = tempfile::NamedTempFile::new_in(parent)?;
+                let (mut file, mut path) = staged.into_parts();
+                path.disable_cleanup(true);
+                retained.push(path);
+                let path = retained.last().expect("new staging path");
+                before_write(path)?;
+                best.write_new(&mut file)?;
+                file.set_permissions(permissions.clone())?;
+                file.sync_all()?;
+                drop(file);
                 before_replace();
-                if swap(&temporary, &self.source)? {
+                if swap(path, &self.source)? {
+                    exchanged = true;
+                    let previous = installed.replace(content_hash(&best.bytes));
                     after_replace();
-                    // Do not roll back blindly: that could displace an even newer renewal.
-                    // Keep the best snapshot while the next pass also ranks the real path.
-                    let displaced = Candidate::read(&temporary)?;
-                    permissions = displaced.permissions.clone();
-                    if self.rank(&displaced) > self.rank(&best)
-                        || (self.rank(&displaced) == self.rank(&best)
-                            && prior_installed.as_ref() != Some(&content_hash(&displaced.bytes)))
-                    {
+                    let displaced = Candidate::read(path)?;
+                    private_candidate(path)?;
+                    let was_ours = previous.as_ref() == Some(&content_hash(&displaced.bytes));
+                    changed |= !was_ours && content_hash(&displaced.bytes) != self.hash;
+                    if !was_ours {
+                        permissions = displaced.permissions.clone();
+                    }
+                    tied_displaced = self.rank(&displaced) == self.rank(&best) && !was_ours;
+                    if self.rank(&displaced) > self.rank(&best) || tied_displaced {
                         best = displaced;
                     }
                 } else {
-                    // A filesystem without exchange cannot close this last rename window.
+                    if exchanged {
+                        return Err(std::io::Error::other(
+                            "exchange became unavailable; no rename attempted",
+                        ));
+                    }
                     let latest = Candidate::read(&self.source)?;
+                    changed |= content_hash(&latest.bytes) != self.hash;
                     if self.rank(&latest) >= self.rank(&best) {
-                        return Ok(Some("newer sign-in kept; trial renewal was not saved"));
+                        return Ok((latest, changed, false));
                     }
                     if latest.bytes != real.bytes || latest.written != real.written {
+                        private_candidate(path)?;
                         continue;
                     }
-                    std::fs::rename(&temporary, &self.source)?;
-                    return Ok(changed.then_some("trial renewal saved after real sign-in changed"));
+                    std::fs::rename(path, &self.source)?;
+                    return Ok((best, changed, false));
                 }
             }
-            // The bounded exit must install the best observed candidate, not just keep
-            // whichever inode the last exchange happened to leave at the real path.
-            let staged = Candidate::read(&temporary)?;
-            if self.rank(&staged) > self.rank(&best) {
-                permissions = staged.permissions.clone();
-                best = staged;
-            }
+            // No writes after the bound: even a vendor rename after this read
+            // survives. Better displaced candidates remain in their own files.
             let real = Candidate::read(&self.source)?;
-            if self.rank(&best) > self.rank(&real)
-                || (self.rank(&best) == self.rank(&real)
-                    && installed_hash.as_ref() == Some(&content_hash(&real.bytes))
-                    && best.bytes != real.bytes)
-            {
-                best.write(&temporary, permissions)?;
-                std::fs::rename(&temporary, &self.source)?;
-            }
-            Ok(Some(
-                "sign-in resolved after concurrent writes by usable content and write order",
-            ))
+            Ok((real, true, true))
         })();
-        if outcome.is_ok() {
-            temporary.disable_cleanup(false);
-        }
-        outcome.map_err(|error: std::io::Error| {
+        let result = (|| {
+            let (winner, changed, exhausted) = outcome?;
+            before_finish();
+            let mut better = Vec::new();
+            for path in &retained {
+                if !path.try_exists()? {
+                    continue;
+                }
+                private_candidate(path)?;
+                let candidate = Candidate::read(path)?;
+                if self.rank(&candidate) > self.rank(&winner)
+                    || (exhausted
+                        && self.rank(&candidate) == self.rank(&winner)
+                        && candidate.bytes != winner.bytes)
+                {
+                    // Includes ties displaced from the real path: they must not
+                    // be silently lost just because we hit the retry bound.
+                    better.push(format!(
+                        "{} (usable: {} versus observed real {}; changed content: {} versus observed real {}; vendor write time {} the observed real file)",
+                        path.display(),
+                        usable(&candidate.bytes, self.refresh_required),
+                        usable(&winner.bytes, self.refresh_required),
+                        content_hash(&candidate.bytes) != self.hash,
+                        content_hash(&winner.bytes) != self.hash,
+                        match candidate.written.cmp(&winner.written) {
+                            std::cmp::Ordering::Less => "older than",
+                            std::cmp::Ordering::Equal => "tied with",
+                            std::cmp::Ordering::Greater => "newer than",
+                        }
+                    ));
+                } else {
+                    // This exact content was ranked against the final real file.
+                    std::fs::remove_file(path)?;
+                }
+            }
+            if !better.is_empty() {
+                return Ok(Some(format!(
+                    "concurrent sign-in writes continued; real sign-in left in place; retained candidates differ from the observed real sign-in by usability, changed content or vendor write time: {}",
+                    better.join(", ")
+                )));
+            }
+            if winner.bytes != trial_bytes {
+                Ok(Some(
+                    "newer sign-in kept; trial renewal was not saved".into(),
+                ))
+            } else if changed {
+                Ok(Some(
+                    "trial renewal saved after real sign-in changed".into(),
+                ))
+            } else {
+                Ok(None)
+            }
+        })();
+        result.map_err(|error: std::io::Error| {
+            // Include inaccessible paths too: failure to stat is not absence.
+            let mut permission_errors = Vec::new();
+            let paths = retained.iter().filter(|path| {
+                !std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+            }).map(|path| {
+                if let Err(permission_error) = private_candidate(path) {
+                    permission_errors.push(format!("{}: {permission_error}", path.display()));
+                }
+                path.display().to_string()
+            }).collect::<Vec<_>>();
+            let permission_notice = if permission_errors.is_empty() { String::new() } else {
+                format!("; cannot restrict recovery file permissions: {}", permission_errors.join(", "))
+            };
             std::io::Error::new(
                 error.kind(),
                 format!(
-                    "cannot resolve sign-in; staged candidate retained beside real sign-in: {error}"
+                    "cannot resolve sign-in: {error}; retained candidate files: {}{permission_notice}",
+                    paths.join(", ")
                 ),
             )
         })
@@ -856,10 +938,13 @@ mod renewal_tests {
     }
     #[cfg(target_os = "linux")]
     #[test]
-    fn exchange_ranks_both_race_windows_and_keeps_best_at_the_bound() {
-        for (repeat, after, written) in
-            [(false, true, 300), (true, false, 300), (false, false, 200)]
-        {
+    fn exchange_ranks_both_race_windows_and_retains_best_at_the_bound() {
+        for (repeat, after, written, prechanged) in [
+            (false, true, 300, false),
+            (true, false, 300, false),
+            (false, false, 200, false),
+            (false, false, 300, true),
+        ] {
             let dir = tempfile::tempdir().unwrap();
             let source = dir.path().join("original");
             std::fs::write(&source, r#"{"refresh_token":"A"}"#).unwrap();
@@ -878,7 +963,10 @@ mod renewal_tests {
                 std::fs::set_permissions(&next, std::fs::Permissions::from_mode(0o600)).unwrap();
                 std::fs::rename(next, &source).unwrap();
             };
-            captured[0]
+            if prechanged {
+                install("pre", 150);
+            }
+            let notice = captured[0]
                 .save_with_hooks(
                     || {
                         calls.set(calls.get() + 1);
@@ -920,7 +1008,7 @@ mod renewal_tests {
                 std::fs::read_to_string(&source)
                     .unwrap()
                     .contains(if repeat {
-                        "C-4"
+                        "C-3"
                     } else if after {
                         "D"
                     } else {
@@ -934,10 +1022,136 @@ mod renewal_tests {
             if repeat {
                 assert_eq!(
                     std::fs::metadata(&source).unwrap().modified().unwrap(),
-                    std::time::UNIX_EPOCH + std::time::Duration::from_secs(308)
+                    std::time::UNIX_EPOCH + std::time::Duration::from_secs(306)
                 );
             }
-            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+            if repeat {
+                let retained = std::fs::read_dir(dir.path())
+                    .unwrap()
+                    .map(|e| e.unwrap().path())
+                    .find(|p| p.is_file() && p != &source)
+                    .unwrap();
+                assert!(std::fs::read_to_string(&retained).unwrap().contains("C-4"));
+                assert!(notice.unwrap().contains(retained.to_str().unwrap()));
+            } else {
+                assert_eq!(
+                    notice.as_deref(),
+                    Some("newer sign-in kept; trial renewal was not saved")
+                );
+                assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recovery_failure_keeps_displaced_content_and_names_all_files() {
+        for stage_failure in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("original");
+            std::fs::write(&source, r#"{"refresh_token":"A"}"#).unwrap();
+            let link = dir.path().join("home/.codex/auth.json");
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            symlink(&source, &link).unwrap();
+            let captured = SignInLink::capture(&dir.path().join("home")).unwrap();
+            std::fs::remove_file(&link).unwrap();
+            std::fs::write(&link, r#"{"refresh_token":"B"}"#).unwrap();
+            stamp(&link, 200);
+            let calls = std::cell::Cell::new(0);
+            let error = captured[0]
+                .save_with_stage_hooks(
+                    || {
+                        std::fs::write(&source, r#"{"refresh_token":"C"}"#).unwrap();
+                        stamp(&source, 300);
+                    },
+                    || {},
+                    |left, right| {
+                        if !stage_failure && calls.get() == 2 {
+                            Ok(false)
+                        } else {
+                            exchange_or_fallback(left, right)
+                        }
+                    },
+                    |path| {
+                        calls.set(calls.get() + 1);
+                        if stage_failure && calls.get() == 2 {
+                            // Simulate a partial write to the NEW inode, never the displaced C.
+                            std::fs::write(path, b"{").unwrap();
+                            Err(std::io::Error::from_raw_os_error(libc::ENOSPC))
+                        } else {
+                            Ok(())
+                        }
+                    },
+                    || {},
+                )
+                .unwrap_err();
+            let mut preserved = false;
+            for entry in std::fs::read_dir(dir.path()).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_file() && path != source {
+                    assert!(error.to_string().contains(path.to_str().unwrap()));
+                    assert_eq!(
+                        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                        0o600
+                    );
+                    preserved |= std::fs::read_to_string(path).unwrap().contains('C');
+                }
+            }
+            assert!(preserved);
+            assert!(
+                std::fs::read_to_string(source)
+                    .unwrap()
+                    .contains(if stage_failure { 'B' } else { 'C' })
+            );
+        }
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn vendor_write_after_final_read_is_never_renamed_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("original");
+        std::fs::write(&source, r#"{"refresh_token":"A"}"#).unwrap();
+        let link = dir.path().join("home/.codex/auth.json");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        symlink(&source, &link).unwrap();
+        let captured = SignInLink::capture(&dir.path().join("home")).unwrap();
+        std::fs::remove_file(&link).unwrap();
+        std::fs::write(&link, r#"{"refresh_token":"B"}"#).unwrap();
+        stamp(&link, 200);
+        let calls = std::cell::Cell::new(0);
+        let notice = captured[0]
+            .save_with_stage_hooks(
+                || {
+                    calls.set(calls.get() + 1);
+                    std::fs::write(
+                        &source,
+                        format!(r#"{{"refresh_token":"C-{}"}}"#, calls.get()),
+                    )
+                    .unwrap();
+                    stamp(&source, 300 + calls.get());
+                },
+                || {},
+                exchange_or_fallback,
+                |_| Ok(()),
+                || {
+                    let vendor = dir.path().join("vendor");
+                    std::fs::write(&vendor, r#"{"refresh_token":"D"}"#).unwrap();
+                    stamp(&vendor, 500);
+                    std::fs::rename(vendor, &source).unwrap();
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(calls.get(), 4);
+        assert!(std::fs::read_to_string(&source).unwrap().contains('D'));
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file() && path != source {
+                assert!(notice.contains(path.to_str().unwrap()));
+                assert_eq!(
+                    std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
         }
     }
     #[test]
