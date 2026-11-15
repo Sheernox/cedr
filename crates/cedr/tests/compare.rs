@@ -827,13 +827,22 @@ fn an_interrupt_kills_the_agent_and_its_children_and_keeps_what_was_measured() {
     assert_eq!(r["trials"].as_array().unwrap().len(), 1);
     assert_eq!(r["trials"][0]["status"], "interrupted");
     let helper = fs::read_to_string(&marker).unwrap().trim().to_string();
-    let alive = Command::new("kill")
+    // Reaping the group leader does not wait for its orphaned helpers. Even a
+    // terminated helper briefly answers kill -0 until the system reaps it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while Command::new("kill")
         .args(["-0", &helper])
         .stderr(std::process::Stdio::null())
         .status()
         .unwrap()
-        .success();
-    assert!(!alive, "the agent's child outlived the run");
+        .success()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the agent's child outlived the run"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let saved = repo.run(&["compare", "history", "--format", "json"]);
     assert_eq!(stdout_json(&saved)[0]["stop"], "interrupted");
     let left: Vec<_> = fs::read_dir(repo.dir.path().join("tmp")).unwrap().collect();
@@ -2223,6 +2232,50 @@ fn cleaned_required_fields_use_unknown_without_changing_saved_results() {
 }
 
 #[test]
+fn codex_api_key_only_reaches_check_and_trial_without_a_sign_in_file() {
+    let repo = Repo::new();
+    let user = repo.dir.path().join("api-user");
+    fs::create_dir(&user).unwrap();
+    repo.program(
+        "codex",
+        r#"
+set -eu
+if [ "$1" = --version ]; then echo 1; exit 0; fi
+[ "$CODEX_API_KEY" = dummy-key-only ]
+[ ! -e "$CODEX_HOME/auth.json" ]
+if [ "$1" = login ]; then exit 0; fi
+echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+"#,
+    );
+    let suite = repo.suite(
+        r#"version = 1
+trials = 1
+[baseline]
+harness = "codex"
+model = "gpt-6-luna"
+[candidate]
+harness = "codex"
+model = "gpt-6-luna"
+permissions = "full"
+[[tasks]]
+id = "key-only"
+prompt = "p"
+test = "true"
+"#,
+    );
+    let out = repo
+        .cedr(&["compare", "run", &suite, "--no-push", "--format", "json"])
+        .env("HOME", &user)
+        .env("CODEX_HOME", user.join(".codex"))
+        .env("CODEX_API_KEY", "dummy-key-only")
+        .env_remove("OPENAI_API_KEY")
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout_json(&out)["complete"].as_bool().unwrap());
+}
+
+#[test]
 fn vendor_trials_exclude_user_setup_but_keep_the_committed_project_setup() {
     for vendor in ["claude", "codex"] {
         let repo = Repo::new();
@@ -2271,10 +2324,16 @@ fn vendor_trials_exclude_user_setup_but_keep_the_committed_project_setup() {
             &format!(
                 r#"
 if [ "$1" = --version ]; then echo 1; exit 0; fi
-# Authentication checks have an empty working directory and no user tool links.
+set -eu
+if [ '{vendor}' = codex ]; then [ "$CODEX_API_KEY" = dummy-compare-key ]; fi
+# Host checks renew in the real home, before the isolated trial links the new file.
 if [ "$1" = login ] || printf '%s' "$*" | grep -q -- --safe-mode; then
- [ ! -e "$HOME/.cargo" ]
+ [ "$HOME" = '{user}' ]
  [ ! -e AGENTS.md ]
+ case '{vendor}' in
+  codex) printf '{{"token":"host-renewed"}}' > "$CODEX_HOME/new"; mv "$CODEX_HOME/new" "$CODEX_HOME/auth.json";;
+  claude) printf '{{"token":"host-renewed"}}' > "$CLAUDE_CONFIG_DIR/new"; mv "$CLAUDE_CONFIG_DIR/new" "$CLAUDE_CONFIG_DIR/.credentials.json";;
+ esac
  exit 0
 fi
 set -eu
@@ -2305,6 +2364,7 @@ case '{vendor}' in
  claude)
   [ "$CLAUDE_CONFIG_DIR" = "$HOME/.claude" ]
   [ -L "$CLAUDE_CONFIG_DIR/.credentials.json" ]
+  [ "$(cat "$CLAUDE_CONFIG_DIR/.credentials.json")" = '{{"token":"host-renewed"}}' ]
   [ "$(readlink "$CLAUDE_CONFIG_DIR/.credentials.json")" = '{user}/.claude/.credentials.json' ]
   [ ! -e "$CLAUDE_CONFIG_DIR/settings.json" ]
   case " $* " in *' --strict-mcp-config '*) ;; *) exit 1;; esac
@@ -2319,6 +2379,7 @@ case '{vendor}' in
   case " $* " in *' --ignore-user-config '*|*' --ignore-rules '*) exit 1;; esac
   [ "$CODEX_HOME" = "$HOME/.codex" ]
   [ -L "$CODEX_HOME/auth.json" ]
+  [ "$(cat "$CODEX_HOME/auth.json")" = '{{"token":"host-renewed"}}' ]
   [ "$(readlink "$CODEX_HOME/auth.json")" = '{user}/.codex/auth.json' ]
   [ ! -e "$CODEX_HOME/AGENTS.md" ]
   [ ! -e "$CODEX_HOME/config.toml" ]
@@ -2353,6 +2414,7 @@ test = "true"
         ));
         let out = repo
             .cedr(&["compare", "run", &suite, "--no-push", "--format", "json"])
+            .env("CODEX_API_KEY", "dummy-compare-key")
             .env("HOME", &user)
             .env("XDG_CONFIG_HOME", user.join(".config"))
             .env("XDG_DATA_HOME", user.join(".local/share"))
@@ -2382,7 +2444,11 @@ test = "true"
         for file in [".codex/auth.json", ".claude/.credentials.json"] {
             assert_eq!(
                 fs::read_to_string(user.join(file)).unwrap(),
-                r#"{"token":"old"}"#
+                if (vendor == "codex") == file.starts_with(".codex") {
+                    r#"{"token":"host-renewed"}"#
+                } else {
+                    r#"{"token":"old"}"#
+                }
             );
         }
     }

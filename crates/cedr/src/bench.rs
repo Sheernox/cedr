@@ -87,7 +87,7 @@ pub enum BenchCommand {
         #[arg(long)]
         note: String,
     },
-    /// Export unchanged results and screenshot artifacts for publishing
+    /// Export results without tamper paths, plus screenshot artifacts for publishing
     Export {
         #[arg(required = true)]
         ids: Vec<String>,
@@ -387,16 +387,15 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
                 );
             }
             cedr_compare::exec::catch_interrupts();
-            let temporary = results().join(format!("pending-{}", std::process::id()));
-            std::fs::create_dir_all(&temporary).map_err(|e| e.to_string())?;
+            let temporary = cedr_bench::evidence::pending(&results())?;
             let mut backend = ProcessBackend::new(&suite, &options)?;
-            let r = run::run(&suite, &options, &mut backend, &temporary, |s| {
+            let r = run::run(&suite, &options, &mut backend, temporary.path(), |s| {
                 eprintln!("cedr: bench: {s}")
             })?;
             let artifacts = results().join(&r.id).join("artifacts");
             std::fs::create_dir_all(artifacts.parent().ok_or("missing result parent")?)
                 .map_err(|e| e.to_string())?;
-            std::fs::rename(temporary, artifacts).map_err(|e| e.to_string())?;
+            std::fs::rename(temporary.path(), artifacts).map_err(|e| e.to_string())?;
             settings::write_atomic(
                 &results().join(format!("{}.json", r.id)),
                 &serde_json::to_vec_pretty(&r).map_err(|e| e.to_string())?,
@@ -459,11 +458,11 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             note,
         } => {
             let mut r = read_result(&id)?;
+            if clean {
+                verify_review_evidence(&r)?;
+            }
             if r.tasks.iter().all(|task| task.tamper_signals.is_empty()) {
                 return Err("run has no tamper signals to review".into());
-            }
-            if clean {
-                verify_review_patches(&r)?;
             }
             let review = report::TamperReview {
                 verdict: if clean {
@@ -493,35 +492,19 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
     }
 }
 // A clean review requires the exact retained evidence, not only its recorded hash.
-fn verify_review_patches(r: &BenchResult) -> Result<(), String> {
-    for task in r.tasks.iter().filter(|t| !t.tamper_signals.is_empty()) {
-        if task
-            .tamper_signals
+fn verify_review_evidence(r: &BenchResult) -> Result<(), String> {
+    if r.tasks.iter().any(|task| {
+        task.tamper_signals
             .iter()
             .any(|s| s.kind == "evidence_mismatch")
-        {
-            return Err("evidence_mismatch cannot receive a clean review; rerun the task".into());
-        }
-        let path = results()
-            .join(&r.id)
-            .join("artifacts")
-            .join(&task.id)
-            .join("submission.patch");
-        let expected = task
-            .patch_sha256
-            .as_deref()
-            .ok_or_else(|| format!("missing patch digest; expected patch at {}", path.display()))?;
-        let (hash, _) = suite::artifact(
-            &results().join(&r.id).join("artifacts"),
-            &format!("{}/submission.patch", task.id),
-        )
-        .map_err(|_| format!("cannot read saved patch; expected {}", path.display()))?;
-        if hash != expected {
-            return Err(format!("saved patch digest mismatch: {}", path.display()));
-        }
+    }) {
+        return Err(
+            "evidence_mismatch cannot receive a clean review; the run must be run again".into(),
+        );
     }
-    Ok(())
+    cedr_bench::evidence::verify_tasks(&results().join(&r.id).join("artifacts"), &r.tasks)
 }
+
 fn result_path(id: &str) -> PathBuf {
     if id.starts_with("b-") && suite::identifier(id) {
         results().join(format!("{id}.json"))
@@ -537,6 +520,9 @@ pub(crate) fn read_result(id: &str) -> Result<BenchResult, String> {
     let r = report::parse(&std::fs::read(&path).map_err(|e| e.to_string())?)?;
     if path.file_stem().and_then(|s| s.to_str()) != Some(&r.id) {
         return Err("result id does not match file name".into());
+    }
+    if r.eligible {
+        cedr_bench::evidence::verify_tasks(&results().join(&r.id).join("artifacts"), &r.tasks)?;
     }
     Ok(r)
 }
@@ -578,19 +564,23 @@ fn export(ids: &[String], out: &Path) -> Result<(), String> {
         .iter()
         .map(|id| read_result(id))
         .collect::<Result<Vec<_>, _>>()?;
-    let originals = ids
+    // Serialize validated records only, dropping retired fields and agent-chosen
+    // tamper paths. Local review keeps the path and line on the saved result.
+    let exported = records
         .iter()
-        .map(|id| {
-            let path = if id.starts_with("b-") && suite::identifier(id) {
-                results().join(format!("{id}.json"))
-            } else {
-                PathBuf::from(id)
-            };
-            serde_json::from_slice::<Value>(&std::fs::read(path).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())
+        .map(|record| {
+            let mut value = serde_json::to_value(record).map_err(|e| e.to_string())?;
+            for task in value["tasks"].as_array_mut().ok_or("missing tasks")? {
+                for signal in task["tamper_signals"]
+                    .as_array_mut()
+                    .ok_or("missing signals")?
+                {
+                    *signal = json!({"kind": signal["kind"]});
+                }
+            }
+            Ok(value)
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let staged = cedr_bench::evidence::stage(&records, &results())?;
     // Validate every source before creating the destination.
     for r in &records {
         for t in &r.tasks {
@@ -606,7 +596,6 @@ fn export(ids: &[String], out: &Path) -> Result<(), String> {
         }
     }
     std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
-    suite::copy(&staged.path().join("evidence"), &out.join("evidence"))?;
     for r in &records {
         for t in &r.tasks {
             for a in &t.artifacts {
@@ -625,7 +614,7 @@ fn export(ids: &[String], out: &Path) -> Result<(), String> {
     }
     settings::write_atomic(
         &out.join("results.json"),
-        &serde_json::to_vec_pretty(&originals).map_err(|e| e.to_string())?,
+        &serde_json::to_vec_pretty(&exported).map_err(|e| e.to_string())?,
     )
 }
 

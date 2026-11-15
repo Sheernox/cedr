@@ -421,16 +421,9 @@ fn run_trial(input: TrialInput) -> Trial {
             let argv = cedr_agent::sign_in_args(kind, &variant.model)?;
             let binary = exec::find_program(&argv[0], root)
                 .ok_or_else(|| std::io::Error::other("agent not installed"))?;
-            let mut command = Command::new(binary);
-            command.args(&argv[1..]).current_dir(empty);
+            let mut command = cedr_agent::host_sign_in_command(&binary, &argv[1..], kind, &empty)?;
             scrub(&mut command, false);
-            let home = dir.path().join("check-home");
-            cedr_agent::sign_in_home(kind, &mut command, &home)?;
-            cedr_agent::private_runtime(&mut command, &dir.path().join("check-runtime"))?;
             let out = exec::run_step(command, None, Duration::from_secs(120));
-            if let Some(notice) = cedr_agent::renewal_notice(&home)? {
-                note(notice);
-            }
             Ok(out?.succeeded())
         })();
         let passed = match check {

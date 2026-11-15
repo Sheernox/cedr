@@ -31,7 +31,6 @@ pub struct Invocation {
     pub status: Status,
     pub usage: Usage,
     pub duration_ms: u64,
-    pub transcript: Vec<u8>,
     pub credentials: Vec<String>,
 }
 pub trait Backend {
@@ -112,6 +111,7 @@ impl<'a> ProcessBackend<'a> {
                     .into(),
             );
         }
+        self.credential = container::credential(self.options.harness)?;
         Ok(())
     }
 }
@@ -125,33 +125,16 @@ fn host_sign_in(argv: &[String], h: Harness, workspace: &Path) -> Result<exec::S
         .map_err(|_| "cannot start host sign-in check".into())
 }
 
-// Preserve the caller's locations, including unresolved symlinks and XDG paths.
-// These status commands and Claude's tool-free flags do not load user setup.
 fn host_sign_in_command(
     binary: &Path,
     args: &[String],
     h: Harness,
     workspace: &Path,
 ) -> Result<Command> {
-    let mut cmd = Command::new(binary);
-    cmd.args(args).current_dir(workspace);
-    match h {
-        Harness::Claude => {
-            cmd.env_remove("CLAUDECODE").env("DISABLE_AUTOUPDATER", "1");
-        }
-        Harness::Codex => {}
-        Harness::Muse => {
-            cmd.env("MUSE_NO_AUTO_UPDATE", "1");
-        }
-        Harness::Grok => {
-            cmd.env("GROK_DISABLE_AUTOUPDATER", "1");
-        }
-        _ => return Err("no verified real-home check for this harness".into()),
-    }
-    Ok(cmd)
+    cedr_agent::host_sign_in_command(binary, args, agent(h), workspace).map_err(|e| e.to_string())
 }
 
-fn agent(h: Harness) -> cedr_agent::Agent {
+pub(crate) fn agent(h: Harness) -> cedr_agent::Agent {
     match h {
         Harness::Claude => cedr_agent::Agent::Claude,
         Harness::Codex => cedr_agent::Agent::Codex,
@@ -189,6 +172,7 @@ impl Backend for ProcessBackend<'_> {
         ] {
             std::fs::create_dir_all(home.path().join(name)).map_err(|e| e.to_string())?;
         }
+        self.credential = container::credential(self.options.harness)?;
         let credentials =
             crate::evidence::credential_values(self.credential.as_ref(), self.options.harness)?;
         let start = Instant::now();
@@ -224,7 +208,6 @@ impl Backend for ProcessBackend<'_> {
             status,
             usage,
             duration_ms,
-            transcript: out.stdout,
             credentials,
         })
     }
@@ -315,7 +298,11 @@ fn initialize(workspace: &Path) -> Result<()> {
     Ok(())
 }
 // Use the protected starting metadata, never config or helper commands an agent left in .git.
-fn patch(workspace: &Path, metadata: &Path) -> Result<(Vec<u8>, Vec<TamperSignal>)> {
+fn patch(
+    workspace: &Path,
+    metadata: &Path,
+    masker: &crate::evidence::Masker,
+) -> Result<(Vec<u8>, Vec<TamperSignal>)> {
     if !std::fs::symlink_metadata(workspace)
         .map_err(|e| e.to_string())?
         .is_dir()
@@ -362,6 +349,9 @@ fn patch(workspace: &Path, metadata: &Path) -> Result<(Vec<u8>, Vec<TamperSignal
             "HEAD",
         ],
     )?;
+    if masker.exposed(&[&changed, &diff]) {
+        return Err("credential_exposed".into());
+    }
     let signals = crate::audit::scan(workspace, &changed, &diff)?;
     Ok((diff, signals))
 }
@@ -597,9 +587,12 @@ pub fn run<B: Backend>(
         let out = match backend.invoke(&prompt, &workspace, Duration::from_secs(t.timeout_seconds))
         {
             Ok(out) => out,
-            Err(error) => {
-                progress(&format!("{}: agent failed: {error}", t.id));
-                r.tasks[i].error = Some(error);
+            Err(_) => {
+                progress(&format!(
+                    "{}: agent failed; check the vendor sign-in and runtime",
+                    t.id
+                ));
+                r.tasks[i].error = Some("agent invocation failed".into());
                 if exec::interrupted() {
                     r.tasks[i].status = Status::Interrupted;
                     r.stop = Some(Stop::Interrupted);
@@ -616,72 +609,56 @@ pub fn run<B: Backend>(
         task.turns = out.usage.turns;
         task.tokens = out.usage.tokens;
         task.cost_usd = out.usage.cost_usd;
-        task.patch_sha256 = match patch(&workspace, &metadata) {
-            Ok((diff, signals)) => {
-                task.tamper_signals = signals;
-                let hash = crate::sha(&diff);
-                let directory = artifacts.join(&t.id);
-                std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-                if crate::evidence::exposed(&out.credentials, &[&out.transcript, &diff]) {
-                    task.transcript_withheld = Some("credential_exposed".into());
-                    task.tamper_signals.push(TamperSignal {
-                        path: "transcript.jsonl".into(),
-                        line: 1,
-                        kind: "descriptor_access".into(),
-                    });
-                    // Neither evidence file may persist a credential. Keep the task held for review.
-                    if crate::evidence::exposed(&out.credentials, &[&diff]) {
-                        task.status = Status::SetupFailed;
-                        None
-                    } else {
-                        crate::evidence::write_private(&directory.join("submission.patch"), &diff)?;
-                        Some(hash)
-                    }
-                } else {
-                    crate::evidence::write_private(&directory.join("submission.patch"), &diff)?;
-                    crate::evidence::write_private(
-                        &directory.join("transcript.jsonl"),
-                        &out.transcript,
-                    )?;
-                    task.transcript_sha256 = Some(crate::sha(&out.transcript));
-                    task.transcript_bytes = Some(out.transcript.len() as u64);
-                    Some(hash)
+        // No task evidence leaves private staging until all task-controlled output is checked.
+        let capture = tempfile::Builder::new()
+            .prefix(".capture-")
+            .tempdir_in(artifacts)
+            .map_err(|_| "cannot stage task evidence")?;
+        let staged = capture.path().join("evidence");
+        std::fs::create_dir(&staged).map_err(|_| "cannot stage task evidence")?;
+        let masker = crate::evidence::Masker::new(out.credentials);
+        let mut exposed = out
+            .usage
+            .models
+            .iter()
+            .any(|m| masker.exposed(&[m.as_bytes()]));
+        task.patch_sha256 = if exposed {
+            None
+        } else {
+            match patch(&workspace, &metadata, &masker) {
+                Ok((diff, signals)) => {
+                    task.tamper_signals = signals;
+                    crate::evidence::write_private(&staged.join("submission.patch"), &diff)?;
+                    Some(crate::sha(&diff))
+                }
+                Err(error) => {
+                    exposed = error == "credential_exposed" || masker.exposed(&[error.as_bytes()]);
+                    progress(&format!("{}: cannot capture patch", t.id));
+                    task.status = Status::SetupFailed;
+                    None
                 }
             }
-            Err(error) => {
-                progress(&format!("{}: cannot capture patch: {error}", t.id));
-                task.status = Status::SetupFailed;
-                None
-            }
         };
-        for m in out.usage.models {
-            if !crate::evidence::exposed(&out.credentials, &[m.as_bytes()])
-                && !r.config.resolved_models.contains(&m)
-            {
-                r.config.resolved_models.push(m);
-            }
+        if exposed {
+            task.status = Status::SetupFailed;
         }
         let copy = scratch.path().join("grade");
-        if let Err(error) = suite::copy_submission(&workspace, &copy) {
-            progress(&format!(
-                "{}: cannot copy submission for grading: {error}",
-                t.id
-            ));
+        if exposed {
+            // The task is withheld as a whole, including grading and artifact metadata.
+        } else if suite::copy_submission(&workspace, &copy).is_err() {
+            progress(&format!("{}: cannot copy submission for grading", t.id));
             task.status = Status::SetupFailed;
-            task.error = Some(error);
+            task.error = Some("cannot copy submission for grading".into());
         } else if task.patch_sha256.is_some() {
             let verified = verify_evidence(
                 &suite.root.join("tasks").join(&t.id).join("repo"),
                 &copy,
-                &artifacts.join(&t.id).join("submission.patch"),
+                &staged.join("submission.patch"),
             );
             match verified {
                 Ok(true) => progress(&format!("{}: evidence verified", t.id)),
-                mismatch => {
-                    let detail = mismatch
-                        .err()
-                        .unwrap_or_else(|| "replayed tree differs from grader copy".into());
-                    progress(&format!("{}: evidence_mismatch: {detail}", t.id));
+                _ => {
+                    progress(&format!("{}: evidence_mismatch", t.id));
                     task.tamper_signals.push(TamperSignal {
                         path: "submission.patch".into(),
                         line: 1,
@@ -693,9 +670,31 @@ pub fn run<B: Backend>(
         if task.status == Status::Graded {
             let seed = u64::from_be_bytes(cedr_bench_seed()?) & ((1 << 30) - 1);
             task.seed = Some(seed);
-            let graded = backend
-                .grade(suite, t, &copy, seed)
-                .and_then(|b| crate::report::grade(&b, t.kind));
+            let graded = backend.grade(suite, t, &copy, seed).and_then(|b| {
+                exposed |= masker.exposed(&[&b]);
+                if exposed {
+                    Err("credential_exposed".into())
+                } else {
+                    let grade = crate::report::grade(&b, t.kind)?;
+                    exposed |= grade
+                        .checks
+                        .iter()
+                        .map(|c| &c.id)
+                        .chain(
+                            grade
+                                .gates
+                                .iter()
+                                .flat_map(|g| std::iter::once(&g.id).chain(g.detail.iter())),
+                        )
+                        .chain(grade.artifacts.iter())
+                        .any(|s| masker.exposed(&[s.as_bytes()]));
+                    if exposed {
+                        Err("credential_exposed".into())
+                    } else {
+                        Ok(grade)
+                    }
+                }
+            });
             match graded {
                 Ok(g) => {
                     task.checks = g.checks;
@@ -727,13 +726,19 @@ pub fn run<B: Backend>(
                                 continue;
                             }
                             let (sha256, bytes) = suite::artifact(&copy, &name)?;
+                            let bytes_to_save = std::fs::read(copy.join(&name))
+                                .map_err(|_| "cannot read artifact")?;
+                            exposed |= masker.exposed(&[name.as_bytes(), &bytes_to_save]);
+                            if exposed {
+                                return Err("credential_exposed".into());
+                            }
                             let path = format!("{}/{name}", t.id);
-                            let dest = artifacts.join(&path);
+                            let dest = staged.join(&name);
                             std::fs::create_dir_all(
                                 dest.parent().ok_or("invalid artifact directory")?,
                             )
                             .map_err(|e| e.to_string())?;
-                            std::fs::copy(copy.join(&name), dest).map_err(|e| e.to_string())?;
+                            crate::evidence::write_private(&dest, &bytes_to_save)?;
                             collected.push(Artifact {
                                 path,
                                 sha256,
@@ -745,17 +750,60 @@ pub fn run<B: Backend>(
                     match collected {
                         Ok(a) => task.artifacts = a,
                         Err(error) => {
-                            progress(&format!("{}: artifact collection failed: {error}", t.id));
+                            exposed |= masker.exposed(&[error.as_bytes()]);
+                            progress(&format!("{}: artifact collection failed", t.id));
                             task.status = Status::SetupFailed;
                         }
                     }
                 }
                 Err(error) => {
-                    progress(&format!("{}: grader failed: {error}", t.id));
+                    exposed |= masker.exposed(&[error.as_bytes()]);
+                    progress(&format!("{}: grader failed", t.id));
                     task.status = Status::SetupFailed;
                 }
             }
         }
+        // Inspect actual strings before serialization so escaping cannot hide a
+        // registered form in grader metadata. This does not decode nested JSON.
+        exposed |= task
+            .error
+            .iter()
+            .chain(task.checks.iter().map(|c| &c.id))
+            .chain(
+                task.gates
+                    .iter()
+                    .flat_map(|g| std::iter::once(&g.id).chain(g.detail.iter())),
+            )
+            .chain(task.artifacts.iter().map(|a| &a.path))
+            .chain(task.tamper_signals.iter().flat_map(|s| [&s.path, &s.kind]))
+            .any(|s| masker.exposed(&[s.as_bytes()]));
+        if exposed {
+            // Keep only trusted identifiers and fixed-vocabulary/numeric facts after a match.
+            task.status = Status::SetupFailed;
+            task.error = None;
+            task.patch_sha256 = None;
+            task.checks.clear();
+            task.gates.clear();
+            task.artifacts.clear();
+            task.tamper_signals = vec![TamperSignal {
+                path: "submission.patch".into(),
+                line: 1,
+                kind: "descriptor_access".into(),
+            }];
+        } else {
+            for model in out.usage.models {
+                if !r.config.resolved_models.contains(&model) {
+                    r.config.resolved_models.push(model);
+                }
+            }
+            std::fs::rename(&staged, artifacts.join(&t.id))
+                .map_err(|_| "cannot retain task evidence")?;
+        }
+        progress(&format!(
+            "{}: credential guard {} us",
+            t.id,
+            masker.elapsed().as_micros()
+        ));
         if task.status != Status::Graded {
             task.score = if task.kind == Kind::Code {
                 Some(0.0)
@@ -776,6 +824,9 @@ pub fn run<B: Backend>(
     }
     r.finished_at = chrono::Utc::now().to_rfc3339();
     r.summarize();
+    if r.eligible {
+        crate::evidence::verify_tasks(artifacts, &r.tasks)?;
+    }
     r.validate()?;
     Ok(r)
 }
@@ -800,15 +851,26 @@ mod live_tests {
         std::fs::create_dir(&config).unwrap();
         std::fs::create_dir(&workspace).unwrap();
         let source = config.join("auth.json");
-        std::fs::write(&source, r#"{"refresh_token":"old"}"#).unwrap();
+        let vault = dir.path().join("vault.json");
+        std::fs::write(
+            &vault,
+            r#"{"refresh_token":"old-credential-for-guard-regression"}"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&vault, &source).unwrap();
+        let stale = Credential::resolve(&source, "/test").unwrap();
         let vendor = dir.path().join("vendor");
-        std::fs::write(&vendor, concat!(
-            "#!/bin/sh\n",
-            "test \"$1\" = login && test \"$2\" = status || exit 1\n",
-            "test -f \"$CODEX_HOME/auth.json\" && test ! -L \"$CODEX_HOME/auth.json\" || exit 2\n",
-            "printf '%s' '{\"refresh_token\":\"renewed\"}' > \"$CODEX_HOME/renewed\"\n",
-            "mv \"$CODEX_HOME/renewed\" \"$CODEX_HOME/auth.json\"\n",
-        )).unwrap();
+        std::fs::write(
+            &vendor,
+            concat!(
+                "#!/bin/sh\n",
+                "test \"$1\" = login && test \"$2\" = status || exit 1\n",
+                "test -f \"$CODEX_HOME/auth.json\" || exit 2\n",
+                "printf '%s' '{\"refresh_token\":\"renewed\"}' > \"$CODEX_HOME/renewed\"\n",
+                "mv \"$CODEX_HOME/renewed\" \"$CODEX_HOME/auth.json\"\n",
+            ),
+        )
+        .unwrap();
         std::fs::set_permissions(&vendor, std::fs::Permissions::from_mode(0o700)).unwrap();
         let argv = [
             vendor.to_string_lossy().into_owned(),
@@ -826,8 +888,21 @@ mod live_tests {
                 .succeeded()
         );
         assert_eq!(
-            std::fs::read_to_string(source).unwrap(),
+            std::fs::read_to_string(&source).unwrap(),
             r#"{"refresh_token":"renewed"}"#
+        );
+        let current = Credential::resolve(&source, "/test").unwrap();
+        assert_ne!(stale.source, current.source);
+        assert_eq!(current.source, source);
+        let values = crate::evidence::credential_values(Some(&current), Harness::Command).unwrap();
+        assert!(
+            !values
+                .iter()
+                .any(|value| value == "old-credential-for-guard-regression")
+        );
+        assert_eq!(
+            std::fs::read_to_string(vault).unwrap(),
+            r#"{"refresh_token":"old-credential-for-guard-regression"}"#
         );
         assert_eq!(std::fs::read_dir(workspace).unwrap().count(), 0);
     }
@@ -917,7 +992,12 @@ mod live_tests {
                 "import sys\nframe = sys._getframe()\n",
             )
             .unwrap();
-            let (first, signals) = patch(&workspace, &metadata).unwrap();
+            let (first, signals) = patch(
+                &workspace,
+                &metadata,
+                &crate::evidence::Masker::new(Vec::new()),
+            )
+            .unwrap();
             assert!(String::from_utf8_lossy(&first).contains("+frame = sys._getframe()"));
             assert!(
                 signals
@@ -929,7 +1009,12 @@ mod live_tests {
                 "import sys\nframe = sys._getframe(1)\n",
             )
             .unwrap();
-            let (second, _) = patch(&workspace, &metadata).unwrap();
+            let (second, _) = patch(
+                &workspace,
+                &metadata,
+                &crate::evidence::Masker::new(Vec::new()),
+            )
+            .unwrap();
             assert_ne!(crate::sha(&first), crate::sha(&second));
             let replay = dir.path().join("replay");
             std::fs::create_dir(&replay).unwrap();
@@ -982,7 +1067,12 @@ mod live_tests {
             .unwrap();
             let code = b"s = \"$Id: \"; import sys; sys._getframe(); s = \" $\"\r\n";
             std::fs::write(workspace.join("helper.py"), code).unwrap();
-            let (diff, signals) = patch(&workspace, &metadata).unwrap();
+            let (diff, signals) = patch(
+                &workspace,
+                &metadata,
+                &crate::evidence::Masker::new(Vec::new()),
+            )
+            .unwrap();
             assert!(
                 diff.windows(code.len() - 2)
                     .any(|part| part == &code[..code.len() - 2])
@@ -1013,7 +1103,8 @@ mod live_tests {
         suite::copy(&ws.join(".git"), &metadata).unwrap();
         std::fs::remove_file(ws.join("removed")).unwrap();
         std::fs::write(ws.join("binary"), b"a\0b\xff").unwrap();
-        let (diff, signals) = patch(&ws, &metadata).unwrap();
+        let (diff, signals) =
+            patch(&ws, &metadata, &crate::evidence::Masker::new(Vec::new())).unwrap();
         assert!(signals.is_empty());
         let saved = dir.path().join("saved.patch");
         std::fs::write(&saved, diff).unwrap();

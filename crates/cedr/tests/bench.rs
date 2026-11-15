@@ -153,8 +153,6 @@ fn show_export_and_review_preserve_validated_results_and_local_patches() {
     };
     for task in &mut r.tasks {
         task.patch_sha256 = Some(cedr_bench::sha(b"local audit patch content"));
-        task.transcript_sha256 = Some(cedr_bench::sha(b"event\n"));
-        task.transcript_bytes = Some(6);
     }
     r.summarize();
     let root = s.dir.path().join("state/cedr/bench");
@@ -165,7 +163,6 @@ fn show_export_and_review_preserve_validated_results_and_local_patches() {
         let dir = root.join(id).join("artifacts").join(&task.id);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("submission.patch"), b"local audit patch content").unwrap();
-        std::fs::write(dir.join("transcript.jsonl"), b"event\n").unwrap();
     }
     let path = root.join(format!("{id}.json"));
     let value = serde_json::to_value(&r).unwrap();
@@ -190,25 +187,38 @@ fn show_export_and_review_preserve_validated_results_and_local_patches() {
         "{}",
         String::from_utf8_lossy(&exported.stderr)
     );
-    assert_eq!(
-        std::fs::read(out.join("evidence").join(id).join("code/submission.patch")).unwrap(),
-        b"local audit patch content"
-    );
-    assert_eq!(
-        std::fs::read(
-            out.join("evidence")
-                .join(id)
-                .join("visual/transcript.jsonl")
-        )
-        .unwrap(),
-        b"event\n"
-    );
     let records: Value =
         serde_json::from_slice(&std::fs::read(out.join("results.json")).unwrap()).unwrap();
     assert_eq!(records, serde_json::json!([value]));
     assert_eq!(
         std::fs::read(out.join("shots").join(id).join("visual/screen.png")).unwrap(),
         png
+    );
+    let mut files = Vec::new();
+    fn exported_files(root: &std::path::Path, at: &std::path::Path, files: &mut Vec<String>) {
+        for entry in std::fs::read_dir(at).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                exported_files(root, &path, files);
+            } else {
+                files.push(
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_owned(),
+                );
+            }
+        }
+    }
+    exported_files(&out, &out, &mut files);
+    files.sort();
+    assert_eq!(
+        files,
+        [
+            "results.json".to_owned(),
+            format!("shots/{id}/visual/screen.png")
+        ]
     );
     let refused = s.cedr(&["bench", "review", id, "--clean", "--note", "Read patches"]);
     assert_eq!(refused.status.code(), Some(2));
@@ -289,6 +299,27 @@ fn show_export_and_review_preserve_validated_results_and_local_patches() {
         assert_eq!(saved["score"], 100.0);
         assert_eq!(saved["tasks"][0]["tamper_signals"][0]["line"], 4);
     }
+    let mut r: BenchResult = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut missing_patch = r.clone();
+    missing_patch.tasks[0].patch_sha256 = None;
+    missing_patch.tasks[0].status = Status::SetupFailed;
+    missing_patch.tasks[0].checks.clear();
+    missing_patch.tasks[0].score = Some(0.0);
+    missing_patch.tasks[0].solved = false;
+    missing_patch.summarize();
+    std::fs::write(&path, serde_json::to_vec(&missing_patch).unwrap()).unwrap();
+    let refused = s.cedr(&["bench", "review", id, "--clean", "--note", "Read patches"]);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("run must be run again"));
+    std::fs::write(&path, serde_json::to_vec(&r).unwrap()).unwrap();
+    // A flagged task must retain its patch for show, history and clean review.
+    std::fs::remove_file(&audit).unwrap();
+    assert_eq!(s.cedr(&["bench", "show", id]).status.code(), Some(2));
+    assert_eq!(
+        stdout(&s.cedr(&["bench", "history", "--format", "json"])).trim(),
+        "[]"
+    );
+    std::fs::write(&audit, "local audit patch content").unwrap();
     let destination = s.dir.path().join("reviewed-export");
     assert!(
         s.cedr(&[
@@ -304,6 +335,10 @@ fn show_export_and_review_preserve_validated_results_and_local_patches() {
     let exported: Value =
         serde_json::from_slice(&std::fs::read(destination.join("results.json")).unwrap()).unwrap();
     assert_eq!(exported[0]["tamper_review"]["verdict"], "clean");
+    assert_eq!(
+        exported[0]["tasks"][0]["tamper_signals"],
+        serde_json::json!([{"kind":"descriptor_access"}])
+    );
     let shown = stdout(&s.cedr(&["bench", "show", id]));
     assert!(shown.contains("tamper review Clean"));
     assert!(!shown.contains("then: cedr bench review"));
@@ -375,7 +410,7 @@ fn show_export_and_review_preserve_validated_results_and_local_patches() {
         assert_eq!(body["tamper_review"], exported[0]["tamper_review"]);
         assert_eq!(
             body["tasks"][0]["tamper_signals"],
-            exported[0]["tasks"][0]["tamper_signals"]
+            serde_json::to_value(&r.tasks[0].tamper_signals).unwrap()
         );
     }
     let mut mismatch = r.clone();

@@ -14,6 +14,8 @@ serde = { version = "1", features = ["derive"] }
 # Saved results are checked against their trials, so a cost must read back as the exact number written.
 serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.11"
+base64 = "0.23.1"
+percent-encoding = "2.3.2"
 tempfile = "3"
 toml = "1"
 

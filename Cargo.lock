@@ -212,11 +212,13 @@ dependencies = [
 name = "cedr-bench"
 version = "0.12.0"
 dependencies = [
+ "base64",
  "cedr-agent",
  "cedr-compare",
  "cedr-monitor",
  "chrono",
  "libc",
+ "percent-encoding",
  "serde",
  "serde_json",
  "sha2",

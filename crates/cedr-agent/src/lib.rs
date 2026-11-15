@@ -1,5 +1,5 @@
 //! Shared configuration isolation for command-line agents.
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -16,34 +16,98 @@ pub enum Agent {
 /// Gives vendor CLIs the same filtered view of the user's tools, with private agent configuration.
 /// The caller owns the temporary directory through process exit; this is not a security sandbox.
 pub fn clean_home(kind: Agent, cmd: &mut Command, home: &Path) -> std::io::Result<()> {
-    home_inner(kind, cmd, home, true)
+    home_inner(kind, cmd, home)
 }
 
-/// A host authentication check sees only its sign-in, never the user's tools or setup.
-pub fn sign_in_home(kind: Agent, cmd: &mut Command, home: &Path) -> std::io::Result<()> {
-    home_inner(kind, cmd, home, false)
-}
-fn home_inner(kind: Agent, cmd: &mut Command, home: &Path, shadow: bool) -> std::io::Result<()> {
-    if kind == Agent::Command {
-        return Ok(());
+/// Credential environment variables supported by both host checks and isolated trials.
+pub fn token_env(kind: Agent) -> &'static [&'static str] {
+    match kind {
+        Agent::Claude => &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
+        Agent::Codex => &["OPENAI_API_KEY", "CODEX_API_KEY"],
+        Agent::Muse => &["MUSE_API_KEY", "META_API_KEY"],
+        Agent::Grok => &["XAI_API_KEY"],
+        Agent::Gemini => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        _ => &[],
     }
-    let (variable, directory, credential) = match kind {
+}
+
+/// Resolve configured sign-in paths without pinning a symlink target before vendor renewal.
+pub fn sign_in_path(kind: Agent) -> Option<PathBuf> {
+    sign_in_path_from(kind, |key| std::env::var_os(key))
+}
+fn sign_in_path_from(
+    kind: Agent,
+    get: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    let (variable, directory, credential) = agent_location(kind)?;
+    let configured = |key| {
+        get(key)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
+    if kind == Agent::Muse
+        && let Some(path) = configured("MUSE_AUTH_PATH")
+    {
+        return Some(path);
+    }
+    configured(variable)
+        .or_else(|| {
+            configured("HOME")
+                .or_else(|| configured("USERPROFILE"))
+                .map(|home| home.join(directory))
+        })
+        .map(|home| home.join(credential))
+}
+fn agent_location(kind: Agent) -> Option<(&'static str, &'static str, &'static str)> {
+    Some(match kind {
         Agent::Codex => ("CODEX_HOME", ".codex", "auth.json"),
         Agent::Claude => ("CLAUDE_CONFIG_DIR", ".claude", ".credentials.json"),
         Agent::Muse => ("MUSE_HOME", ".config/muse", "auth.json"),
         Agent::Grok => ("GROK_HOME", ".grok", "auth.json"),
         Agent::Gemini => ("GEMINI_HOME", ".gemini", "oauth_creds.json"),
         Agent::Antigravity => ("GEMINI_HOME", ".gemini", "antigravity-acp/acp_token.json"),
-        Agent::Command => unreachable!(),
-    };
+        Agent::Command => return None,
+    })
+}
+
+/// These tool-free checks let only vendor code renew in the real home. No location overrides.
+pub fn host_sign_in_command(
+    binary: &Path,
+    args: &[String],
+    kind: Agent,
+    workspace: &Path,
+) -> std::io::Result<Command> {
+    let mut cmd = Command::new(binary);
+    cmd.args(args).current_dir(workspace);
+    match kind {
+        Agent::Claude => {
+            cmd.env_remove("CLAUDECODE").env("DISABLE_AUTOUPDATER", "1");
+        }
+        Agent::Codex => {}
+        Agent::Muse => {
+            cmd.env("MUSE_NO_AUTO_UPDATE", "1");
+        }
+        Agent::Grok => {
+            cmd.env("GROK_DISABLE_AUTOUPDATER", "1");
+        }
+        _ => {
+            return Err(std::io::Error::other(
+                "no verified real-home check for this agent",
+            ));
+        }
+    }
+    Ok(cmd)
+}
+fn home_inner(kind: Agent, cmd: &mut Command, home: &Path) -> std::io::Result<()> {
+    if kind == Agent::Command {
+        return Ok(());
+    }
+    let (variable, directory, credential) = agent_location(kind).expect("vendor location");
     let user_home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
-    let user_home = user_home.map(std::path::PathBuf::from);
-    let source = std::env::var_os(variable)
-        .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| user_home.as_ref().map(|p| p.join(directory)));
+    let user_home = user_home.map(PathBuf::from);
+    let source = sign_in_path(kind);
     #[cfg(unix)]
-    if shadow {
+    {
         let config = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty());
         let mut data = Vec::new();
         if let Some(user) = &user_home {
@@ -74,15 +138,9 @@ fn home_inner(kind: Agent, cmd: &mut Command, home: &Path, shadow: bool) -> std:
             .env("USERPROFILE", home)
             .env("XDG_CONFIG_HOME", config);
     }
-    if !shadow {
-        cmd.env("HOME", home)
-            .env("USERPROFILE", home)
-            .env("XDG_CONFIG_HOME", home.join(".config"));
-    }
     let agent_home = home.join(directory);
     std::fs::create_dir_all(&agent_home)?;
-    if let Some(source) = source {
-        let sign_in = source.join(credential);
+    if let Some(sign_in) = source {
         match std::fs::metadata(&sign_in) {
             Ok(_) => {
                 // An absolute target still works when the trial changes its working directory.
@@ -102,11 +160,14 @@ fn home_inner(kind: Agent, cmd: &mut Command, home: &Path, shadow: bool) -> std:
     for (key, _) in std::env::vars_os() {
         let name = key.to_string_lossy().to_ascii_uppercase();
         if ((name.starts_with("CLAUDE_") || name.starts_with("CODEX_"))
-            && name != "CLAUDE_CODE_OAUTH_TOKEN")
+            && !token_env(kind).contains(&name.as_str()))
             || matches!(name.as_str(), "CLAUDECODE" | "BASH_ENV" | "ENV" | "ZDOTDIR")
         {
             cmd.env_remove(key);
         }
+    }
+    if kind == Agent::Muse {
+        cmd.env("MUSE_AUTH_PATH", agent_home.join(credential));
     }
     cmd.env(variable, agent_home);
     Ok(())
@@ -142,6 +203,8 @@ pub fn sign_in_args(kind: Agent, model: &str) -> std::io::Result<Vec<String>> {
             "--setting-sources",
             "",
             "--no-session-persistence",
+            "--max-budget-usd",
+            "0.01",
             "--model",
             model,
             "Reply OK.",
@@ -161,21 +224,6 @@ pub fn sign_in_args(kind: Agent, model: &str) -> std::io::Result<Vec<String>> {
         }
     };
     Ok(args.into_iter().map(str::to_string).collect())
-}
-
-/// Keep runtime writes outside a shadow home: ordinary entries there may link to the real home.
-/// `root` must be a fresh, caller-owned directory outside that filtered view.
-pub fn private_runtime(cmd: &mut Command, root: &Path) -> std::io::Result<()> {
-    for (key, name) in [
-        ("XDG_DATA_HOME", "data"),
-        ("XDG_STATE_HOME", "state"),
-        ("XDG_CACHE_HOME", "cache"),
-    ] {
-        let path = root.join(name);
-        std::fs::create_dir_all(&path)?;
-        cmd.env(key, path);
-    }
-    Ok(())
 }
 
 // Keep this list in step with docs/compare.md. Dotless spellings also cover XDG config children.
@@ -313,6 +361,53 @@ fn link_sign_in(source: &Path, target: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sign_in_locations_follow_nonempty_vendor_overrides() {
+        for (kind, variable, directory, filename) in [
+            (
+                Agent::Claude,
+                "CLAUDE_CONFIG_DIR",
+                ".claude",
+                ".credentials.json",
+            ),
+            (Agent::Codex, "CODEX_HOME", ".codex", "auth.json"),
+            (Agent::Muse, "MUSE_HOME", ".config/muse", "auth.json"),
+            (Agent::Grok, "GROK_HOME", ".grok", "auth.json"),
+            (Agent::Gemini, "GEMINI_HOME", ".gemini", "oauth_creds.json"),
+        ] {
+            for configured in [None, Some(""), Some("custom")] {
+                let path = sign_in_path_from(kind, |key| match key {
+                    "HOME" => Some("user".into()),
+                    key if key == variable => configured.map(Into::into),
+                    _ => None,
+                })
+                .unwrap();
+                let root = if configured == Some("custom") {
+                    PathBuf::from("custom")
+                } else {
+                    Path::new("user").join(directory)
+                };
+                assert_eq!(path, root.join(filename));
+            }
+        }
+        for auth in ["", "auth-override"] {
+            let path = sign_in_path_from(Agent::Muse, |key| match key {
+                "HOME" => Some("user".into()),
+                "MUSE_HOME" => Some("custom".into()),
+                "MUSE_AUTH_PATH" => Some(auth.into()),
+                _ => None,
+            })
+            .unwrap();
+            assert_eq!(
+                path,
+                if auth.is_empty() {
+                    PathBuf::from("custom/auth.json")
+                } else {
+                    auth.into()
+                }
+            );
+        }
+    }
     #[cfg(unix)]
     #[test]
     fn shadow_home_keeps_tools_and_filters_all_agent_roots() {
@@ -435,6 +530,11 @@ mod tests {
         let claude = sign_in_args(Agent::Claude, "test-model").unwrap();
         assert!(claude.windows(2).any(|args| args == ["--tools", ""]));
         assert!(claude.contains(&"--safe-mode".into()));
+        assert!(
+            claude
+                .windows(2)
+                .any(|args| args == ["--max-budget-usd", "0.01"])
+        );
         assert_eq!(
             sign_in_args(Agent::Codex, "test-model").unwrap(),
             ["codex", "login", "status"]

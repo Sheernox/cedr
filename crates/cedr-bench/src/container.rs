@@ -94,15 +94,17 @@ pub struct Credential {
     pub source: PathBuf,
     pub target: &'static str,
 }
-pub fn token_env(h: Harness) -> &'static [&'static str] {
-    match h {
-        Harness::Claude => &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
-        Harness::Codex => &["OPENAI_API_KEY"],
-        Harness::Muse => &["MUSE_API_KEY", "META_API_KEY"],
-        Harness::Grok => &["XAI_API_KEY"],
-        Harness::Gemini => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-        _ => &[],
+impl Credential {
+    /// Resolve only after the vendor check, so atomic file/link replacements are visible.
+    pub fn resolve(source: &Path, target: &'static str) -> Result<Self> {
+        Ok(Self {
+            source: std::fs::canonicalize(source).map_err(|_| "cannot resolve vendor sign-in")?,
+            target,
+        })
     }
+}
+pub fn token_env(h: Harness) -> &'static [&'static str] {
+    cedr_agent::token_env(crate::run::agent(h))
 }
 pub fn credential(h: Harness) -> Result<Option<Credential>> {
     if token_env(h)
@@ -111,49 +113,23 @@ pub fn credential(h: Harness) -> Result<Option<Credential>> {
     {
         return Ok(None);
     }
-    if h == Harness::Command {
-        return Ok(None);
-    }
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .ok_or("HOME required for sign-in")?;
-    let (source, target) = match h {
-        Harness::Claude => (
-            std::env::var_os("CLAUDE_CONFIG_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".claude"))
-                .join(".credentials.json"),
-            "/home/bench/.claude/.credentials.json",
-        ),
-        Harness::Codex => (
-            std::env::var_os("CODEX_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".codex"))
-                .join("auth.json"),
-            "/home/bench/.codex/auth.json",
-        ),
-        Harness::Muse => (
-            home.join(".config/muse/auth.json"),
-            "/home/bench/.config/muse/auth.json",
-        ),
-        Harness::Grok => (home.join(".grok/auth.json"), "/home/bench/.grok/auth.json"),
-        Harness::Gemini => (
-            home.join(".gemini/oauth_creds.json"),
-            "/home/bench/.gemini/oauth_creds.json",
-        ),
+    let target = match h {
+        Harness::Claude => "/home/bench/.claude/.credentials.json",
+        Harness::Codex => "/home/bench/.codex/auth.json",
+        Harness::Muse => "/home/bench/.config/muse/auth.json",
+        Harness::Grok => "/home/bench/.grok/auth.json",
+        Harness::Gemini => "/home/bench/.gemini/oauth_creds.json",
         _ => return Ok(None),
     };
+    let source =
+        cedr_agent::sign_in_path(crate::run::agent(h)).ok_or("HOME required for sign-in")?;
     if !source.is_file() {
         return Err(format!(
             "{}: no sign-in file; sign in or set a supported provider token",
             h.name()
         ));
     }
-    Ok(Some(Credential {
-        source: std::fs::canonicalize(source).map_err(|e| e.to_string())?,
-        target,
-    }))
+    Credential::resolve(&source, target).map(Some)
 }
 /// Container argv is public for offline verification of the isolation boundary.
 pub fn task_args(
@@ -696,7 +672,7 @@ else:
         docker(&check_args.iter().map(String::as_str).collect::<Vec<_>>())
             .map_err(|_| "container UID/GID cannot write the bound workspace or home; check ownership and Docker user-namespace mappings".to_string())?;
         cmd.args(args).args(argv);
-        let out = exec::run_step_complete(cmd, None, timeout).map_err(|e| e.to_string());
+        let out = exec::run_step(cmd, None, timeout).map_err(|e| e.to_string());
         self.clear_task()?;
         out
     }

@@ -68,7 +68,6 @@ impl Backend for Stub {
                 ..Usage::default()
             },
             duration_ms: 1,
-            transcript: b"{\"type\":\"complete\"}\n".to_vec(),
             credentials: Vec::new(),
         })
     }
@@ -106,10 +105,10 @@ fn measure(o: &Options, unknown: bool) -> BenchResult {
     run::run(&s, o, &mut b, a.path(), |_| {}).unwrap()
 }
 #[test]
-fn credential_exposure_withholds_transcript_and_holds_run() {
+fn credential_exposure_withholds_task_and_holds_run() {
     struct Exposing {
         inner: Stub,
-        patch: bool,
+        attack: u8,
     }
     impl Backend for Exposing {
         fn invoke(
@@ -122,11 +121,20 @@ fn credential_exposure_withholds_transcript_and_holds_run() {
             if self.inner.calls > 2 {
                 let fake = "fake-credential-only-for-regression";
                 out.credentials = vec![fake.into()];
-                out.usage.models = vec![fake.into()];
-                if self.patch {
-                    std::fs::write(ws.join("answer.txt"), fake).unwrap();
-                } else {
-                    out.transcript = format!("{{\"token\":\"{fake}\"}}\n").into_bytes();
+                match self.attack {
+                    1 => std::fs::write(ws.join("answer.txt"), fake).unwrap(),
+                    2 => std::fs::write(
+                        ws.join(format!("{fake}.py")),
+                        "def __eq__(self, other): return True\n",
+                    )
+                    .unwrap(),
+                    9 => {
+                        use base64::Engine;
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(fake);
+                        std::fs::write(ws.join("answer.txt"), encoded).unwrap();
+                    }
+                    3..=6 | 8 | 10..=12 => {}
+                    _ => out.usage.models = vec![fake.into()],
                 }
             }
             Ok(out)
@@ -138,14 +146,33 @@ fn credential_exposure_withholds_transcript_and_holds_run() {
             ws: &Path,
             seed: u64,
         ) -> Result<Vec<u8>, String> {
-            self.inner.grade(suite, task, ws, seed)
+            match self.attack {
+                10 => Ok(br#"{"checks":[{"id":"fake-credential-only-for-regression","passed":true},{"id":"b","passed":true},{"id":"c","passed":true},{"id":"d","passed":true}]}"#.to_vec()),
+                11 if task.kind == Kind::Visual => Ok(br#"{"gates":[{"id":"fake-credential-only-for-regression","passed":true}]}"#.to_vec()),
+                12 if task.kind == Kind::Visual => Ok(br#"{"gates":[{"id":"file","passed":false,"detail":"fake\u002dcredential-only-for-regression"}]}"#.to_vec()),
+                3 if task.kind == Kind::Visual => Ok(br#"{"gates":[{"id":"file","passed":true,"detail":"fake-credential-only-for-regression"}]}"#.to_vec()),
+                4 => Err("grader: fake-credential-only-for-regression".into()),
+                8 if task.kind == Kind::Visual => Ok(br#"{
+                    "gates":[{"id":"file","passed":true,"detail":"ordinary detail"}],
+                    "artifacts":["fake\u002dcredential-only-for-regression.png"]
+                }"#.to_vec()),
+                5 if task.kind == Kind::Visual => Ok(br#"{"gates":[{"id":"file","passed":true}],"artifacts":["fake-credential-only-for-regression.png"]}"#.to_vec()),
+                6 if task.kind == Kind::Visual => {
+                    std::fs::write(ws.join("image.png"), "fake-credential-only-for-regression").unwrap();
+                    Ok(br#"{"gates":[{"id":"file","passed":true}],"artifacts":["image.png"]}"#.to_vec())
+                }
+                _ => self.inner.grade(suite, task, ws, seed),
+            }
         }
         fn environment(&self) -> Environment {
             self.inner.environment()
         }
     }
-    for patch in [false, true] {
-        let suite = suite::load(&fixture()).unwrap();
+    for attack in 1..13 {
+        let mut suite = suite::load(&fixture()).unwrap();
+        if matches!(attack, 3 | 5 | 6 | 8 | 11 | 12) {
+            suite.tasks[0].kind = Kind::Visual;
+        }
         let artifacts = tempfile::tempdir().unwrap();
         let mut backend = Exposing {
             inner: Stub {
@@ -153,25 +180,34 @@ fn credential_exposure_withholds_transcript_and_holds_run() {
                 unknown: false,
                 unknown_at: None,
             },
-            patch,
+            attack,
         };
-        let result = run::run(&suite, &options(), &mut backend, artifacts.path(), |_| {}).unwrap();
-        let task = &result.tasks[0];
-        assert_eq!(
-            task.transcript_withheld.as_deref(),
-            Some("credential_exposed")
+        let mut messages = Vec::new();
+        let result = run::run(&suite, &options(), &mut backend, artifacts.path(), |s| {
+            messages.push(s.to_string())
+        })
+        .unwrap();
+        assert!(
+            !messages
+                .join("\n")
+                .contains("fake-credential-only-for-regression")
         );
+        let task = &result.tasks[0];
         assert!(
             task.tamper_signals
                 .iter()
                 .any(|s| s.kind == "descriptor_access")
         );
-        assert!(task.transcript_sha256.is_none());
-        assert!(task.transcript_bytes.is_none());
-        assert!(!artifacts.path().join("fix/transcript.jsonl").exists());
-        if patch {
-            assert!(!artifacts.path().join("fix/submission.patch").exists());
-        }
+        assert!(!artifacts.path().join("fix").exists(), "attack {attack}");
+        assert_eq!(task.status, Status::SetupFailed);
+        assert!(task.patch_sha256.is_none());
+        assert_eq!(task.tamper_signals.len(), 1);
+        assert_eq!(task.tamper_signals[0].path, "submission.patch");
+        assert_eq!(task.tamper_signals[0].line, 1);
+        assert!(task.checks.is_empty());
+        assert!(task.gates.is_empty());
+        assert!(task.artifacts.is_empty());
+        assert!(task.error.is_none());
         assert!(!result.eligible);
         assert!(
             !serde_json::to_string(&result)
@@ -179,6 +215,30 @@ fn credential_exposure_withholds_transcript_and_holds_run() {
                 .contains("fake-credential-only-for-regression")
         );
     }
+}
+
+#[test]
+fn capture_can_retain_evidence_outside_the_system_temporary_filesystem() {
+    // Project files and the system temp directory can be on different mounts.
+    let artifacts = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let suite = suite::load(&fixture()).unwrap();
+    let mut backend = Stub {
+        calls: 0,
+        unknown: false,
+        unknown_at: None,
+    };
+    let result = run::run(&suite, &options(), &mut backend, artifacts.path(), |_| {}).unwrap();
+    for task in &result.tasks {
+        let path = artifacts.path().join(&task.id).join("submission.patch");
+        assert_eq!(
+            cedr_bench::sha(&std::fs::read(path).unwrap()),
+            task.patch_sha256.as_ref().unwrap().as_str()
+        );
+    }
+    assert_eq!(
+        std::fs::read_dir(artifacts.path()).unwrap().count(),
+        result.tasks.len()
+    );
 }
 
 #[test]
@@ -258,15 +318,45 @@ fn show_refuses_tampered_summary_and_round_trips() {
     let mut json = serde_json::to_value(&r).unwrap();
     let bytes = serde_json::to_vec(&r).unwrap();
     parse(&bytes).unwrap();
-    let mut older = json.clone();
-    for task in older["tasks"].as_array_mut().unwrap() {
-        task.as_object_mut().unwrap().remove("transcript_sha256");
-        task.as_object_mut().unwrap().remove("transcript_bytes");
+    let mut eligible = r.clone();
+    eligible.config.harness = "codex".into();
+    eligible.environment.mode = "container".into();
+    eligible.environment.network = "allowlist".into();
+    eligible.environment.pinned = true;
+    eligible.probe.status = ProbeStatus::Match;
+    eligible.summarize();
+    assert!(eligible.eligible);
+    for retired_fields in [false, true] {
+        for old_eligible in [false, true] {
+            let mut legacy = serde_json::to_value(&eligible).unwrap();
+            legacy["eligible"] = old_eligible.into();
+            if retired_fields {
+                for task in legacy["tasks"].as_array_mut().unwrap() {
+                    task["transcript_sha256"] = "0".repeat(64).into();
+                    task["transcript_bytes"] = 10.into();
+                    task["transcript_withheld"] = serde_json::Value::Null;
+                }
+            }
+            assert!(
+                parse(&serde_json::to_vec(&legacy).unwrap())
+                    .unwrap()
+                    .eligible
+            );
+            // A credential hold in an older result still cannot become eligible.
+            legacy["tasks"][0]["status"] = "setup_failed".into();
+            legacy["tasks"][0]["checks"] = serde_json::json!([]);
+            legacy["tasks"][0]["score"] = 0.0.into();
+            legacy["tasks"][0]["patch_sha256"] = serde_json::Value::Null;
+            legacy["tasks"][0]["transcript_withheld"] = "credential_exposed".into();
+            legacy["score"] = 37.5.into();
+            legacy["complete"] = false.into();
+            legacy["eligible"] = false.into();
+            let held = parse(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+            assert!(!held.eligible);
+            legacy["eligible"] = true.into();
+            assert!(parse(&serde_json::to_vec(&legacy).unwrap()).is_err());
+        }
     }
-    parse(&serde_json::to_vec(&older).unwrap()).unwrap();
-    let mut broken = json.clone();
-    broken["tasks"][0]["transcript_bytes"] = serde_json::Value::Null;
-    assert!(parse(&serde_json::to_vec(&broken).unwrap()).is_err());
     json["score"] = serde_json::json!(99);
     assert!(parse(&serde_json::to_vec(&json).unwrap()).is_err());
 }
@@ -966,46 +1056,6 @@ fn reference_tolerances_are_bounded_and_applied_to_loaded_results() {
             .tolerance,
         16
     );
-}
-
-#[test]
-fn task_evidence_retains_exact_transcripts_and_verified_patches() {
-    let suite = suite::load(&fixture()).unwrap();
-    let directory = tempfile::tempdir().unwrap();
-    let mut backend = Stub {
-        calls: 0,
-        unknown: false,
-        unknown_at: None,
-    };
-    let result = run::run(&suite, &options(), &mut backend, directory.path(), |_| {}).unwrap();
-    for task in &result.tasks {
-        let patch =
-            std::fs::read(directory.path().join(&task.id).join("submission.patch")).unwrap();
-        assert_eq!(task.patch_sha256, Some(cedr_bench::sha(&patch)));
-        assert!(String::from_utf8_lossy(&patch).contains("fixed"));
-        let transcript_path = directory.path().join(&task.id).join("transcript.jsonl");
-        let transcript = std::fs::read(&transcript_path).unwrap();
-        assert_eq!(transcript, b"{\"type\":\"complete\"}\n");
-        assert_eq!(task.transcript_sha256, Some(cedr_bench::sha(&transcript)));
-        assert_eq!(task.transcript_bytes, Some(transcript.len() as u64));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(transcript_path)
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
-        }
-        assert!(
-            task.artifacts
-                .iter()
-                .all(|artifact| !artifact.path.ends_with("submission.patch"))
-        );
-    }
 }
 
 #[test]

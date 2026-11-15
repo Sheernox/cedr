@@ -115,12 +115,6 @@ pub struct TaskResult {
     pub tokens: Tokens,
     pub cost_usd: Option<f64>,
     pub patch_sha256: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transcript_sha256: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transcript_bytes: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transcript_withheld: Option<String>,
     #[serde(default)]
     pub tamper_signals: Vec<TamperSignal>,
     pub gates: Vec<Gate>,
@@ -142,9 +136,6 @@ impl TaskResult {
             tokens: Tokens::default(),
             cost_usd: None,
             patch_sha256: None,
-            transcript_sha256: None,
-            transcript_bytes: None,
-            transcript_withheld: None,
             tamper_signals: Vec::new(),
             gates: Vec::new(),
             artifacts: Vec::new(),
@@ -411,15 +402,6 @@ impl BenchResult {
                     return Err("invalid artifact".into());
                 }
             }
-            if t.transcript_sha256.as_ref().is_some_and(|s| !digest(s))
-                || t.transcript_sha256.is_some() != t.transcript_bytes.is_some()
-                || t.transcript_withheld
-                    .as_deref()
-                    .is_some_and(|reason| reason != "credential_exposed")
-                || t.transcript_withheld.is_some() && t.transcript_sha256.is_some()
-            {
-                return Err("invalid transcript metadata".into());
-            }
             if t.patch_sha256.as_ref().is_some_and(|s| !digest(s)) {
                 return Err("invalid patch digest".into());
             }
@@ -498,13 +480,39 @@ pub fn parse(bytes: &[u8]) -> Result<BenchResult> {
     if bytes.len() > 16 * 1024 * 1024 {
         return Err("result exceeds 16 MiB".into());
     }
-    let result: BenchResult = serde_json::from_slice(bytes).map_err(|e| {
+    // Retired capture fields are accepted only at this version-1 loading boundary.
+    let mut value: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| {
         format!(
             "invalid Bench JSON at line {}, column {}",
             e.line(),
             e.column()
         )
     })?;
+    if let Some(tasks) = value
+        .get_mut("tasks")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for task in tasks {
+            if let Some(fields) = task.as_object_mut() {
+                for retired in [
+                    "transcript_sha256",
+                    "transcript_bytes",
+                    "transcript_withheld",
+                ] {
+                    fields.remove(retired);
+                }
+            }
+        }
+    }
+    let mut result: BenchResult =
+        serde_json::from_value(value).map_err(|_| "invalid Bench result fields")?;
+    // Older runs could be held solely by transcript requirements. Lift only that
+    // obsolete restriction; never accept a claimed eligibility that the facts deny.
+    if !result.eligible {
+        let mut derived = result.clone();
+        derived.summarize();
+        result.eligible = derived.eligible;
+    }
     result.validate()?;
     Ok(result)
 }
