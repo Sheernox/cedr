@@ -2,11 +2,11 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/compare.md](docs/compare.md) (Compare), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
-## v0.12.0 (2026-11-13)
+## v0.12.0 (2026-11-14)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.12.0.png" alt="cedr v0.12.0: bench" width="770">
 
-**v0.12.0** · 24 changes from 1 contributor
+**v0.12.0** · 34 changes from 1 contributor
 
 ### Highlights
 **Benchmark one configuration.** Run `cedr bench run --harness claude --model MODEL` on a frozen public suite for code checks, list cost and visual artifacts.
@@ -71,6 +71,16 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 * fix(bench): retain full evidence and report incomplete costs
 * fix(agent): preserve usable sign-ins across concurrent renewals
 * fix(bench): verify graded bytes and detect grader manipulation
+* fix(agent): rank every displaced sign-in before cleanup
+* fix(bench): leave container host renewals to vendor clis
+* fix(bench): audit module assignments without flagging calls
+* fix(agent): keep displaced sign-ins on equal write times
+* docs(agent): distinguish sign-in links from saved renewals
+* test(agent): retain the last token when exchange retries exhaust
+* fix(bench): retain concurrent sign-ins without overwrites
+* refactor(bench): simplify isolation and export guarded evidence
+* fix(bench): mask sign-in values in results and stop saving transcripts
+* chore(release): date cedr 0.12.0 and list every change
 
 **Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.11.3...v0.12.0
 </details>
