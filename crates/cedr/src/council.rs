@@ -290,7 +290,8 @@ pub fn run(command: CouncilCommand, config: &route::ConfigArg) -> Result<ExitCod
                     serde_json::to_string_pretty(&plan).expect("plan serializes")
                 );
             } else {
-                print_pick(&plan.pick, format);
+                // The plan's own readiness decides the exit code below, not the pick's.
+                let _ = print_pick(&plan.pick, format);
                 for warning in plan.pick.warnings.iter().skip(session.warnings.len()) {
                     println!("warning: {warning}");
                 }
