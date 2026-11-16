@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "kind": "bench",
+  "id": "b-20261113T000000Z-abcdef",
+  "edition": {
+    "number": 1,
+    "suite_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "commit": null,
+    "image": ""
+  },
+  "config": {
+    "harness": "command",
+    "harness_version": "custom",
+    "model": "/local-only/model",
+    "effort": null,
+    "resolved_models": [
+      "file:/local-only/model",
+      ".\\models\\private.gguf",
+      "..\\private\\model.gguf",
+      "~\\models\\private.gguf",
+      "C:private\\model.gguf",
+      "models\\private.gguf",
+      "C:private/model.gguf",
+      "  /local-only/model  ",
+      "~fixture/models/private.gguf",
+      "\u200b/local-only/model",
+      "\ufeff/local-only/model",
+      "\ufe0f/local-only/model",
+      "provider/model",
+      "a:mini"
+    ]
+  },
+  "environment": {
+    "mode": "local",
+    "clean_home": false,
+    "network": "host",
+    "pinned": false,
+    "agent_image": null,
+    "verified": [],
+    "limits": null,
+    "os": "linux",
+    "arch": "x86_64",
+    "cli": "test"
+  },
+  "probe": {
+    "input_tokens": 100,
+    "tools": 2,
+    "reference": null,
+    "tolerance": 16,
+    "status": "no_reference",
+    "tools_ok": true,
+    "cost_usd": 0.1,
+    "fingerprint_cost_usd": 0.1,
+    "tools_cost_usd": 0.0
+  },
+  "billing": "plan",
+  "started_at": "2026-11-13T00:00:00Z",
+  "finished_at": "2026-11-13T00:00:01Z",
+  "goal_usd": 10.0,
+  "stop_usd": null,
+  "spent_usd": 1.6,
+  "over_goal": false,
+  "unpriced_trials": 0,
+  "complete": true,
+  "stop": null,
+  "score": 75.0,
+  "solved": 0,
+  "code_tasks": 1,
+  "eligible": false,
+  "tasks": [
+    {
+      "status": "graded",
+      "error": "local-only /local-only/output.txt",
+      "solved": false,
+      "seed": 42,
+      "turns": 2,
+      "input_tokens": null,
+      "cache_read_tokens": null,
+      "cache_write_tokens": null,
+      "output_tokens": null,
+      "reasoning_tokens": null,
+      "patch_sha256": null,
+      "tamper_signals": [
+        {
+          "path": "src/local-only.rs",
+          "line": 1,
+          "kind": "process_introspection"
+        }
+      ],
+      "gates": [],
+      "artifacts": [],
+      "id": "code",
+      "kind": "code",
+      "score": 0.75,
+      "duration_ms": 1000,
+      "cost_usd": 1.0,
+      "checks": [
+        {
+          "id": "case",
+          "passed": true
+        },
+        {
+          "id": "edge",
+          "passed": true
+        },
+        {
+          "id": "regression",
+          "passed": true
+        },
+        {
+          "id": "constraint",
+          "passed": false
+        }
+      ]
+    },
+    {
+      "status": "graded",
+      "error": "local-only /local-only/output.txt",
+      "solved": false,
+      "seed": 42,
+      "turns": 2,
+      "input_tokens": null,
+      "cache_read_tokens": null,
+      "cache_write_tokens": null,
+      "output_tokens": null,
+      "reasoning_tokens": null,
+      "patch_sha256": null,
+      "tamper_signals": [],
+      "gates": [
+        {
+          "id": "file",
+          "passed": true,
+          "detail": "local-only /local-only/screen.png"
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "visual/screen.png",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bytes": 8
+        }
+      ],
+      "id": "visual",
+      "kind": "visual",
+      "score": null,
+      "duration_ms": 2000,
+      "cost_usd": 0.5,
+      "checks": []
+    }
+  ],
+  "tamper_review": {
+    "verdict": "tampered",
+    "note": "local-only /local-only/review.txt",
+    "time": "2026-11-13T00:01:00Z"
+  }
+}

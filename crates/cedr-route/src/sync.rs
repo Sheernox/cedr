@@ -589,16 +589,25 @@ pub fn send_monitor(sync: &Sync, key: &str, body: &Value) -> Result<Value> {
 
 /// Sends one saved Compare result using Route's transport and bounded reply rules.
 pub fn send_compare(sync: &Sync, key: &str, body: &Value) -> Result<Value> {
+    send_saved_result(sync, key, body, "compare")
+}
+
+/// Sends only explicitly selected Bench measurements; local evidence is never serialized by this transport.
+pub fn send_bench(sync: &Sync, key: &str, body: &Value) -> Result<Value> {
+    send_saved_result(sync, key, body, "bench")
+}
+
+fn send_saved_result(sync: &Sync, key: &str, body: &Value, product: &str) -> Result<Value> {
     let client = client(sync.url())?;
     let mut retries = 0;
     loop {
         let response = client
-            .post(format!("{}/compare/runs", sync.url()))
+            .post(format!("{}/{product}/runs", sync.url()))
             .bearer_auth(key)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.to_string())
             .send()
-            .map_err(|e| sync_err("compare", request_error(e)))?;
+            .map_err(|e| sync_err(product, request_error(e)))?;
         // A busy organization lock is transient; idempotent result ids make retrying safe.
         if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE && retries < 2 {
             let seconds = response
@@ -614,11 +623,12 @@ pub fn send_compare(sync: &Sync, key: &str, body: &Value) -> Result<Value> {
             continue;
         }
         if !response.status().is_success() {
-            return Err(reply_error("compare", response, key));
+            return Err(reply_error(product, response, key));
         }
-        let bytes = read_limited(response, 4096).map_err(|e| sync_err("compare reply", e))?;
+        let bytes =
+            read_limited(response, 4096).map_err(|e| sync_err(&format!("{product} reply"), e))?;
         return serde_json::from_slice(&bytes)
-            .map_err(|_| sync_err("compare reply", "invalid JSON"));
+            .map_err(|_| sync_err(&format!("{product} reply"), "invalid JSON"));
     }
 }
 

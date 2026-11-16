@@ -2,6 +2,28 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/compare.md](docs/compare.md) (Compare), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.13.0 (2026-11-15)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.13.0.png" alt="cedr v0.13.0: bench push" width="770">
+
+**v0.13.0** · 1 change from 1 contributor
+
+### Highlights
+**Send saved Bench measurements when you choose.** Run `cedr bench push --dry-run` to inspect the payload, then `cedr bench push --org ORG` to send unsent results to your organization. Running, reviewing and exporting a benchmark never uploads it automatically.
+
+### Features
+- **Explicit Bench uploads:** push all unsent results or selected IDs with `--org`, `--config`, `--dry-run` and text or JSON output. Measurements include task checks, reported usage, cost and environment facts. Prompts, output, patches, screenshots, grader details and review notes stay local. Receipts are scoped to the organization and recorded only after a matching successful reply. Results outside its history allowance are reported separately as not retained; explicit IDs can be resent. Measurement uploads do not need local artifact files.
+- **Bounded requests:** measurement bodies are limited to 256 KiB. Uploads reuse authenticated transport, redacted failures and the bounded retry policy for a busy organization. No API key is needed for a dry run.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* feat(bench): push saved measurements explicitly
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.12.1...v0.13.0
+</details>
+
 ## v0.12.1 (2026-11-15)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.12.1.png" alt="cedr v0.12.1: sign-in" width="770">

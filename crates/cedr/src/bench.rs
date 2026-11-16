@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::Duration;
 
+mod push;
+
 #[derive(Args)]
 pub struct Configuration {
     /// claude, codex, muse, grok, or gemini (container-capable harnesses)
@@ -40,6 +42,8 @@ pub struct Configuration {
 }
 #[derive(Subcommand)]
 pub enum BenchCommand {
+    /// Send saved measurements to an organization; artifacts stay on this machine
+    Push(push::PushArgs),
     /// Run every edition task once, recording a score, list cost and visual artifacts
     Run {
         #[command(flatten)]
@@ -357,6 +361,7 @@ fn reference(c: &Configuration, o: &Options, p: &report::Probe) -> Result<(), St
 }
 pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
     match command {
+        BenchCommand::Push(args) => push::run(args),
         BenchCommand::Run {
             config,
             stop_at_usd,
@@ -512,7 +517,8 @@ fn result_path(id: &str) -> PathBuf {
         PathBuf::from(id)
     }
 }
-pub(crate) fn read_result(id: &str) -> Result<BenchResult, String> {
+/// Loads recorded measurements without requiring local evidence, for an explicit measurement-only push.
+fn read_recorded_result(id: &str) -> Result<BenchResult, String> {
     let path = result_path(id);
     if std::fs::metadata(&path).map_err(|e| e.to_string())?.len() > 16 * 1024 * 1024 {
         return Err("result exceeds 16 MiB".into());
@@ -521,6 +527,11 @@ pub(crate) fn read_result(id: &str) -> Result<BenchResult, String> {
     if path.file_stem().and_then(|s| s.to_str()) != Some(&r.id) {
         return Err("result id does not match file name".into());
     }
+    Ok(r)
+}
+/// Local reads still verify the retained patches behind clean reviews.
+pub(crate) fn read_result(id: &str) -> Result<BenchResult, String> {
+    let r = read_recorded_result(id)?;
     if r.eligible {
         cedr_bench::evidence::verify_tasks(&results().join(&r.id).join("artifacts"), &r.tasks)?;
     }

@@ -98,6 +98,7 @@ A visual task has `kind: "visual"`, `gates: [{"id", "passed", "detail"}]` and `a
 - `cedr bench probe --harness H --model M [--effort E]`: the probe alone.
 - `cedr bench history`, `cedr bench show <ID>`: as in Compare.
 - `cedr bench export <ID>... --out DIR`: writes `results.json` and screenshots under `shots/<id>/<task>/`, for publishing.
+- `cedr bench push [ID]... [--org ORG] [--config PATH] [--dry-run] [--format text|json]`: explicitly sends saved measurements to an organization, as described below.
 
 Exit codes follow Compare: 0 complete, 3 incomplete, 2 usage or I/O. There is no `--fail-on`: Bench reports, it does not gate.
 
@@ -154,7 +155,32 @@ Each task's `tamper_signals` is an array of `{"path":"src/example.py","line":12,
 
 Signals are review prompts and never change correctness scores. A run with any signal remains ineligible until a person reads its saved patches and records a clean review, except that `evidence_mismatch` and credential matches always remain ineligible and require the run to be run again. The top-level `tamper_review` is null when unreviewed, otherwise `{"verdict":"clean","note":"Read each saved patch; ordinary application code","time":"2026-11-14T00:00:00+00:00"}`. Verdict is `clean` or `tampered`; notes and offset-bearing ISO-8601 times are validated when loading a result. A clean review verifies each flagged task's saved patch against its recorded hash. Missing or altered files refuse the review with the task and filename. The same verification runs before a new result becomes eligible and when an eligible result is loaded. It clears only the tamper restriction, so other eligibility requirements still apply. MCP `bench_show` carries the review and original signals; export carries the review and signal kinds.
 
-`run` and `probe` accept `--suite`, `--edition`, `--build-image`, `--agent-version`, `--set-reference`, and `--format text|json`. The publisher sets references first with `probe --set-reference` and appends the printed entry to `probes/edition-<n>.toml`. A self-set `Reference` is not eligible; listing requires `Match` against a published reference with all input token classes present. Probe results are printed but not saved as benchmark runs. `history --limit N` and `show ID` accept text and JSON. `export` copies validated screenshots and writes validated results as a JSON array, with tamper paths and line numbers omitted. It refuses screenshot hash or length mismatches and overwrites. Patches remain local. The loader accepts retired capture fields from older version-1 results and derives eligibility without those requirements; an obsolete hold alone does not prevent listing. No command uploads results.
+`run` and `probe` accept `--suite`, `--edition`, `--build-image`, `--agent-version`, `--set-reference`, and `--format text|json`. The publisher sets references first with `probe --set-reference` and appends the printed entry to `probes/edition-<n>.toml`. A self-set `Reference` is not eligible; listing requires `Match` against a published reference with all input token classes present. Probe results are printed but not saved as benchmark runs. `history --limit N` and `show ID` accept text and JSON. `export` copies validated screenshots and writes validated results as a JSON array, with tamper paths and line numbers omitted. It refuses screenshot hash or length mismatches and overwrites. Patches remain local. The loader accepts retired capture fields from older version-1 results and derives eligibility without those requirements; an obsolete hold alone does not prevent listing. Runs never upload automatically; only an explicit `push` sends measurements.
+
+## Push
+
+`cedr bench push` sends unsent saved runs on this machine. Explicit IDs resend those runs, including ones sent before. `--org` overrides `[sync] org`; `--config` selects the local routes file. The API key comes from `CEDR_API_KEY` or the configured secret helper, as for Compare. Running Bench still needs no account. Neither `run`, `review`, `show`, `export` nor the read-only MCP tools upload anything. Push validates recorded measurements without requiring local artifact files; it does not verify or claim public eligibility.
+
+Each request is `POST <sync url>/bench/runs`, with a JSON body of at most 256 KiB:
+
+```json
+{"org":"org-000000000001","cli":"X.Y.Z","machine":{"id":"m-000000000001","name":"workstation"},"result":{}}
+```
+
+`result` is a version-1 `kind: "bench"` measurement with these allowlisted fields:
+
+- Header: `version`, `kind`, `id`, `edition`, `config`, `billing`, `started_at`, `finished_at`, `goal_usd`, `stop_usd`, `spent_usd`, `over_goal`, `unpriced_trials`, `complete`, `stop`, `score`, `solved`, `code_tasks`.
+- `edition`: number, suite digest, commit and pinned image. `config`: harness, harness version, model, effort and resolved models. Local model paths are replaced with `[local model]`, including Windows relative forms. Names such as `provider/model` and `a:mini` stay unchanged.
+- `environment`: `mode`, `clean_home`, `network`, `pinned`, `os`, `arch`, `cli`. These and the probe are the CLI's reported facts, not server attestations.
+- `probe`: input tokens, tool count, reference, tolerance, status, tool readiness and the three cost fields.
+- `tasks`: id, kind, status, checks (`id`, `passed`), score, solved, duration, turns, the five token fields, cost, gates (`id`, `passed`), and tamper signals (`kind` only).
+- `tamper_review`: null, or the verdict and offset-bearing time. The note is omitted.
+
+Prompts, event output, errors, gate details, patches, artifact paths, screenshots, seeds, review notes and eligibility claims are omitted. Check and gate IDs must be plain suite identifiers. Unknown signal categories are sent as `other`. Local files are unchanged. The endpoint accepts complete and incomplete runs, strips unknown fields, validates derived measurements and checks organization membership. It never executes uploaded content or submits a result to the public Benchmarks page.
+
+An accepted reply is `{"ok":true,"id":"b-20261113T000000Z-abcdef","duplicate":false,"retained":true}`. The organization and run ID identify an immutable first write across members; a retry returns `duplicate: true`. `retained` reports whether the result remains after the organization's current history allowance is applied. An expired or over-cap result returns `retained: false`; the CLI reports it separately as `not_retained`, preserves its local file and records the acknowledgement so default batches do not repeatedly resend it. Explicit IDs recheck it if the allowance changes. Results kept now can still expire or be removed by later retention.
+
+Only matching accepted replies with both boolean fields mark a run sent, separately for each organization. A 503 is retried at most twice using the bounded `Retry-After` interval. Other failures leave the run available for a later push. A batch still sends its other runs and exits 2 if any failed; normal JSON output is `{pushed: [id], duplicates: [id], not_retained: [id], failed: [{id, error}]}`. To bypass an oversized or unsupported saved result, name the other IDs explicitly. `--dry-run` needs no API key, prints the request bodies as a JSON array and neither sends nor marks them. Exit 0 means every result was acknowledged (including any reported as not retained), or there were no unsent runs.
 
 Exit 0 means complete, 3 incomplete or failed probe, 2 usage or I/O failure. No score threshold changes an exit code. There is no Bench Action input in this version: CI may invoke the CLI directly. There is no MCP run tool because it spends money. Fetching a suite, pulling images and vendor installers make ordinary operational network requests, documented in telemetry.md, without sending results.
 
