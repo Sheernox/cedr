@@ -6,7 +6,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.13.0.png" alt="cedr v0.13.0: bench push" width="770">
 
-**v0.13.0** · 1 change from 1 contributor
+**v0.13.0** · 2 changes from 1 contributor
 
 ### Highlights
 **Send saved Bench measurements when you choose.** Run `cedr bench push --dry-run` to inspect the payload, then `cedr bench push --org ORG` to send unsent results to your organization. Running, reviewing and exporting a benchmark never uploads it automatically.
@@ -20,6 +20,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 #### What's Changed
 * feat(bench): push saved measurements explicitly
+* docs(bench): explain review before measurement uploads
 
 **Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.12.1...v0.13.0
 </details>

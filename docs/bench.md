@@ -161,6 +161,8 @@ Signals are review prompts and never change correctness scores. A run with any s
 
 `cedr bench push` sends unsent saved runs on this machine. Explicit IDs resend those runs, including ones sent before. `--org` overrides `[sync] org`; `--config` selects the local routes file. The API key comes from `CEDR_API_KEY` or the configured secret helper, as for Compare. Running Bench still needs no account. Neither `run`, `review`, `show`, `export` nor the read-only MCP tools upload anything. Push validates recorded measurements without requiring local artifact files; it does not verify or claim public eligibility.
 
+Review flagged runs before their first push. The accepted copy includes the review verdict and cannot be updated by resending. If you review a run after pushing it, remove its saved result from the organization in the app, then push that ID explicitly to send the revised measurements.
+
 Each request is `POST <sync url>/bench/runs`, with a JSON body of at most 256 KiB:
 
 ```json
