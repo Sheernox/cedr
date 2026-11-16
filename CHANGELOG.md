@@ -2,6 +2,30 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/compare.md](docs/compare.md) (Compare), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.12.1 (2026-11-15)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.12.1.png" alt="cedr v0.12.1: sign-in" width="770">
+
+**v0.12.1** · 3 changes from 1 contributor
+
+### Highlights
+**Claude flagships run again.** `cedr bench` and `cedr compare` no longer stop with `host sign-in check failed` for a signed-in Claude user whose model is Fable 5.2, or Opus 5.5 or Sonnet 5.5 on a cold cache.
+
+### Fixes
+- **Claude sign-in check:** the one-word host check before each Claude run was capped at $0.01, less than Fable 5.2 charges for that reply. The cap is now $0.25 and only bounds a runaway; the check itself is unchanged and stays outside run totals.
+- **`cedr council plan` exit code:** the plan's own readiness sets the exit status, and the build no longer trips the newer Rust toolchain's unused-result lint.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* fix(council): ignore the pick's exit code that the plan replaces
+* fix(bench): let the claude sign-in check afford a flagship reply
+* chore(release): fix the claude sign-in check as cedr 0.12.1
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.12.0...v0.12.1
+</details>
+
 ## v0.12.0 (2026-11-14)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.12.0.png" alt="cedr v0.12.0: bench" width="770">

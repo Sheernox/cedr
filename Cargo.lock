@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "cedr"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "cedr-bench",
  "cedr-compare",
@@ -203,14 +203,14 @@ dependencies = [
 
 [[package]]
 name = "cedr-agent"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "tempfile",
 ]
 
 [[package]]
 name = "cedr-bench"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "base64",
  "cedr-agent",
@@ -228,7 +228,7 @@ dependencies = [
 
 [[package]]
 name = "cedr-compare"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "cedr-agent",
  "cedr-monitor",
@@ -244,7 +244,7 @@ dependencies = [
 
 [[package]]
 name = "cedr-core"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "base64",
  "flate2",
@@ -271,7 +271,7 @@ dependencies = [
 
 [[package]]
 name = "cedr-monitor"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "cedr-route",
  "chrono",
@@ -286,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "cedr-route"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "chrono",
  "getrandom 0.4.3",
@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "cedr-sync"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "cedr-core",
  "regex",
