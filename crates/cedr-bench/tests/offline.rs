@@ -1109,3 +1109,14 @@ fn a_missing_cache_class_in_one_turn_cannot_match_a_partial_fingerprint() {
     assert_eq!(usage.tokens.cache_write_tokens, Some(30));
     assert!(usage.cost_usd.is_some());
 }
+#[test]
+fn the_claude_sign_in_check_budget_covers_a_cold_reply_from_every_flagship() {
+    // Measured on the check's own command: about 4,000 prompt tokens, all written to the
+    // one hour cache when it is cold, and a reply of a few tokens.
+    let budget: f64 = cedr_agent::SIGN_IN_CHECK_BUDGET_USD.parse().unwrap();
+    for model in ["claude-fable-5-2", "claude-opus-5-5", "claude-sonnet-5-5"] {
+        let (price, _) = cedr_monitor::pricing::price(model).unwrap();
+        let cold = (4000.0 * price.cache_write1h + 10.0 * price.output) / 1e6;
+        assert!(cold * 2.0 < budget, "{model}: a cold check costs ${cold}");
+    }
+}

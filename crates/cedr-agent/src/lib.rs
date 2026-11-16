@@ -190,6 +190,12 @@ pub fn renewal_notice(home: &Path) -> std::io::Result<Option<&'static str>> {
     Ok(None)
 }
 
+/// Spending cap of Claude's host sign-in check, in USD. The check is one short reply, but its
+/// prompt of about 4,000 tokens is written to the cache when cold, which a flagship model prices
+/// above six cents. A cap below that fails the check for a signed-in user, so it only bounds a
+/// runaway.
+pub const SIGN_IN_CHECK_BUDGET_USD: &str = "0.25";
+
 /// Non-interactive checks cannot execute tools or load user agent setup.
 pub fn sign_in_args(kind: Agent, model: &str) -> std::io::Result<Vec<String>> {
     let args: Vec<&str> = match kind {
@@ -204,7 +210,7 @@ pub fn sign_in_args(kind: Agent, model: &str) -> std::io::Result<Vec<String>> {
             "",
             "--no-session-persistence",
             "--max-budget-usd",
-            "0.01",
+            SIGN_IN_CHECK_BUDGET_USD,
             "--model",
             model,
             "Reply OK.",
@@ -533,7 +539,7 @@ mod tests {
         assert!(
             claude
                 .windows(2)
-                .any(|args| args == ["--max-budget-usd", "0.01"])
+                .any(|args| args == ["--max-budget-usd", SIGN_IN_CHECK_BUDGET_USD])
         );
         assert_eq!(
             sign_in_args(Agent::Codex, "test-model").unwrap(),
