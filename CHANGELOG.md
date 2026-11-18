@@ -2,6 +2,27 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/compare.md](docs/compare.md) (Compare), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.13.2 (2026-11-18)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.13.2.png" alt="cedr v0.13.2: new prices" width="770">
+
+**v0.13.2** · 1 change from 1 contributor
+
+### Highlights
+**Monitor prices Claude Mythos 5.2 and the GPT-6.2 models.** Usage on `claude-mythos-5-2` was counted as unpriced, and `gpt-6.2-astra` was estimated at GPT-6 Astra's higher rates. Both now use their own list prices, as does `gpt-6.2-sol`.
+
+### Fixes
+- **Price table:** `crates/cedr-monitor/prices.json` adds `claude-mythos-5-2` ($8 input, $40 output, $0.20 cached input), `gpt-6.2-astra` ($8, $40, $0.40) and `gpt-6.2-sol` ($2, $10, $0.10), per million tokens at the vendors' standard API list prices.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* fix(monitor): price claude mythos 5.2, gpt-6.2 astra and gpt-6.2 sol
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.13.1...v0.13.2
+</details>
+
 ## v0.13.1 (2026-11-18)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.13.1.png" alt="cedr v0.13.1: bench cleanup" width="770">

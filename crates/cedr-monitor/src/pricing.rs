@@ -135,7 +135,7 @@ mod tests {
             priced("claude-fable-5-3[1m]"),
             Some(("claude-fable-5-2", Basis::Family))
         );
-        assert_eq!(priced("gpt-6.2-sol"), Some(("gpt-6.1-sol", Basis::Family)));
+        assert_eq!(priced("gpt-6.3-sol"), Some(("gpt-6.2-sol", Basis::Family)));
         assert_eq!(
             priced("muse-spark-1.4-contributor"),
             Some(("muse-spark-1.3-contributor", Basis::Family)),
