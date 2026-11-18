@@ -415,6 +415,11 @@ fn egress_arguments_have_no_direct_route() {
             .iter()
             .any(|a| a == "com.docker.network.bridge.gateway_mode_ipv4=isolated")
     );
+    assert!(
+        network
+            .windows(2)
+            .any(|a| a == ["--label", "dev.cedr.bench.run=internal-test"])
+    );
     let args = container::task_args(
         "internal-test",
         "agent",
@@ -425,6 +430,10 @@ fn egress_arguments_have_no_direct_route() {
         Harness::Claude,
     );
     assert!(args.windows(2).any(|a| a == ["--network", "internal-test"]));
+    assert!(
+        args.windows(2)
+            .any(|a| a == ["--label", "dev.cedr.bench.run=internal-test"])
+    );
     assert!(
         !args
             .iter()

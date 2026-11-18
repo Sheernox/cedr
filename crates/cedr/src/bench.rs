@@ -341,7 +341,10 @@ fn summary(r: &BenchResult) {
     }
 }
 fn reference(c: &Configuration, o: &Options, p: &report::Probe) -> Result<(), String> {
-    if c.set_reference && p.status == report::ProbeStatus::Reference {
+    if !cedr_compare::exec::interrupted()
+        && c.set_reference
+        && p.status == report::ProbeStatus::Reference
+    {
         let input = p.input_tokens.ok_or("probe did not report input tokens")?;
         eprintln!(
             "\n[[references]]\nharness = {:?}\nharness_version = {:?}\nmodel = {:?}",
@@ -393,7 +396,7 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             }
             cedr_compare::exec::catch_interrupts();
             let temporary = cedr_bench::evidence::pending(&results())?;
-            let mut backend = ProcessBackend::new(&suite, &options)?;
+            let mut backend = ProcessBackend::new(&suite, &options, &results())?;
             let r = run::run(&suite, &options, &mut backend, temporary.path(), |s| {
                 eprintln!("cedr: bench: {s}")
             })?;
@@ -413,10 +416,14 @@ pub fn run(command: BenchCommand) -> Result<ExitCode, String> {
             Ok(ExitCode::from(if r.complete { 0 } else { 3 }))
         }
         BenchCommand::Probe { config } => {
+            cedr_compare::exec::catch_interrupts();
             let suite = load(&config)?;
             let options = options(&config)?;
-            let mut backend = ProcessBackend::new(&suite, &options)?;
+            let mut backend = ProcessBackend::new(&suite, &options, &results())?;
             let p = run::probe(&suite, &options, &mut backend)?;
+            if cedr_compare::exec::interrupted() {
+                return Err("bench probe interrupted".into());
+            }
             reference(&config, &options, &p)?;
             match config.format {
                 Format::Json => print(&p)?,

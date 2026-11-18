@@ -49,13 +49,14 @@ pub struct ProcessBackend<'a> {
     healthy: bool,
 }
 impl<'a> ProcessBackend<'a> {
-    pub fn new(suite: &Suite, options: &'a Options) -> Result<Self> {
+    pub fn new(suite: &Suite, options: &'a Options, state: &Path) -> Result<Self> {
         let credential = container::credential(options.harness)?;
         let container = Container::prepare(
             suite,
             options.harness,
             &options.version,
             options.build_image,
+            state,
         )?;
         let mut backend = Self {
             options,
@@ -99,6 +100,9 @@ impl<'a> ProcessBackend<'a> {
     }
     // Proven tool-free container checks let only vendor code coordinate host renewals.
     fn check_sign_in(&mut self) -> Result<()> {
+        if exec::interrupted() {
+            return Err("bench interrupted".into());
+        }
         let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
         let mut argv = cedr_agent::sign_in_args(agent(self.options.harness), &self.options.model)
             .map_err(|e| e.to_string())?;
@@ -444,18 +448,15 @@ fn probe_file(workspace: &Path, name: &str, contents: &[u8]) -> bool {
 }
 
 pub fn probe<B: Backend>(suite: &Suite, options: &Options, backend: &mut B) -> Result<Probe> {
+    if exec::interrupted() {
+        return Err("bench probe interrupted".into());
+    }
     let fingerprint = tempfile::tempdir().map_err(|e| e.to_string())?;
     let first = backend.invoke(
         FINGERPRINT_PROMPT,
         fingerprint.path(),
         Duration::from_secs(180),
     )?;
-    let readiness = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let second = backend.invoke(PROBE_PROMPT, readiness.path(), Duration::from_secs(180))?;
-    let tools_ok = first.status == Status::Graded
-        && second.status == Status::Graded
-        && probe_file(readiness.path(), "probe.txt", b"cedr-bench-probe\n")
-        && probe_file(readiness.path(), "command.txt", b"cedr-bench-command\n");
     let reference = suite
         .edition
         .probe
@@ -468,12 +469,20 @@ pub fn probe<B: Backend>(suite: &Suite, options: &Options, backend: &mut B) -> R
                 && r.effort == options.effort
         })
         .map(|r| (r.input_tokens, r.tolerance));
-    let mut p = crate::report::probe_with_tolerance(
-        &first.usage,
-        reference,
-        options.set_reference,
-        tools_ok,
-    );
+    let mut p =
+        crate::report::probe_with_tolerance(&first.usage, reference, options.set_reference, false);
+    if exec::interrupted() || first.status == Status::Interrupted {
+        // The first request may have known spend even though readiness never ran.
+        p.tools = None;
+        return Ok(p);
+    }
+    let readiness = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let second = backend.invoke(PROBE_PROMPT, readiness.path(), Duration::from_secs(180))?;
+    p.tools_ok = !exec::interrupted()
+        && first.status == Status::Graded
+        && second.status == Status::Graded
+        && probe_file(readiness.path(), "probe.txt", b"cedr-bench-probe\n")
+        && probe_file(readiness.path(), "command.txt", b"cedr-bench-command\n");
     p.tools = second.usage.tools;
     p.fingerprint_cost_usd = first.usage.cost_usd;
     p.tools_cost_usd = second.usage.cost_usd;
@@ -548,7 +557,9 @@ pub fn run<B: Backend>(
             .map(|t| TaskResult::pending(&t.id, t.kind))
             .collect(),
     };
-    if !r.probe.tools_ok {
+    if exec::interrupted() {
+        r.stop = Some(Stop::Interrupted);
+    } else if !r.probe.tools_ok {
         r.stop = Some(Stop::ProbeFailed);
     } else if r.probe.cost_usd.is_none() && !options.allow_unpriced {
         r.stop = Some(Stop::UnknownCost);
@@ -1162,8 +1173,8 @@ mod live_tests {
             tasks: Vec::new(),
             billing: "plan".into(),
         };
-        let mut b = ProcessBackend::new(&suite, &options).unwrap();
         let scratch = tempfile::tempdir().unwrap();
+        let mut b = ProcessBackend::new(&suite, &options, scratch.path()).unwrap();
         let workspace = scratch.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
         initialize(&workspace).unwrap();

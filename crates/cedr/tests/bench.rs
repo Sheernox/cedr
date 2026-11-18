@@ -490,6 +490,10 @@ elif args[0]=='run':
     elif '--input-format' in args:
         print(json.dumps({'response':{'response':{'models':[{'value':'claude-haiku-5-5','supportedEffortLevels':['high']}]}}}))
     elif '--model' in args:
+        if marker := os.environ.get('BENCH_TEST_INTERRUPT'):
+            import signal
+            with open(marker, 'a') as log: log.write('invoke\n')
+            os.kill(os.getppid(), signal.SIGINT)
         workspace=next(a.split('src=')[1].split(',')[0] for a in args if 'dst=/workspace' in a)
         pathlib.Path(workspace,'probe.txt').write_text('cedr-bench-probe')
         pathlib.Path(workspace,'command.txt').write_text('cedr-bench-command')
@@ -505,32 +509,31 @@ elif args[0]=='run':
     std::fs::set_permissions(claude, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut paths = vec![bin];
     paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let out = s
-        .command(&[
-            "bench",
-            "probe",
-            "--harness",
-            "claude",
-            "--model",
-            "claude-haiku-5-5",
-            "--agent-version",
-            "test",
-            "--effort",
-            "high",
-            "--suite",
-            &suite(),
-            "--set-reference",
-            "--format",
-            "json",
-        ])
+    let mut command = s.command(&[
+        "bench",
+        "probe",
+        "--harness",
+        "claude",
+        "--model",
+        "claude-haiku-5-5",
+        "--agent-version",
+        "test",
+        "--effort",
+        "high",
+        "--suite",
+        &suite(),
+        "--set-reference",
+        "--format",
+        "json",
+    ]);
+    command
         .env("PATH", std::env::join_paths(paths).unwrap())
         .env("ANTHROPIC_API_KEY", "fake-test-key")
         .env(
             "BENCH_TEST_NETWORK_READY",
             s.dir.path().join("proxy-connected"),
-        )
-        .output()
-        .unwrap();
+        );
+    let out = command.output().unwrap();
     assert!(
         out.status.success(),
         "{}",
@@ -539,6 +542,13 @@ elif args[0]=='run':
     let probe: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(probe["status"], "reference");
     assert_eq!(probe["tools_ok"], true);
+    let calls = s.dir.path().join("calls");
+    let stopped = command
+        .env("BENCH_TEST_INTERRUPT", &calls)
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&stopped.stderr).contains("bench probe interrupted"));
+    assert_eq!(std::fs::read_to_string(calls).unwrap(), "invoke\n");
 }
 
 #[cfg(unix)]
@@ -619,4 +629,20 @@ elif args[0]=='run':
     assert!(!busy.exists());
     let probe: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(probe["tools_ok"], true);
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires a local Bench base image, Docker Engine 28+ and Python 3"]
+fn killed_runs_and_interrupted_probes_release_only_their_own_resources() {
+    let status = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/bench/docker_lifecycle.py"
+        ))
+        .arg(env!("CARGO_BIN_EXE_cedr"))
+        .arg(suite())
+        .status()
+        .unwrap();
+    assert!(status.success());
 }

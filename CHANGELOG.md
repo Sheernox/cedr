@@ -2,6 +2,28 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/compare.md](docs/compare.md) (Compare), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.13.1 (2026-11-18)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.13.1.png" alt="cedr v0.13.1: bench cleanup" width="770">
+
+**v0.13.1** · 1 change from 1 contributor
+
+### Highlights
+**Stop a Bench probe with Ctrl-C.** On Unix, interrupting a standalone probe now stops its active Docker work. If a run is killed, the next run or probe can reclaim its containers and network while other benchmarks continue.
+
+### Fixes
+- **Bench cleanup:** recovery uses the same Docker daemon and state directory as the interrupted run. Resources from v0.13.0 and earlier still need manual cleanup because those versions recorded no owner.
+- **Windows configuration:** when `HOME` is unset, Cedr looks under `USERPROFILE` for its XDG directories, including the saved API key.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* fix(bench): reclaim interrupted runs and resolve windows config paths
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.13.0...v0.13.1
+</details>
+
 ## v0.13.0 (2026-11-15)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.13.0.png" alt="cedr v0.13.0: bench push" width="770">

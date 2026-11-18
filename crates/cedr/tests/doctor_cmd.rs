@@ -89,6 +89,13 @@ fn doctor_uses_public_org_id_from_me() {
         format!("org='org-fixture'\nurl={url:?}\n"),
     )
     .unwrap();
+    let key = config.join("api-key");
+    fs::write(&key, "test-key").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+    }
     let server = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
         socket
@@ -111,12 +118,10 @@ fn doctor_uses_public_org_id_from_me() {
         .env_clear()
         .env("CEDR_TELEMETRY", "0")
         .env("CEDR_NO_AUTO_UPDATE", "1")
-        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
         .env("PATH", "")
-        .env("CEDR_API_KEY", "test-key")
         .output()
         .unwrap();
-    server.join().unwrap();
     assert!(
         out.status.success(),
         "{}",
@@ -127,6 +132,7 @@ fn doctor_uses_public_org_id_from_me() {
     for id in ["key.valid", "org.member"] {
         assert!(checks.iter().any(|c| c["id"] == id && c["state"] == "ok"));
     }
+    server.join().unwrap();
     assert!(!String::from_utf8_lossy(&out.stdout).contains("test-key"));
 }
 #[test]

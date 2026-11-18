@@ -76,9 +76,23 @@ impl StepOutput {
 /// Windows there is no group: `taskkill` walks the tree of a running process, so after a normal exit
 /// a helper the step left behind keeps running.
 pub fn run_step(
+    cmd: Command,
+    stdin: Option<&str>,
+    timeout: Duration,
+) -> std::io::Result<StepOutput> {
+    run_step_inner(cmd, stdin, timeout, true)
+}
+
+/// Cleanup commands still need a deadline when the parent has already received a signal.
+pub fn run_cleanup(cmd: Command, timeout: Duration) -> std::io::Result<StepOutput> {
+    run_step_inner(cmd, None, timeout, false)
+}
+
+fn run_step_inner(
     mut cmd: Command,
     stdin: Option<&str>,
     timeout: Duration,
+    interruptible: bool,
 ) -> std::io::Result<StepOutput> {
     // Stdin is a file, not a pipe: `cedr` runs with the default SIGPIPE, so writing to a child that
     // exits without reading would kill the whole run.
@@ -129,7 +143,8 @@ pub fn run_step(
             Ok(done) => break Some(done),
             Err(mpsc::RecvTimeoutError::Disconnected) => break None,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if interrupted() || deadline.is_some_and(|d| Instant::now() >= d) {
+                if (interruptible && interrupted()) || deadline.is_some_and(|d| Instant::now() >= d)
+                {
                     break None;
                 }
             }

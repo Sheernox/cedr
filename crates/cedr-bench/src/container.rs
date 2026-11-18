@@ -2,7 +2,9 @@
 use crate::{Result, adapter::Harness, suite::Suite};
 use cedr_compare::exec;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+mod lease;
+use lease::{LABEL, Lease};
 use std::time::Duration;
 
 pub fn hosts(h: Harness) -> &'static [&'static str] {
@@ -28,6 +30,8 @@ pub fn network_args(name: &str) -> Vec<String> {
     [
         "network",
         "create",
+        "--label",
+        &format!("{LABEL}={name}"),
         "--internal",
         "--opt",
         "com.docker.network.bridge.gateway_mode_ipv4=isolated",
@@ -41,6 +45,19 @@ pub fn version_matches(reported: &str, version: &str) -> bool {
     reported
         .split_whitespace()
         .any(|s| s.trim_matches(['(', ')']).trim_start_matches('v') == version)
+}
+fn docker_cleanup(args: &[&str]) -> Result<String> {
+    let mut command = Command::new("docker");
+    command.args(args);
+    let output = exec::run_cleanup(command, Duration::from_secs(15))
+        .map_err(|e| format!("cannot start Docker cleanup: {e}"))?;
+    if !output.succeeded() {
+        return Err(format!(
+            "Docker {} failed during cleanup; check the daemon and local permissions",
+            args[0]
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().into())
 }
 fn docker(args: &[&str]) -> Result<String> {
     let mut c = Command::new("docker");
@@ -146,6 +163,8 @@ pub fn task_args(
         "--rm",
         "--name",
         name,
+        "--label",
+        &format!("{LABEL}={network}"),
         "--network",
         network,
         "--user",
@@ -246,6 +265,7 @@ pub struct Container {
     network: String,
     proxy: String,
     task: String,
+    _owner: Lease,
     _scratch: tempfile::TempDir,
 }
 impl Container {
@@ -276,28 +296,30 @@ impl Container {
                 .is_ok_and(|id| id == self.base);
         Ok(())
     }
-    pub fn prepare(suite: &Suite, h: Harness, version: &str, build: bool) -> Result<Self> {
+    pub fn prepare(
+        suite: &Suite,
+        h: Harness,
+        version: &str,
+        build: bool,
+        state: &Path,
+    ) -> Result<Self> {
         if matches!(h, Harness::Antigravity | Harness::Command) {
             return Err("Bench requires a container-capable harness; use Compare for local comparisons. Antigravity container support is a follow-up".into());
         }
         let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
-        let suffix = scratch
-            .path()
-            .file_name()
-            .ok_or("missing temporary name")?
-            .to_string_lossy()
-            .replace('.', "");
+        verify_engine()?;
+        let owner = Lease::start(state)?;
         let mut c = Self {
             base: String::new(),
             image: String::new(),
             pinned: false,
             verified: Vec::new(),
-            network: format!("cedr-bench-{suffix}"),
-            proxy: format!("cedr-proxy-{suffix}"),
-            task: format!("cedr-task-{suffix}"),
+            network: owner.run.clone(),
+            proxy: format!("{}-proxy", owner.run),
+            task: format!("{}-task", owner.run),
+            _owner: owner,
             _scratch: scratch,
         };
-        verify_engine()?;
         c.set_base(suite, build)?;
         if version.is_empty()
             || !version
@@ -367,6 +389,8 @@ impl Container {
         let reported = docker(&[
             "run",
             "--rm",
+            "--label",
+            &format!("{LABEL}={}", c.network),
             "--network=none",
             &c.image,
             h.name(),
@@ -384,6 +408,8 @@ impl Container {
         docker(&[
             "run",
             "-d",
+            "--label",
+            &format!("{LABEL}={}", c.network),
             "--name",
             &c.proxy,
             "--network",
@@ -418,6 +444,8 @@ impl Container {
         docker(&[
             "run",
             "--rm",
+            "--label",
+            &format!("{LABEL}={}", c.network),
             "--network",
             &c.network,
             &c.base,
@@ -478,7 +506,7 @@ else:
     raise AssertionError('external DNS escaped task network')
 "#
         );
-        docker(&["run", "--rm", "--network", &self.network, &self.base, "python3", "-c", &script])
+        docker(&["run", "--rm", "--label", &format!("{LABEL}={}", self.network), "--network", &self.network, &self.base, "python3", "-c", &script])
             .map_err(|_| "Docker isolation check failed: host gateway, live host port, outside connectivity or DNS was reachable".to_string())?;
         self.verified = vec![
             "engine>=28".into(),
@@ -499,11 +527,11 @@ else:
     /// Killing a Docker client does not stop its container (notably app-server RPC).
     /// Verify absence after removal so no discovery process can overlap a trial.
     fn clear_task(&self) -> Result<()> {
-        if docker(&["rm", "--force", &self.task]).is_err() {
+        if docker_cleanup(&["rm", "--force", &self.task]).is_err() {
             // --rm can already be removing a stopped discovery container. Do not race its daemon cleanup.
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             loop {
-                let remaining = docker(&[
+                let remaining = docker_cleanup(&[
                     "ps",
                     "--all",
                     "--quiet",
@@ -688,6 +716,8 @@ else:
         cmd.args([
             "run",
             "--rm",
+            "--label",
+            &format!("{LABEL}={}", self.network),
             "--name",
             &self.task,
             "--network=none",
@@ -725,26 +755,6 @@ else:
         out
     }
 }
-impl Drop for Container {
-    fn drop(&mut self) {
-        for args in [
-            ["rm", "--force", self.task.as_str()],
-            ["rm", "--force", self.proxy.as_str()],
-            ["network", "rm", self.network.as_str()],
-        ] {
-            if args[2].is_empty() {
-                continue;
-            }
-            let _ = Command::new("docker")
-                .args(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
-    }
-}
-
 fn magic(path: &Path) -> Result<[u8; 4]> {
     use std::io::Read;
     let mut file = std::fs::File::open(path).map_err(|_| "static vendor binary missing")?;

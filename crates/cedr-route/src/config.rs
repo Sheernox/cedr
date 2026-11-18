@@ -1103,6 +1103,8 @@ pub fn xdg_dir(var: &str, fallback: &str) -> PathBuf {
         }
     }
     let home = std::env::var_os("HOME")
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|s| !s.is_empty()))
         .map(PathBuf::from)
         .unwrap_or_default();
     home.join(fallback)
