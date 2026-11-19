@@ -323,10 +323,7 @@ impl BenchResult {
             && self.environment.network == "allowlist"
             && self.probe.tools_ok
             && self.probe.status == ProbeStatus::Match
-            && !matches!(
-                self.config.harness.as_str(),
-                "command" | "gemini" | "antigravity"
-            );
+            && !matches!(self.config.harness.as_str(), "command" | "gemini");
     }
     pub fn validate(&self) -> Result<()> {
         if self.version != 1

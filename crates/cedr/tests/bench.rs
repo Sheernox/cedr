@@ -17,7 +17,10 @@ fn usage_errors_and_history_have_stable_exit_codes() {
     assert_eq!(stdout(&o).trim(), "[]");
     let o = s.cedr(&["bench", "show", "../../missing", "--format", "json"]);
     assert_eq!(o.status.code(), Some(2));
-    for harness in ["command", "antigravity"] {
+    for (harness, refusal) in [
+        ("command", "use Compare for local comparisons"),
+        ("antigravity", "Antigravity requires --effort"),
+    ] {
         let o = s.cedr(&[
             "bench",
             "probe",
@@ -29,7 +32,7 @@ fn usage_errors_and_history_have_stable_exit_codes() {
             &suite(),
         ]);
         assert_eq!(o.status.code(), Some(2));
-        assert!(String::from_utf8_lossy(&o.stderr).contains("Compare"));
+        assert!(String::from_utf8_lossy(&o.stderr).contains(refusal));
     }
 }
 #[test]

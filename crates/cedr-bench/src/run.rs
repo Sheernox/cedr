@@ -104,16 +104,25 @@ impl<'a> ProcessBackend<'a> {
             return Err("bench interrupted".into());
         }
         let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
-        let mut argv = cedr_agent::sign_in_args(agent(self.options.harness), &self.options.model)
-            .map_err(|e| e.to_string())?;
-        self.pin_host_check(&mut argv)?;
-        let out = host_sign_in(&argv, self.options.harness, scratch.path())?;
-        if !out.succeeded() {
+        let check = if self.options.harness == Harness::Antigravity {
+            self.container.check_antigravity_sign_in(scratch.path())
+        } else {
+            let mut argv =
+                cedr_agent::sign_in_args(agent(self.options.harness), &self.options.model)
+                    .map_err(|e| e.to_string())?;
+            self.pin_host_check(&mut argv)?;
+            let out = host_sign_in(&argv, self.options.harness, scratch.path())?;
+            if out.succeeded() {
+                Ok(())
+            } else {
+                Err("vendor refused the account check".into())
+            }
+        };
+        if let Err(error) = check {
             self.healthy = false;
-            return Err(
-                "host sign-in check failed; repair the vendor sign-in before starting another run"
-                    .into(),
-            );
+            return Err(format!(
+                "host sign-in check failed ({error}); repair the vendor sign-in before starting another run"
+            ));
         }
         self.credential = container::credential(self.options.harness)?;
         Ok(())
@@ -145,7 +154,8 @@ pub(crate) fn agent(h: Harness) -> cedr_agent::Agent {
         Harness::Muse => cedr_agent::Agent::Muse,
         Harness::Grok => cedr_agent::Agent::Grok,
         Harness::Gemini => cedr_agent::Agent::Gemini,
-        _ => cedr_agent::Agent::Command,
+        Harness::Antigravity => cedr_agent::Agent::Antigravity,
+        Harness::Command => cedr_agent::Agent::Command,
     }
 }
 impl Backend for ProcessBackend<'_> {
@@ -175,6 +185,11 @@ impl Backend for ProcessBackend<'_> {
             ".cache",
         ] {
             std::fs::create_dir_all(home.path().join(name)).map_err(|e| e.to_string())?;
+        }
+        if self.options.harness == Harness::Antigravity {
+            container::antigravity_settings(home.path())?;
+            std::fs::write(home.path().join(".bench-prompt"), prompt)
+                .map_err(|e| format!("cannot stage the Antigravity prompt: {e}"))?;
         }
         self.credential = container::credential(self.options.harness)?;
         let credentials =

@@ -1,5 +1,6 @@
 //! Standard benchmark runner. The external API is defined in docs/bench.md.
 pub mod adapter;
+mod antigravity;
 pub mod audit;
 pub mod container;
 pub mod evidence;

@@ -83,6 +83,16 @@ fn snake(v: &Value) -> Tokens {
         reasoning_tokens: n(v, "reasoning_tokens"),
     }
 }
+
+fn generic_tokens(v: &Value) -> Tokens {
+    Tokens {
+        input_tokens: n(v, "input_tokens"),
+        cache_read_tokens: n(v, "cache_read_tokens"),
+        cache_write_tokens: n(v, "cache_write_tokens"),
+        output_tokens: n(v, "output_tokens"),
+        reasoning_tokens: n(v, "reasoning_tokens"),
+    }
+}
 // Claude's result totals include side queries, but only request usage can select a
 // long-prompt tier. Deduplicate content blocks by message id before applying it.
 fn claude_cost(model: &str, row: &Value, events: &[Value]) -> Option<f64> {
@@ -150,6 +160,7 @@ pub fn parse(h: Harness, text: &[u8], model: &str) -> Usage {
     let mut out = Usage::default();
     let mut rows = Vec::new();
     let mut reasoning_fallback = None;
+    let mut missing_requests = false;
     match h {
         Harness::Claude | Harness::Grok => {
             if let Some(v) = events
@@ -263,21 +274,27 @@ pub fn parse(h: Harness, text: &[u8], model: &str) -> Usage {
                 out.tools = n(&v["stats"]["tools"], "totalCalls");
             }
         }
-        Harness::Antigravity | Harness::Command => {
-            for v in if h == Harness::Command {
-                events.last().into_iter().collect::<Vec<_>>()
-            } else {
-                events.iter().collect()
-            } {
+        Harness::Antigravity => {
+            for v in &events {
+                let tokens = generic_tokens(v);
+                if v.get("model").is_some() || tokens != Tokens::default() {
+                    rows.push((v["model"].as_str().unwrap_or(model).into(), tokens));
+                }
+            }
+            if let Some(totals) = events.last() {
+                out.turns = n(totals, "turns");
+                out.tools = n(totals, "tools");
+                // The Docker stdout capture can drop old lines. A launcher summary
+                // lets us detect that a request is absent instead of pricing a subset.
+                missing_requests =
+                    totals.get("model").is_none() && out.turns != Some(rows.len() as u64);
+            }
+        }
+        Harness::Command => {
+            if let Some(v) = events.last() {
                 rows.push((
                     v["model"].as_str().unwrap_or(model).into(),
-                    Tokens {
-                        input_tokens: n(v, "input_tokens"),
-                        cache_read_tokens: n(v, "cache_read_tokens"),
-                        cache_write_tokens: n(v, "cache_write_tokens"),
-                        output_tokens: n(v, "output_tokens"),
-                        reasoning_tokens: n(v, "reasoning_tokens"),
-                    },
+                    generic_tokens(v),
                 ));
                 out.turns = n(v, "turns");
                 out.tools = n(v, "tools");
@@ -325,6 +342,10 @@ pub fn parse(h: Harness, text: &[u8], model: &str) -> Usage {
     } else {
         cost
     };
+    if missing_requests {
+        out.tokens = Tokens::default();
+        out.cost_usd = None;
+    }
     out
 }
 /// Build argv without a shell. Custom commands receive a prompt file rather than prompt arguments.
@@ -382,7 +403,14 @@ pub fn argv(
             model,
         ]),
         Harness::Gemini => strings(&["gemini", "--output-format", "json", "--yolo", "-m", model]),
-        Harness::Antigravity => return Err("Antigravity requires the ACP transport".into()),
+        Harness::Antigravity => {
+            let effort = effort
+                .ok_or("Antigravity requires --effort; choose a level offered by the model")?;
+            return Ok(vec![
+                format!("{model}-{effort}"),
+                "/home/bench/.bench-prompt".into(),
+            ]);
+        }
         Harness::Command => {
             if command.is_empty() {
                 return Err("command harness requires --command arguments".into());

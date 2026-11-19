@@ -521,6 +521,83 @@ fn vendor_fixtures_normalize_tokens_without_double_counting() {
     assert_eq!(u.cost_usd, None);
 }
 
+#[test]
+fn antigravity_egress_is_limited_to_its_oauth_and_inference_hosts() {
+    let h = Harness::Antigravity;
+    let hosts = [
+        "oauth2.googleapis.com",
+        "cloudcode-pa.googleapis.com",
+        "daily-cloudcode-pa.googleapis.com",
+    ];
+    assert_eq!(container::hosts(h), hosts);
+    for host in hosts {
+        assert!(container::allowed(h, &format!("{host}:443")));
+        assert!(!container::allowed(h, &format!("{host}:80")));
+        assert!(!container::allowed(h, &format!("{host}.example:443")));
+    }
+    assert!(!container::allowed(
+        h,
+        "generativelanguage.googleapis.com:443"
+    ));
+}
+
+#[test]
+fn antigravity_prices_all_requests_without_counting_thinking_twice() {
+    let requests = [
+        r#"{"model":"gemini-4-neon","input_tokens":11151,"cache_read_tokens":0,"cache_write_tokens":0,"output_tokens":294,"reasoning_tokens":214}"#,
+        r#"{"model":"gemini-4-neon","input_tokens":2541,"cache_read_tokens":9094,"cache_write_tokens":0,"output_tokens":288,"reasoning_tokens":216}"#,
+        r#"{"model":"gemini-4-neon","input_tokens":2445,"cache_read_tokens":9586,"cache_write_tokens":0,"output_tokens":75,"reasoning_tokens":73}"#,
+    ];
+    let totals = r#"{"turns":3,"tools":2}"#;
+    let parse = |rows: &[&str]| {
+        cedr_bench::adapter::parse(
+            Harness::Antigravity,
+            rows.join("\n").as_bytes(),
+            "gemini-4-neon-high",
+        )
+    };
+    let usage = parse(&[requests[0], requests[1], requests[2], totals]);
+    assert_eq!(usage.models, ["gemini-4-neon"]);
+    assert_eq!(usage.turns, Some(3));
+    assert_eq!(usage.tools, Some(2));
+    assert_eq!(
+        usage.tokens,
+        Tokens {
+            input_tokens: Some(16137),
+            cache_read_tokens: Some(18680),
+            cache_write_tokens: Some(0),
+            output_tokens: Some(657),
+            reasoning_tokens: Some(503),
+        }
+    );
+    assert!((usage.cost_usd.unwrap() - 0.061_068).abs() < 1e-12);
+
+    let unknown = r#"{"model":"gemini-4-neon","input_tokens":null,"cache_read_tokens":9586,"cache_write_tokens":0,"output_tokens":75,"reasoning_tokens":73}"#;
+    let usage = parse(&[requests[0], requests[1], unknown, totals]);
+    assert_eq!(usage.turns, Some(3));
+    assert_eq!(usage.tokens.input_tokens, None);
+    assert_eq!(usage.cost_usd, None);
+
+    let incomplete = parse(&[requests[1], requests[2], totals]);
+    assert_eq!(incomplete.tokens, Tokens::default());
+    assert_eq!(incomplete.cost_usd, None);
+}
+
+#[test]
+fn antigravity_listing_requires_a_published_probe_match() {
+    let mut result = measure(&options(), false);
+    result.config.harness = "antigravity".into();
+    result.environment.mode = "container".into();
+    result.environment.network = "allowlist".into();
+    result.environment.pinned = true;
+    result.probe.status = ProbeStatus::Reference;
+    result.summarize();
+    assert!(!result.eligible);
+    result.probe.status = ProbeStatus::Match;
+    result.summarize();
+    assert!(result.eligible);
+}
+
 #[cfg(unix)]
 #[test]
 fn actual_proxy_policy_is_connect_only_and_exact_host() {

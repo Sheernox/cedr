@@ -16,11 +16,12 @@ mod push;
 
 #[derive(Args)]
 pub struct Configuration {
-    /// claude, codex, muse, grok, or gemini (container-capable harnesses)
+    /// claude, codex, muse, grok, gemini, or antigravity (container-capable harnesses)
     #[arg(long)]
     harness: Harness,
     #[arg(long)]
     model: String,
+    /// Reasoning effort offered by the model. Required for Antigravity.
     #[arg(long)]
     effort: Option<String>,
     /// Local suite directory; otherwise fetch the edition from the public suite repository
@@ -223,10 +224,19 @@ fn cached_references(path: &Path, fresh: Option<String>) -> Result<suite::Refere
     }
 }
 fn options(c: &Configuration) -> Result<Options, String> {
-    if matches!(c.harness, Harness::Antigravity | Harness::Command) {
-        return Err("Bench requires a container-capable harness; use Compare for local comparisons. Antigravity container support is a follow-up".into());
+    if c.harness == Harness::Command {
+        return Err(
+            "Bench requires a container-capable harness; use Compare for local comparisons".into(),
+        );
     }
-    let version = if let Some(v) = &c.agent_version {
+    let version = if c.harness == Harness::Antigravity {
+        if c.effort.as_deref().is_none_or(str::is_empty) {
+            return Err(
+                "Antigravity requires --effort; choose a level offered by the model".into(),
+            );
+        }
+        cedr_bench::container::antigravity_version(c.agent_version.as_deref())?
+    } else if let Some(v) = &c.agent_version {
         v.clone()
     } else if c.harness == Harness::Muse {
         let launcher = cedr_compare::exec::find_program("muse", Path::new("."))

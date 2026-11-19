@@ -2,6 +2,10 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/compare.md](docs/compare.md) (Compare), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## Unreleased
+
+- **Bench supports Antigravity.** Use `bench probe` or `bench run` with `--harness antigravity` and an offered `--effort`. Bench runs T3 Code's managed ACP server inside the container and prices each model request. See [Bench setup](docs/bench.md#execution-and-credentials).
+
 ## v0.13.3 (2026-11-19)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.13.3.png" alt="cedr v0.13.3: new prices" width="770">

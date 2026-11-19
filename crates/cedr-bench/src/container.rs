@@ -1,5 +1,5 @@
 //! Docker subprocess lifecycle. Only the proxy has a route outside the internal task network.
-use crate::{Result, adapter::Harness, suite::Suite};
+use crate::{Result, adapter::Harness, antigravity, suite::Suite};
 use cedr_compare::exec;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,7 +17,12 @@ pub fn hosts(h: Harness) -> &'static [&'static str] {
             "generativelanguage.googleapis.com",
             "cloudcode-pa.googleapis.com",
         ],
-        _ => &[],
+        Harness::Antigravity => &[
+            "oauth2.googleapis.com",
+            "cloudcode-pa.googleapis.com",
+            "daily-cloudcode-pa.googleapis.com",
+        ],
+        Harness::Command => &[],
     }
 }
 pub fn allowed(h: Harness, authority: &str) -> bool {
@@ -136,7 +141,8 @@ pub fn credential(h: Harness) -> Result<Option<Credential>> {
         Harness::Muse => "/home/bench/.config/muse/auth.json",
         Harness::Grok => "/home/bench/.grok/auth.json",
         Harness::Gemini => "/home/bench/.gemini/oauth_creds.json",
-        _ => return Ok(None),
+        Harness::Antigravity => "/home/bench/.gemini/antigravity-acp/acp_token.json",
+        Harness::Command => return Ok(None),
     };
     let source =
         cedr_agent::sign_in_path(crate::run::agent(h)).ok_or("HOME required for sign-in")?;
@@ -257,6 +263,23 @@ pub fn claude_install(version: &str) -> String {
     )
 }
 
+/// Bench versions Antigravity by the installed ACP release, which has no CLI version flag.
+pub fn antigravity_version(requested: Option<&str>) -> Result<String> {
+    Ok(antigravity::Install::locate(requested)?.version)
+}
+
+pub(crate) fn antigravity_settings(home: &Path) -> Result<()> {
+    let profile = home.join(".gemini/antigravity-acp");
+    std::fs::create_dir_all(&profile)
+        .and_then(|()| {
+            std::fs::write(
+                profile.join("settings.json"),
+                r#"{"auth":{"type":"oauth-personal"}}"#,
+            )
+        })
+        .map_err(|e| format!("cannot configure Antigravity scratch sign-in: {e}"))
+}
+
 pub struct Container {
     pub base: String,
     pub image: String,
@@ -265,6 +288,7 @@ pub struct Container {
     network: String,
     proxy: String,
     task: String,
+    antigravity: Option<antigravity::Install>,
     _owner: Lease,
     _scratch: tempfile::TempDir,
 }
@@ -303,10 +327,23 @@ impl Container {
         build: bool,
         state: &Path,
     ) -> Result<Self> {
-        if matches!(h, Harness::Antigravity | Harness::Command) {
-            return Err("Bench requires a container-capable harness; use Compare for local comparisons. Antigravity container support is a follow-up".into());
+        if h == Harness::Command {
+            return Err(
+                "Bench requires a container-capable harness; use Compare for local comparisons"
+                    .into(),
+            );
         }
+        let antigravity = (h == Harness::Antigravity)
+            .then(|| antigravity::Install::locate(Some(version)))
+            .transpose()?;
         let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
+        if antigravity.is_some() {
+            std::fs::write(
+                scratch.path().join("antigravity_process.py"),
+                include_str!("antigravity_process.py"),
+            )
+            .map_err(|e| format!("cannot stage the Antigravity launcher: {e}"))?;
+        }
         verify_engine()?;
         let owner = Lease::start(state)?;
         let mut c = Self {
@@ -317,6 +354,7 @@ impl Container {
             network: owner.run.clone(),
             proxy: format!("{}-proxy", owner.run),
             task: format!("{}-task", owner.run),
+            antigravity,
             _owner: owner,
             _scratch: scratch,
         };
@@ -343,6 +381,11 @@ impl Container {
                 Harness::Claude => claude_install(version),
                 Harness::Codex => format!("RUN npm install -g @openai/codex@{version}\n"),
                 Harness::Gemini => format!("RUN npm install -g @google/gemini-cli@{version}\n"),
+                Harness::Antigravity => c
+                    .antigravity
+                    .as_ref()
+                    .ok_or("missing Antigravity install")?
+                    .layer(&context)?,
                 Harness::Muse | Harness::Grok => {
                     let mut binary = exec::find_program(h.name(), Path::new("."))
                         .ok_or("static agent binary missing")?;
@@ -369,34 +412,72 @@ impl Container {
                     std::fs::copy(binary, context.join("agent")).map_err(|e| e.to_string())?;
                     format!("COPY --chmod=755 agent /usr/local/bin/{}\n", h.name())
                 }
-                _ => unreachable!(),
+                Harness::Command => unreachable!(),
             };
             let dockerfile = format!(
                 "FROM {}\nUSER root\n{}RUN mkdir -p /home/bench && chown 1000:1000 /home/bench\nUSER 1000:1000\n",
                 base_tag, install
             );
             std::fs::write(context.join("Dockerfile"), dockerfile).map_err(|e| e.to_string())?;
-            docker(&[
+            let result = docker(&[
                 "build",
                 "--provenance=false",
                 "--quiet",
                 "--tag",
                 &tag,
                 context.to_str().ok_or("invalid layer path")?,
-            ])?;
+            ]);
+            // The build context may contain over a gigabyte of copied vendor binaries.
+            let cleanup = std::fs::remove_dir_all(&context);
+            result?;
+            cleanup.map_err(|e| format!("cannot remove the agent layer build context: {e}"))?;
         }
         c.image = docker(&["image", "inspect", "--format", "{{.Id}}", &tag])?;
-        let reported = docker(&[
-            "run",
-            "--rm",
-            "--label",
-            &format!("{LABEL}={}", c.network),
-            "--network=none",
-            &c.image,
-            h.name(),
-            "--version",
-        ])?;
-        if !version_matches(&reported, version) {
+        let label = format!("{LABEL}={}", c.network);
+        let matches = if h == Harness::Antigravity {
+            let reported = docker(&[
+                "run",
+                "--rm",
+                "--label",
+                &label,
+                "--network=none",
+                "--user",
+                &identity(),
+                "--cap-drop=ALL",
+                "--security-opt=no-new-privileges",
+                "--read-only",
+                "--tmpfs",
+                "/tmp:rw,nosuid,nodev,mode=1777,size=1g",
+                "--tmpfs",
+                "/home/bench:rw,nosuid,nodev,mode=1777",
+                "--memory=2g",
+                "--memory-swap=2g",
+                "--pids-limit=256",
+                "--env",
+                "HOME=/home/bench",
+                "--mount",
+                &c.antigravity_mount(),
+                &c.image,
+                "python3",
+                "/bench-agent.py",
+                "--initialize",
+            ])
+            .map_err(|_| "cannot initialize Antigravity ACP in the agent layer")?;
+            serde_json::from_str::<String>(&reported).is_ok_and(|reported| reported == version)
+        } else {
+            let reported = docker(&[
+                "run",
+                "--rm",
+                "--label",
+                &label,
+                "--network=none",
+                &c.image,
+                h.name(),
+                "--version",
+            ])?;
+            version_matches(&reported, version)
+        };
+        if !matches {
             return Err("installed agent version differs from the requested version".into());
         }
 
@@ -454,6 +535,23 @@ impl Container {
             check,
         ])?;
         Ok(c)
+    }
+
+    fn antigravity_mount(&self) -> String {
+        format!(
+            "type=bind,src={},dst=/bench-agent.py,readonly",
+            self._scratch
+                .path()
+                .join("antigravity_process.py")
+                .display()
+        )
+    }
+
+    pub(crate) fn check_antigravity_sign_in(&self, workspace: &Path) -> Result<()> {
+        self.antigravity
+            .as_ref()
+            .ok_or("missing Antigravity install")?
+            .check_sign_in(workspace)
     }
     fn verify_topology(&mut self) -> Result<()> {
         let details = docker(&["network", "inspect", &self.network])?;
@@ -558,7 +656,11 @@ else:
         credential: Option<&Credential>,
     ) -> Result<()> {
         let Some(effort) = effort else {
-            return Ok(());
+            return if h == Harness::Antigravity {
+                Err("Antigravity requires --effort; choose a level offered by the model".into())
+            } else {
+                Ok(())
+            };
         };
         let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
         let workspace = scratch.path().join("workspace");
@@ -566,6 +668,9 @@ else:
         std::fs::create_dir(&workspace).map_err(|e| e.to_string())?;
         for name in [".claude", ".codex", ".config/muse", ".grok", ".gemini"] {
             std::fs::create_dir_all(home.join(name)).map_err(|e| e.to_string())?;
+        }
+        if h == Harness::Antigravity {
+            antigravity_settings(&home)?;
         }
         let mut command = Command::new("docker");
         let mut args = task_args(
@@ -578,6 +683,12 @@ else:
             h,
         );
         args.insert(1, "-i".into());
+        if h == Harness::Antigravity {
+            args.splice(
+                args.len() - 1..args.len() - 1,
+                ["--mount".into(), self.antigravity_mount()],
+            );
+        }
         command.args(args);
         let levels = match h {
             Harness::Claude => {
@@ -624,6 +735,24 @@ else:
                     })
                     .filter_map(|row| row["reasoningEffort"].as_str().map(str::to_string))
                     .collect()
+            }
+            Harness::Antigravity => {
+                command.args(["python3", "/bench-agent.py", "--discover"]);
+                let out = exec::run_step(command, None, Duration::from_secs(120))
+                    .map_err(|e| e.to_string());
+                self.clear_task()?;
+                let out = out?;
+                if !out.succeeded() {
+                    return Err("container Antigravity model discovery failed; check the version and sign-in".into());
+                }
+                let models: Vec<String> = serde_json::from_slice(&out.stdout)
+                    .map_err(|_| "invalid Antigravity model discovery response")?;
+                if !models.contains(&format!("{model}-{effort}")) {
+                    return Err(format!(
+                        "{model}-{effort}: Antigravity does not offer this model and effort"
+                    ));
+                }
+                return Ok(());
             }
             _ => {
                 return Err(
@@ -674,6 +803,12 @@ else:
                 "python3".into(),
                 "/bench-agent.py".into(),
             ]);
+        } else if h == Harness::Antigravity {
+            args.splice(
+                args.len() - 1..args.len() - 1,
+                ["--mount".into(), self.antigravity_mount()],
+            );
+            args.extend(["python3".into(), "/bench-agent.py".into()]);
         }
         let mut check_args = task_args(
             &self.network,
