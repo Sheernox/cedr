@@ -70,11 +70,59 @@ class Acp:
                 "id": event["id"],
                 "result": {"outcome": {"outcome": "selected", "optionId": option["optionId"]}},
             })
+        elif method == "fs/read_text_file" and "id" in event:
+            try:
+                self.send({"id": event["id"], "result": {"content": read_text_file(event["params"])}})
+            except ReadRefused as refused:
+                self.send({"id": event["id"], "error": {"code": refused.code, "message": str(refused)}})
         elif method is not None and "id" in event:
             self.send({
                 "id": event["id"],
                 "error": {"code": -32601, "message": "client method unsupported"},
             })
+
+
+class ReadRefused(Exception):
+    """A client file read the launcher declines, reported to the agent as an ACP error."""
+
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+CLIENT_FILE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def read_text_file(params: dict) -> str:
+    """Serve Antigravity's view_file the way T3 Code does: workspace text files only, optionally sliced by line."""
+    requested = params.get("path")
+    if not isinstance(requested, str) or not requested:
+        raise ReadRefused(-32602, "File read needs a path.")
+    real = Path(os.path.realpath(Path(WORKSPACE, requested)))
+    root = Path(os.path.realpath(WORKSPACE))
+    if real != root and root not in real.parents:
+        raise ReadRefused(-32602, f"Path '{requested}' is outside the session workspace.")
+    try:
+        info = real.stat()
+    except OSError:
+        raise ReadRefused(-32002, f"File '{requested}' not found.") from None
+    if not real.is_file() or info.st_size > CLIENT_FILE_MAX_BYTES:
+        raise ReadRefused(-32602, f"File '{requested}' is not a readable text file under {CLIENT_FILE_MAX_BYTES} bytes.")
+    try:
+        text = real.read_bytes().decode("utf-8")
+    except OSError:
+        raise ReadRefused(-32603, f"Could not read '{requested}'.") from None
+    except UnicodeDecodeError:
+        raise ReadRefused(-32602, f"File '{requested}' is not a UTF-8 text file.") from None
+    if "\0" in text:
+        raise ReadRefused(-32602, f"File '{requested}' contains binary data.")
+    line, limit = params.get("line"), params.get("limit")
+    if line is None and limit is None:
+        return text
+    lines = text.split("\n")
+    start = max(0, (line if isinstance(line, int) else 1) - 1)
+    end = len(lines) if not isinstance(limit, int) else min(len(lines), start + limit)
+    return "\n".join(lines[start:end])
 
 
 def varint(data: bytes, start: int) -> tuple[int, int]:
@@ -187,9 +235,10 @@ def emit_usage(session_id: str, model: str, tools: int) -> None:
 
 
 def run(acp: Acp, args: list[str], prompt: str | None) -> None:
+    # T3 Code serves Antigravity's file reads; without that, view_file calls stall until the agent gives up.
     initialized = acp.call("initialize", {
         "protocolVersion": 1,
-        "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}, "terminal": False},
+        "clientCapabilities": {"fs": {"readTextFile": True, "writeTextFile": False}, "terminal": False},
     })
     if args == ["--initialize"]:
         version = initialized.get("agentInfo", {}).get("version")

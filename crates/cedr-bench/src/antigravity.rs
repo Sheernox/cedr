@@ -171,6 +171,43 @@ for raw, expected in [
         assert!(status.success());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn client_reads_stay_in_the_workspace_and_slice_by_line() {
+        let launcher = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/antigravity_process.py");
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("a.py"), "one\ntwo\nthree\n").unwrap();
+        std::fs::write(workspace.join("bin"), b"a\0b").unwrap();
+        std::fs::write(root.path().join("secret"), "outside").unwrap();
+        std::os::unix::fs::symlink(root.path().join("secret"), workspace.join("link")).unwrap();
+        let script = r#"
+import runpy
+import sys
+
+namespace = runpy.run_path(sys.argv[1])
+read, refused = namespace["read_text_file"], namespace["ReadRefused"]
+read.__globals__["WORKSPACE"] = sys.argv[2]
+assert read({"path": "a.py"}) == "one\ntwo\nthree\n"
+assert read({"path": sys.argv[2] + "/a.py", "line": 2, "limit": 1}) == "two"
+for params, code in [({"path": "../secret"}, -32602), ({"path": "link"}, -32602), ({"path": "bin"}, -32602), ({"path": "missing"}, -32002)]:
+    try:
+        read(params)
+    except refused as error:
+        assert error.code == code, params
+    else:
+        raise AssertionError(params)
+"#;
+        let status = Command::new("python3")
+            .args(["-B", "-c", script])
+            .arg(launcher)
+            .arg(&workspace)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
     #[test]
     fn active_release_requires_the_requested_version_and_both_file_sizes() {
         let root = tempfile::tempdir().unwrap();
