@@ -2,6 +2,28 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/compare.md](docs/compare.md) (Compare), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.13.3 (2026-11-19)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.13.3.png" alt="cedr v0.13.3: new prices" width="770">
+
+**v0.13.3** · 2 changes from 1 contributor
+
+### Highlights
+**Monitor prices Gemini 4 Neon.** Neon starts a new family with no older row to stand in, so usage on `gemini-4-neon` was counted as unpriced. It now uses its own list price.
+
+### Fixes
+- **Price table:** `crates/cedr-monitor/prices.json` adds `gemini-4-neon` ($3 input, $15 output, $0.15 cached input), per million tokens at Google's standard API list price, with cache writes at the input rate since Gemini caches implicitly.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* fix(monitor): price gemini 4 neon
+* chore(release): price gemini 4 neon as cedr 0.13.3
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.13.2...v0.13.3
+</details>
+
 ## v0.13.2 (2026-11-18)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.13.2.png" alt="cedr v0.13.2: new prices" width="770">
