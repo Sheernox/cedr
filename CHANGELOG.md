@@ -2,6 +2,28 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/compare.md](docs/compare.md) (Compare), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.14.1 (2026-11-19)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.14.1.png" alt="cedr v0.14.1: clear failures" width="770">
+
+**v0.14.1** · 2 changes from 1 contributor
+
+### Highlights
+**Antigravity tasks end promptly when the model provider fails.** A failed Gemini model request, such as a 502 from Google's backend, used to leave the task waiting for its timeout and then blame the sign-in. Bench now ends the task about a minute after the failure, as an agent error that names the provider's HTTP status.
+
+### Fixes
+- **Provider failures:** Antigravity records a failed model request without answering the prompt. Bench watches for that error, reports the usage recorded so far and stops the run with `the agent's model provider failed (HTTP <status>)`.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* fix(bench): end antigravity tasks on provider errors instead of timing out
+* chore(release): end antigravity tasks on provider errors as cedr 0.14.1
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.14.0...v0.14.1
+</details>
+
 ## v0.14.0 (2026-11-19)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.14.0.png" alt="cedr v0.14.0: gemini bench" width="770">
