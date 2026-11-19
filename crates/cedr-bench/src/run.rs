@@ -32,6 +32,8 @@ pub struct Invocation {
     pub usage: Usage,
     pub duration_ms: u64,
     pub credentials: Vec<String>,
+    /// HTTP status of a model provider failure the agent reported, when that ended the task.
+    pub provider_status: Option<u16>,
 }
 pub trait Backend {
     fn invoke(&mut self, prompt: &str, workspace: &Path, timeout: Duration) -> Result<Invocation>;
@@ -205,6 +207,7 @@ impl Backend for ProcessBackend<'_> {
         )?;
         let duration_ms = start.elapsed().as_millis().min(u64::MAX as u128) as u64;
         let mut usage = adapter::parse(self.options.harness, &out.stdout, &self.options.model);
+        let provider_status = adapter::provider_status(self.options.harness, &out.stdout);
         let status = if exec::interrupted() {
             Status::Interrupted
         } else if out.status.is_none() {
@@ -228,6 +231,7 @@ impl Backend for ProcessBackend<'_> {
             usage,
             duration_ms,
             credentials,
+            provider_status: provider_status.filter(|_| status == Status::AgentError),
         })
     }
     fn grade(
@@ -635,6 +639,7 @@ pub fn run<B: Backend>(
         task.turns = out.usage.turns;
         task.tokens = out.usage.tokens;
         task.cost_usd = out.usage.cost_usd;
+        let provider_status = out.provider_status;
         // No task evidence leaves private staging until all task-controlled output is checked.
         let capture = tempfile::Builder::new()
             .prefix(".capture-")
@@ -839,7 +844,10 @@ pub fn run<B: Backend>(
             task.solved = false;
         }
         if task.status == Status::AgentError {
-            task.error = Some("container agent failed, possibly because its sign-in expired; renewal is blocked; check the vendor sign-in before running again".into());
+            task.error = Some(match provider_status {
+                Some(code) => format!("the agent's model provider failed (HTTP {code}); try the run again later"),
+                None => "container agent failed, possibly because its sign-in expired; renewal is blocked; check the vendor sign-in before running again".into(),
+            });
             r.stop = Some(Stop::UnknownCost);
         } else if task.status == Status::Interrupted {
             r.stop = Some(Stop::Interrupted);

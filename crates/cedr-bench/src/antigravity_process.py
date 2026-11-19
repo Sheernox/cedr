@@ -6,20 +6,38 @@ from contextlib import closing
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import signal
 import sqlite3
 import subprocess
 import sys
-from typing import BinaryIO, Iterator
+import threading
+import time
+from typing import BinaryIO, Callable, Iterator
 
 INSTALL = Path("/opt/antigravity")
 GEMINI_HOME = Path("/home/bench/.gemini")
 WORKSPACE = "/workspace"
 
 
+FRAME_LIMIT = 16 * 1024 * 1024
+# Antigravity records a failed model request as an error step but leaves session/prompt unanswered.
+ERROR_STEP_TYPE = 17
+ERROR_QUIET_SECONDS = 60
+POLL_SECONDS = 5
+
+
 class AcpError(Exception):
     """A launcher-authored error safe to expose outside the container."""
+
+
+class ProviderError(AcpError):
+    """The turn ended on a model provider error; usage up to that point is still reported."""
+
+    def __init__(self, failure: tuple[int | None, str]) -> None:
+        super().__init__(failure[1])
+        self.status = failure[0]
 
 
 class Acp:
@@ -27,20 +45,41 @@ class Acp:
 
     def __init__(self, stdin: BinaryIO, stdout: BinaryIO) -> None:
         self.stdin = stdin
-        self.stdout = stdout
         self.request_id = 0
         self.tools = 0
+        self.lines: queue.Queue[bytes | None] = queue.Queue(maxsize=64)
+        threading.Thread(target=self.read, args=(stdout,), daemon=True).start()
+
+    def read(self, stdout: BinaryIO) -> None:
+        """Read frames on a thread so a waiting request can still notice a stalled turn."""
+        while True:
+            line = stdout.readline(FRAME_LIMIT + 1)
+            if not line or not line.endswith(b"\n"):
+                self.lines.put(None)
+                return
+            self.lines.put(line)
 
     def send(self, message: dict) -> None:
         self.stdin.write(json.dumps({"jsonrpc": "2.0", **message}).encode() + b"\n")
         self.stdin.flush()
 
-    def call(self, method: str, params: dict) -> dict:
+    def call(
+        self, method: str, params: dict, stalled: Callable[[float], tuple[int | None, str] | None] | None = None
+    ) -> dict:
+        """`stalled` gets the seconds since the agent last spoke and returns an error to stop waiting."""
         self.request_id += 1
         self.send({"id": self.request_id, "method": method, "params": params})
+        quiet_since = time.monotonic()
         while True:
-            line = self.stdout.readline(16 * 1024 * 1024 + 1)
-            if not line or not line.endswith(b"\n"):
+            try:
+                line = self.lines.get(timeout=POLL_SECONDS)
+            except queue.Empty:
+                failure = stalled(time.monotonic() - quiet_since) if stalled else None
+                if failure is not None:
+                    raise ProviderError(failure) from None
+                continue
+            quiet_since = time.monotonic()
+            if line is None:
                 raise AcpError(f"Antigravity ACP closed stdout or sent an oversized frame during {method}")
             try:
                 event = json.loads(line)
@@ -218,9 +257,43 @@ def decode_usage(data: bytes) -> dict[str, int | None]:
     }
 
 
-def emit_usage(session_id: str, model: str, tools: int) -> None:
+def conversation(session_id: str) -> Path:
+    return GEMINI_HOME / "antigravity-acp" / "conversations" / f"{session_id}.db"
+
+
+def provider_error(payload: bytes | None) -> tuple[int | None, str]:
+    """Name the provider failure by code and status only; the payload can quote the conversation."""
+    text = (payload or b"").decode("utf-8", "replace")
+    found = re.search(r"Error (\d{3}), Message: .*?, Status: (\d{3} )?([A-Za-z][A-Za-z _]{0,40}?)(?:,|$)", text, re.S)
+    if found is None:
+        return None, "Antigravity stopped the turn on a model provider error"
+    return int(found.group(1)), f"Antigravity stopped the turn on a model provider error ({found.group(1)} {found.group(3).strip()})"
+
+
+def stalled_on_error(session_id: str) -> Callable[[float], tuple[int | None, str] | None]:
+    """Report a turn whose newest step is an error once the agent has been quiet long enough."""
+
+    def check(quiet: float) -> tuple[int | None, str] | None:
+        db = conversation(session_id)
+        if quiet < ERROR_QUIET_SECONDS or not db.is_file():
+            return None
+        try:
+            with closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=1)) as connection:
+                row = connection.execute(
+                    "SELECT step_type, substr(step_payload, 1, 65536) FROM steps ORDER BY idx DESC LIMIT 1"
+                ).fetchone()
+        except sqlite3.Error:
+            return None
+        if row is None or row[0] != ERROR_STEP_TYPE:
+            return None
+        return provider_error(row[1] if isinstance(row[1], bytes) else None)
+
+    return check
+
+
+def emit_usage(session_id: str, model: str, tools: int, provider_status: int | None = None) -> None:
     """Read committed WAL rows while the ACP server still owns the session."""
-    db = GEMINI_HOME / "antigravity-acp" / "conversations" / f"{session_id}.db"
+    db = conversation(session_id)
     turns = None
     if db.is_file():
         with closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)) as connection:
@@ -231,7 +304,10 @@ def emit_usage(session_id: str, model: str, tools: int) -> None:
                 for (data,) in connection.execute("SELECT data FROM gen_metadata ORDER BY idx"):
                     print(json.dumps({"model": model, **decode_usage(data)}))
                     turns += 1
-    print(json.dumps({"turns": turns, "tools": tools}))
+    summary = {"turns": turns, "tools": tools}
+    if provider_status is not None:
+        summary["provider_status"] = provider_status
+    print(json.dumps(summary))
 
 
 def run(acp: Acp, args: list[str], prompt: str | None) -> None:
@@ -267,10 +343,15 @@ def run(acp: Acp, args: list[str], prompt: str | None) -> None:
         raise AcpError("Antigravity ACP does not offer the requested model and effort")
     acp.call("session/set_model", {"sessionId": session_id, "modelId": model_id})
     acp.tools = 0
-    result = acp.call("session/prompt", {
-        "sessionId": session_id,
-        "prompt": [{"type": "text", "text": prompt}],
-    })
+    try:
+        result = acp.call(
+            "session/prompt",
+            {"sessionId": session_id, "prompt": [{"type": "text", "text": prompt}]},
+            stalled=stalled_on_error(session_id),
+        )
+    except ProviderError as failure:
+        emit_usage(session_id, model_id.rsplit("-", 1)[0], acp.tools, failure.status)
+        raise
     if result.get("stopReason") != "end_turn":
         raise AcpError("Antigravity ACP did not complete the prompt")
     emit_usage(session_id, model_id.rsplit("-", 1)[0], acp.tools)

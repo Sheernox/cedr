@@ -208,6 +208,44 @@ for params, code in [({"path": "../secret"}, -32602), ({"path": "link"}, -32602)
         assert!(status.success());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_quiet_turn_ending_in_an_error_step_reports_only_the_provider_status() {
+        let launcher = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/antigravity_process.py");
+        let home = tempfile::tempdir().unwrap();
+        let script = r#"
+import runpy
+import sqlite3
+import sys
+from pathlib import Path
+
+namespace = runpy.run_path(sys.argv[1])
+check_for = namespace["stalled_on_error"]
+check_for.__globals__["GEMINI_HOME"] = Path(sys.argv[2])
+db = Path(sys.argv[2]) / "antigravity-acp" / "conversations" / "s1.db"
+db.parent.mkdir(parents=True)
+connection = sqlite3.connect(db)
+connection.execute("CREATE TABLE steps (idx integer PRIMARY KEY, step_type integer, step_payload blob)")
+connection.execute("INSERT INTO steps VALUES (0, 15, x'00')")
+connection.commit()
+check = check_for("s1")
+assert check(600) is None
+error = b"user text\nError 502, Message: Bad Gateway: secret detail, Status: 502 Bad Gateway, Details: []"
+connection.execute("INSERT INTO steps VALUES (1, 17, ?)", (error,))
+connection.commit()
+assert check(10) is None
+assert check(600) == (502, "Antigravity stopped the turn on a model provider error (502 Bad Gateway)")
+assert check_for("missing")(600) is None
+"#;
+        let status = Command::new("python3")
+            .args(["-B", "-c", script])
+            .arg(launcher)
+            .arg(home.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
     #[test]
     fn active_release_requires_the_requested_version_and_both_file_sizes() {
         let root = tempfile::tempdir().unwrap();

@@ -348,6 +348,23 @@ pub fn parse(h: Harness, text: &[u8], model: &str) -> Usage {
     }
     out
 }
+/// The model provider's HTTP status when the Antigravity launcher reports that a provider failure
+/// ended the turn. Only the launcher's final summary line can carry it.
+pub fn provider_status(h: Harness, text: &[u8]) -> Option<u16> {
+    if h != Harness::Antigravity {
+        return None;
+    }
+    let last = String::from_utf8_lossy(text)
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str::<Value>(line).ok())?;
+    last.get("model")
+        .is_none()
+        .then(|| last["provider_status"].as_u64())
+        .flatten()
+        .filter(|code| (100..600).contains(code))
+        .map(|code| code as u16)
+}
 /// Build argv without a shell. Custom commands receive a prompt file rather than prompt arguments.
 pub fn argv(
     h: Harness,

@@ -52,6 +52,7 @@ impl Backend for Stub {
         }
 
         Ok(Invocation {
+            provider_status: None,
             status: Status::Graded,
             usage: Usage {
                 tokens: Tokens {
@@ -539,6 +540,26 @@ fn antigravity_egress_is_limited_to_its_oauth_and_inference_hosts() {
         h,
         "generativelanguage.googleapis.com:443"
     ));
+}
+
+#[test]
+fn antigravity_reports_a_provider_status_only_from_its_final_summary() {
+    let row = r#"{"model":"gemini-4-neon","input_tokens":1,"cache_read_tokens":0,"cache_write_tokens":0,"output_tokens":1,"provider_status":502}"#;
+    let status =
+        |text: &str| cedr_bench::adapter::provider_status(Harness::Antigravity, text.as_bytes());
+    assert_eq!(
+        status(&format!(
+            "{row}\n{{\"turns\":1,\"tools\":0,\"provider_status\":502}}"
+        )),
+        Some(502)
+    );
+    assert_eq!(status(&format!("{row}\n{{\"turns\":1,\"tools\":0}}")), None);
+    assert_eq!(status(row), None);
+    assert_eq!(status(r#"{"turns":1,"tools":0,"provider_status":7}"#), None);
+    assert_eq!(
+        cedr_bench::adapter::provider_status(Harness::Codex, br#"{"provider_status":502}"#),
+        None
+    );
 }
 
 #[test]
