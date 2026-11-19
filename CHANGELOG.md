@@ -2,9 +2,32 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/compare.md](docs/compare.md) (Compare), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
-## Unreleased
+## v0.14.0 (2026-11-19)
 
-- **Bench supports Antigravity.** Use `bench probe` or `bench run` with `--harness antigravity` and an offered `--effort`. Bench runs T3 Code's managed ACP server inside the container and prices each model request. See [Bench setup](docs/bench.md#execution-and-credentials).
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.14.0.png" alt="cedr v0.14.0: gemini bench" width="770">
+
+**v0.14.0** · 2 changes from 1 contributor
+
+### Highlights
+**Benchmark Gemini models through Antigravity.** `cedr bench probe` and `cedr bench run` accept `--harness antigravity` with an `--effort` the model offers, such as `--model gemini-4-neon --effort high`. The run uses the same isolated container as every other agent, and each model request is priced.
+
+**Upgrade step:** install Antigravity in T3 Code and point `GEMINI_HOME` at its signed-in profile. See [Bench setup](docs/bench.md#execution-and-credentials).
+
+### Features
+- **Antigravity in the container:** Bench builds the agent layer from T3 Code's managed Antigravity ACP release, checks its version and files, and drives it over ACP with a small launcher. `CEDR_ANTIGRAVITY_DIR` selects another installed release.
+- **Exact egress:** the task network allows only `oauth2.googleapis.com`, `cloudcode-pa.googleapis.com` and `daily-cloudcode-pa.googleapis.com` on port 443.
+- **Sign-in:** a prompt-free ACP session on the host lets Antigravity renew its own sign-in, then the token is mounted read-only. Each task home gets a fresh OAuth setting; the host's profile is never copied.
+- **Effort and pricing:** efforts come from the session's model options, and a level the model does not offer is refused. Usage is read per model request (fresh input, cache read, output and thinking). A missing or inconsistent record leaves the trial unpriced instead of guessing.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* feat(bench): run antigravity in the container so gemini models can be benchmarked
+* chore(release): benchmark gemini models through antigravity as cedr 0.14.0
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.13.3...v0.14.0
+</details>
 
 ## v0.13.3 (2026-11-19)
 
