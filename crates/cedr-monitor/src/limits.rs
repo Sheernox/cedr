@@ -44,6 +44,12 @@ pub fn project(mut v: Value, now: i64) -> Value {
 /// Stores each plan's current readings: what T3 Code last read for the plans it runs first, then
 /// each vendor's own reader for the plans T3 Code gave no current reading.
 pub fn refresh(db: &Store) -> Vec<String> {
+    let (t3, errors) = refresh_cached(db);
+    refresh_rest(db, errors, &|h| from_t3(&t3, h))
+}
+
+/// Updates the store using only cached sources, without contacting agents or vendors.
+pub fn refresh_cached(db: &Store) -> (Value, Vec<String>) {
     let mut errors = vec![];
     // T3 Code's default instance ids, under the harness names Monitor reports.
     let harnesses: Vec<cedr_route::readers::T3Harness> = [
@@ -66,13 +72,8 @@ pub fn refresh(db: &Store) -> Vec<String> {
     if db.readings(&t3).is_err() {
         errors.push("cannot save T3 Code readings".into());
     }
-    let from_t3 = |h: &str| {
-        t3["harnesses"]
-            .as_array()
-            .is_some_and(|e| e.iter().any(|e| e["harness"] == h))
-    };
-    if from_t3("claude") {
-        return refresh_rest(db, errors, &from_t3);
+    if from_t3(&t3, "claude") {
+        return (t3, errors);
     }
     let path = cedr_route::readers::statusline_path("claude");
     if let Ok(b) = std::fs::read(path) {
@@ -95,7 +96,13 @@ pub fn refresh(db: &Store) -> Vec<String> {
         Ok(None) => {}
         Err(_) => errors.push("Claude Code's usage cache unreadable".into()),
     }
-    refresh_rest(db, errors, &from_t3)
+    (t3, errors)
+}
+
+fn from_t3(t3: &Value, harness: &str) -> bool {
+    t3["harnesses"]
+        .as_array()
+        .is_some_and(|entries| entries.iter().any(|e| e["harness"] == harness))
 }
 
 /// The vendor readers for Codex, Muse and Grok, for those T3 Code did not cover.

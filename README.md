@@ -98,7 +98,7 @@ cargo install --locked --git https://github.com/Sheernox/cedr cedr
 
 cedr keeps itself up to date: once a day it checks for a release in the background, verifies the archive against `SHA256SUMS` and replaces itself. `cedr update` updates right away, `cedr update --check` only reports, and `cedr update --auto off` (or `CEDR_NO_AUTO_UPDATE=1`) turns the daily update off. It never updates in CI, and a `cargo install` tells you to update with cargo instead. See [docs/update.md](docs/update.md).
 
-Run [`cedr init`](docs/onboarding.md#first-run-setup) for guided setup without an account.
+Run [`cedr init`](docs/onboarding.md#first-run-setup) for guided setup without an account. Use [`cedr status`](docs/onboarding.md#daily-status) to see local usage, pending verdicts and repo drift.
 
 ## 🚀 Quick start with Route
 

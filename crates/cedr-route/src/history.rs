@@ -531,6 +531,45 @@ pub fn history(path: &Path, route: Option<&str>, limit: usize) -> Result<Vec<ser
     Ok(entries.into_iter().take(limit).map(|(_, v)| v).collect())
 }
 
+#[derive(Debug, Serialize)]
+pub struct PendingPick {
+    pub id: String,
+    pub route: String,
+    pub target: String,
+    pub at: String,
+}
+
+/// Filter out verdicts and council records before limiting, so busy histories still show pending work.
+pub fn pending_picks(path: &Path, limit: usize) -> Result<Vec<PendingPick>> {
+    let records = read(path)?;
+    let latest = latest_verdicts(&records);
+    let mut picks: Vec<_> = records
+        .iter()
+        .rev()
+        .filter_map(|record| match record {
+            Record::Pick {
+                id,
+                route,
+                target,
+                at,
+                ..
+            } if !latest.contains_key(id.as_str()) => Some((id, route, target, at)),
+            _ => None,
+        })
+        .collect();
+    picks.sort_by(|a, b| b.3.cmp(a.3));
+    Ok(picks
+        .into_iter()
+        .take(limit)
+        .map(|(id, route, target, at)| PendingPick {
+            id: id.clone(),
+            route: route.clone(),
+            target: target.clone(),
+            at: at.clone(),
+        })
+        .collect())
+}
+
 #[derive(Debug, Default, Serialize)]
 pub struct CouncilStatRow {
     pub route: Option<String>,

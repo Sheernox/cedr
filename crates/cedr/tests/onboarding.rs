@@ -216,3 +216,123 @@ fi"#,
     assert!(!root.join("codex-add").exists());
     assert!(String::from_utf8_lossy(&out.stderr).contains("Doctor:"));
 }
+
+fn run_status(s: &Scratch, root: &std::path::Path) -> std::process::Output {
+    let home = s.dir.path();
+    s.command(&["status", "--format", "json"])
+        .current_dir(root)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("PATH", home)
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("CODEX_HOME", home.join("codex"))
+        .env("COPILOT_HOME", home.join("copilot"))
+        .env("GROK_HOME", home.join("grok"))
+        .env_remove("OPENCODE_DB")
+        .env("CEDR_TELEMETRY", "1")
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn status_uses_null_for_absent_sources_and_writes_no_configuration() {
+    let s = Scratch::new(0.0, 0.0);
+    let out = run_status(&s, s.dir.path());
+    assert!(out.status.success(), "{:?}", out);
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&out)).unwrap(),
+        serde_json::json!({"limits": null, "spend": null, "pendingPicks": null, "sync": null, "guard": null})
+    );
+    assert!(!s.dir.path().join("config").exists());
+    assert!(!s.dir.path().join("cache").exists());
+}
+
+#[test]
+fn status_collects_local_usage_and_finds_pending_picks_and_repo_state() {
+    use chrono::{Duration, Utc};
+    use serde_json::json;
+    use std::fmt::Write;
+
+    let s = Scratch::new(0.0, 0.0);
+    let root = s.dir.path();
+    std::fs::create_dir(root.join(".git")).unwrap();
+    std::fs::create_dir(root.join(".cedr")).unwrap();
+    std::fs::create_dir(root.join("nested")).unwrap();
+    std::fs::write(
+        root.join(".cedr/sync.toml"),
+        "version = 1\ntargets = [\"agents\"]\n",
+    )
+    .unwrap();
+    std::fs::write(root.join(".cedr/guard.lock"), "version = 1\n").unwrap();
+
+    let now = Utc::now();
+    std::fs::create_dir_all(root.join("claude/projects/demo")).unwrap();
+    let response = |id: &str, at: chrono::DateTime<Utc>| {
+        json!({
+            "type": "assistant", "timestamp": at.to_rfc3339(), "sessionId": "session",
+            "message": {
+                "id": id, "model": "claude-opus-5-5",
+                "usage": {"input_tokens": 1_000_000, "output_tokens": 0}
+            }
+        })
+    };
+    std::fs::write(
+        root.join("claude/projects/demo/log.jsonl"),
+        format!(
+            "{}\n{}\n",
+            response("today", now),
+            response("earlier", now - Duration::days(2))
+        ),
+    )
+    .unwrap();
+
+    let state = root.join("state/cedr");
+    std::fs::create_dir_all(state.join("readings")).unwrap();
+    std::fs::write(
+        state.join("readings/claude.json"),
+        json!({"harnesses":[{"harness":"claude","fetchedAt":now.to_rfc3339(),"windows":[
+            {"id":"weekly","kind":"weekly","percent":82,"resetsAt":(now+Duration::hours(2)).to_rfc3339()},
+            {"id":"session","kind":"session","percent":10,"resetsAt":(now+Duration::hours(1)).to_rfc3339()},
+            {"id":"expired","kind":"session","percent":99,"resetsAt":(now-Duration::hours(1)).to_rfc3339()}
+        ]}]}).to_string(),
+    ).unwrap();
+
+    let mut history = String::new();
+    for n in 0..7 {
+        writeln!(
+            history,
+            "{}",
+            json!({
+                "type":"pick", "id":format!("p-{n}"),"at":(now+Duration::seconds(n)).to_rfc3339(),
+                "route":"review.code","rules":"test","target":"codex/gpt-6-sol",
+                "effort":"high","reason":"test","state":"ready","size":"medium",
+            })
+        )
+        .unwrap();
+    }
+    writeln!(
+        history,
+        "{}",
+        json!({"type":"verdict","id":"p-6","at":now.to_rfc3339(),"verdict":"accepted"})
+    )
+    .unwrap();
+    std::fs::write(state.join("route-history.jsonl"), history).unwrap();
+
+    let out = run_status(&s, &root.join("nested"));
+    assert!(out.status.success(), "{:?}", out);
+    let value: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(value["limits"].as_array().unwrap().len(), 1);
+    assert_eq!(value["limits"][0]["window"], "weekly");
+    assert_eq!(value["limits"][0]["percent"], 82);
+    assert_eq!(value["spend"]["todayUsd"], 4.0);
+    assert_eq!(value["spend"]["last7DaysUsd"], 8.0);
+    let picks = value["pendingPicks"].as_array().unwrap();
+    assert_eq!(picks.len(), 5);
+    assert_eq!(picks[0]["id"], "p-5");
+    assert_eq!(picks[4]["id"], "p-1");
+    assert_eq!(value["sync"], json!({"state":"drift","findings":1}));
+    assert_eq!(
+        value["guard"],
+        json!({"state":"clean","findings":0,"error":null})
+    );
+}

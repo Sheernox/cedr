@@ -242,6 +242,7 @@ fn mcp_serves_picks_and_returns_errors_as_tool_errors() {
         "route_list",
         "route_show",
         "route_models",
+        "status",
     ] {
         assert!(tools.iter().any(|x| x == t), "{tools:?}");
     }

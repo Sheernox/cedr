@@ -15,6 +15,7 @@ mod push;
 mod route;
 mod route_init;
 mod settings;
+mod status;
 mod sync;
 mod telemetry;
 mod update;
@@ -110,6 +111,8 @@ impl FailOn {
 enum Command {
     /// Set up starter routes, agent MCP registrations and the Monitor timer
     Init(init::Args),
+    /// Summarize local plan limits, spend, pending verdicts and repository checks
+    Status(status::Args),
     /// Compile and check shared agent configuration
     Sync(sync::Args),
     /// Diagnose the local machine and repository without changing them
@@ -338,6 +341,7 @@ fn dispatch(command: Command) -> ExitCode {
             .map_err(|e| format!("mcp: {e}")),
         Command::Sync(args) => sync::run(args),
         Command::Init(args) => init::run(args),
+        Command::Status(args) => status::run(args),
         Command::Doctor(args) => doctor::run(args),
         Command::Monitor(args) => monitor::run(args),
         Command::Update(args) => update::run(args),

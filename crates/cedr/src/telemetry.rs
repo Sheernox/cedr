@@ -53,6 +53,7 @@ pub(crate) fn silent(command: &str, background: bool) -> bool {
         || command == "route statusline"
         || command == "route init"
         || command == "init"
+        || command == "status"
         || command == "completions"
         || command.split(' ').next() == Some("telemetry")
 }

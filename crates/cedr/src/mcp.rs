@@ -413,6 +413,17 @@ impl RouteServer {
         })
         .await
     }
+    #[tool(
+        description = "Summarize local plan limits, spend, pending verdicts and repository checks"
+    )]
+    async fn status(&self, Parameters(a): Parameters<RepoArgs>) -> CallToolResult {
+        blocking(move || {
+            crate::status::snapshot(&a.path.unwrap_or_else(|| PathBuf::from(".")))
+                .map(json)
+                .map_err(cedr_route::Error::Usage)
+        })
+        .await
+    }
     #[tool(description = "Report local coding-agent token usage and API-equivalent cost estimates")]
     async fn monitor_report(&self, Parameters(a): Parameters<MonitorReportArgs>) -> CallToolResult {
         blocking(move || {
