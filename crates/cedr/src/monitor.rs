@@ -3,8 +3,10 @@ use cedr_monitor::{self as monitor, Result, report::Options};
 use clap::{Args, Subcommand};
 use serde_json::Value;
 use std::{
-    path::PathBuf,
-    process::{Command, ExitCode},
+    io::{ErrorKind, Write},
+    path::{Path, PathBuf},
+    process::{Command, ExitCode, Stdio},
+    time::Duration,
 };
 #[derive(Args)]
 pub struct MonitorArgs {
@@ -112,7 +114,7 @@ fn execute(a: MonitorArgs) -> Result<()> {
             }
             println!("Monitor store removed");
         }
-        Some(MonitorCommand::Schedule { every, remove }) => schedule(every, remove)?,
+        Some(MonitorCommand::Schedule { every, remove }) => schedule(every, remove, false)?,
         command => {
             // A push settles its lock, organization and key before collecting, so a machine with nowhere to send
             // counts says so at once instead of after reading every log.
@@ -447,15 +449,59 @@ fn checked(c: &mut Command) -> Result<()> {
     }
     Ok(())
 }
-fn schedule(every: u32, remove: bool) -> Result<()> {
+fn schedule_home() -> Result<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .ok_or_else(|| "home directory unavailable".into())
+}
+
+/// An existing generated file is enough to keep a user's configuration. Windows also stores
+/// the installed task independently of the XML used to register it.
+pub fn schedule_exists() -> Result<bool> {
+    let files = monitor::schedule::files(std::env::consts::OS, "cedr", 60)?;
+    let home = schedule_home()?;
+    for file in files {
+        let path = home.join(file.relative);
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => return Ok(true),
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", path.display()).into()),
+        }
+    }
+    if cfg!(windows) {
+        let mut cmd = Command::new("schtasks");
+        cmd.args(["/Query", "/TN", "cedr monitor"]);
+        return Ok(cedr_compare::exec::run_cleanup(cmd, Duration::from_secs(10))?.succeeded());
+    }
+    Ok(false)
+}
+
+pub fn schedule_new() -> Result<()> {
+    schedule(60, false, true)
+}
+
+fn write_schedule_file(path: &Path, contents: &str, only_new: bool) -> Result<()> {
+    let parent = path.parent().ok_or("missing schedule directory")?;
+    let write = || -> std::io::Result<()> {
+        std::fs::create_dir_all(parent)?;
+        if only_new {
+            let mut file = tempfile::NamedTempFile::new_in(parent)?;
+            file.write_all(contents.as_bytes())?;
+            file.persist_noclobber(path)?;
+        } else {
+            std::fs::write(path, contents)?;
+        }
+        Ok(())
+    };
+    write().map_err(|e| format!("{}: {e}", path.display()).into())
+}
+
+fn schedule(every: u32, remove: bool, only_new: bool) -> Result<()> {
     let os = std::env::consts::OS;
     let exe = std::env::current_exe()?;
     let files = monitor::schedule::files(os, &exe.to_string_lossy(), every)?;
-    let home = PathBuf::from(
-        std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .ok_or("home directory unavailable")?,
-    );
+    let home = schedule_home()?;
     if remove {
         match os {
             "linux" => checked(Command::new("systemctl").args([
@@ -474,61 +520,84 @@ fn schedule(every: u32, remove: bool) -> Result<()> {
             }
             _ => {}
         }
-    }
-    for f in &files {
-        let path = home.join(&f.relative);
-        if remove {
+        for f in files {
+            let path = home.join(f.relative);
             match std::fs::remove_file(&path) {
                 Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) if e.kind() == ErrorKind::NotFound => {}
                 Err(e) => return Err(e.into()),
             }
-        } else {
-            std::fs::create_dir_all(path.parent().ok_or("missing schedule directory")?)?;
-            std::fs::write(&path, &f.contents)?;
+            println!("removed {}", path.display());
         }
-        println!(
-            "{} {}",
-            if remove { "removed" } else { "wrote" },
-            path.display()
-        );
+        return Ok(());
     }
-    if !remove {
-        match os {
-            "linux" => {
-                checked(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
-                checked(Command::new("systemctl").args([
-                    "--user",
-                    "enable",
-                    "--now",
-                    "cedr-monitor.timer",
-                ]))?;
-                println!("Check: systemctl --user status cedr-monitor.timer");
+
+    let mut written = Vec::new();
+    let install = (|| -> Result<()> {
+        for f in &files {
+            let path = home.join(&f.relative);
+            write_schedule_file(&path, &f.contents, only_new)?;
+            if !only_new {
+                println!("wrote {}", path.display());
             }
-            "macos" => {
-                checked(
-                    Command::new("launchctl")
-                        .arg("load")
-                        .arg(home.join(&files[0].relative)),
-                )?;
-                println!("Check: launchctl list dev.cedr.monitor");
-            }
-            "windows" => {
-                let task = home.join(&files[0].relative);
-                checked(
-                    Command::new("schtasks")
-                        .args(["/Create", "/TN", "cedr monitor", "/XML"])
-                        .arg(&task)
-                        .arg("/F"),
-                )?;
-                // Task Scheduler keeps its own copy; the XML was only the way in.
-                if let Err(e) = std::fs::remove_file(&task) {
-                    eprintln!("cedr: warning: could not remove {}: {e}", task.display());
-                }
-                println!("Check: schtasks /Query /TN \"cedr monitor\"");
-            }
-            _ => {}
+            written.push(path);
         }
+        start_schedule(os, &written[0], only_new)
+    })();
+    // A failed first-time install should be retryable without mistaking these files for a timer.
+    if only_new && install.is_err() {
+        for path in written {
+            if let Err(e) = std::fs::remove_file(&path) {
+                eprintln!("cedr: could not clean up {}: {e}", path.display());
+            }
+        }
+    }
+    install
+}
+
+fn start_schedule(os: &str, first_file: &Path, only_new: bool) -> Result<()> {
+    let run = |cmd: &mut Command| {
+        if only_new {
+            cmd.stdin(Stdio::null()).stdout(Stdio::null());
+        }
+        checked(cmd)
+    };
+    let check = match os {
+        "linux" => {
+            run(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
+            run(Command::new("systemctl").args([
+                "--user",
+                "enable",
+                "--now",
+                "cedr-monitor.timer",
+            ]))?;
+            "systemctl --user status cedr-monitor.timer"
+        }
+        "macos" => {
+            run(Command::new("launchctl").arg("load").arg(first_file))?;
+            "launchctl list dev.cedr.monitor"
+        }
+        "windows" => {
+            let mut cmd = Command::new("schtasks");
+            cmd.args(["/Create", "/TN", "cedr monitor", "/XML"])
+                .arg(first_file);
+            if !only_new {
+                cmd.arg("/F");
+            }
+            run(&mut cmd)?;
+            // Task Scheduler keeps its own copy; the XML was only the way in.
+            if let Err(e) = std::fs::remove_file(first_file) {
+                eprintln!(
+                    "cedr: warning: could not remove {}: {e}",
+                    first_file.display()
+                );
+            }
+            "schtasks /Query /TN \"cedr monitor\""
+        }
+        _ => unreachable!("schedule files require a supported platform"),
+    };
+    if !only_new {
+        println!("Check: {check}");
     }
     Ok(())
 }

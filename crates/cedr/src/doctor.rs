@@ -1,11 +1,13 @@
 //! Read-only diagnostics. No collectors, sync jobs or package servers are started.
 use cedr_route::config::{self, Sync};
+use cedr_route::machine::installed;
 use clap::Args as ClapArgs;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
-    process::{Command, ExitCode, Stdio},
+    process::{Command, ExitCode},
+    time::Duration,
 };
 #[derive(ClapArgs)]
 pub struct Args {
@@ -41,12 +43,50 @@ fn add(out: &mut Vec<Check>, id: &str, state: &str, message: impl Into<String>, 
         },
     });
 }
-fn installed(name: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|p| {
-        std::env::split_paths(&p)
-            .any(|d| d.join(name).is_file() || d.join(format!("{name}.exe")).is_file())
-    })
+pub const MCP_AGENTS: &[&str] = &["claude", "codex", "grok"];
+
+pub enum McpRegistration {
+    Absent,
+    Registered,
+    Missing,
+    Unreadable,
 }
+
+/// Keep the printed repair and the setup command in sync.
+pub fn mcp_fix(agent: &'static str) -> [&'static str; 7] {
+    [agent, "mcp", "add", "cedr", "--", "cedr", "mcp"]
+}
+
+pub fn run_mcp(agent: &str, args: &[&str]) -> std::io::Result<cedr_compare::exec::StepOutput> {
+    let mut cmd = Command::new(agent);
+    cmd.args(args).env("GROK_DISABLE_AUTOUPDATER", "1");
+    cedr_compare::exec::run_cleanup(cmd, Duration::from_secs(10))
+}
+
+pub fn mcp_registration(agent: &str) -> McpRegistration {
+    if !installed(agent) {
+        return McpRegistration::Absent;
+    }
+    let Ok(output) = run_mcp(agent, &["mcp", "list"]) else {
+        return McpRegistration::Unreadable;
+    };
+    if !output.succeeded() {
+        return McpRegistration::Unreadable;
+    }
+    let Ok(text) = std::str::from_utf8(&output.stdout) else {
+        return McpRegistration::Unreadable;
+    };
+    if text.lines().any(|line| {
+        line.split_whitespace()
+            .next()
+            .is_some_and(|word| word.trim_end_matches(':') == "cedr")
+    }) {
+        McpRegistration::Registered
+    } else {
+        McpRegistration::Missing
+    }
+}
+
 pub fn checks(root: &Path) -> Vec<Check> {
     let mut out = vec![];
     add(
@@ -587,25 +627,12 @@ pub fn checks(root: &Path) -> Vec<Check> {
         },
         "Run cedr route sync",
     );
-    for agent in ["claude", "codex", "grok"] {
-        let (state, message) = if !installed(agent) {
-            ("skip", "harness absent")
-        } else {
-            match Command::new(agent)
-                .args(["mcp", "list"])
-                // Never let a check replace the installed Grok Build.
-                .env("GROK_DISABLE_AUTOUPDATER", "1")
-                .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .output()
-            {
-                Ok(o)
-                    if o.status.success()
-                        && String::from_utf8_lossy(&o.stdout).contains("cedr") =>
-                {
-                    ("ok", "cedr MCP registration found")
-                }
-                _ => ("warn", "cedr MCP registration missing or unreadable"),
+    for &agent in MCP_AGENTS {
+        let (state, message) = match mcp_registration(agent) {
+            McpRegistration::Absent => ("skip", "harness absent"),
+            McpRegistration::Registered => ("ok", "cedr MCP registration found"),
+            McpRegistration::Missing | McpRegistration::Unreadable => {
+                ("warn", "cedr MCP registration missing or unreadable")
             }
         };
         add(
@@ -613,7 +640,7 @@ pub fn checks(root: &Path) -> Vec<Check> {
             &format!("mcp.{agent}"),
             state,
             message,
-            &format!("{agent} mcp add cedr -- cedr mcp"),
+            &mcp_fix(agent).join(" "),
         );
     }
     add(
@@ -731,9 +758,7 @@ pub fn checks(root: &Path) -> Vec<Check> {
             "Run cedr monitor push"
         },
     );
-    let schedule = cedr_monitor::schedule::files(std::env::consts::OS, "cedr", 60)
-        .ok()
-        .is_some_and(|a| a.iter().any(|f| home.join(&f.relative).is_file()));
+    let schedule = crate::monitor::schedule_exists().unwrap_or(false);
     add(
         &mut out,
         "monitor.schedule",
@@ -934,6 +959,16 @@ pub fn checks(root: &Path) -> Vec<Check> {
 pub fn value(root: &Path) -> Value {
     json!({"checks":checks(root)})
 }
+pub fn summary(checks: &[Check]) -> String {
+    let count = |state| checks.iter().filter(|c| c.state == state).count();
+    format!(
+        "{} ok, {} warnings, {} failures",
+        count("ok"),
+        count("warn"),
+        count("fail"),
+    )
+}
+
 pub fn run(args: Args) -> Result<ExitCode, String> {
     if !args.path.is_dir() {
         return Err("doctor: repository path must be a directory".into());
@@ -954,11 +989,7 @@ pub fn run(args: Args) -> Result<ExitCode, String> {
                     println!("  {fix}");
                 }
             }
-            println!(
-                "cedr: {} ok, {} warnings, {failures} failures",
-                checks.iter().filter(|c| c.state == "ok").count(),
-                checks.iter().filter(|c| c.state == "warn").count()
-            );
+            println!("cedr: {}", summary(&checks));
         }
     }
     Ok(crate::exit(failures > 0))

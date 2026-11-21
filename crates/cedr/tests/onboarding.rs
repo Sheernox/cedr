@@ -110,3 +110,109 @@ fn route_init_detects_the_managed_claude_instance_without_a_cli() {
         cedr_route::config::load_local(&s.dir.path().join("config/cedr/routes.toml")).unwrap();
     assert_eq!(cfg.harnesses["claude"].t3.as_deref(), Some("claudeAgent"));
 }
+
+#[cfg(unix)]
+fn fake_agent(s: &Scratch, name: &str, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = s.dir.path().join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[cfg(unix)]
+fn run_init(s: &Scratch, args: &[&str]) -> std::process::Output {
+    let mut command = s.command(&["init", "--format", "json"]);
+    command
+        .args(args)
+        .current_dir(s.dir.path())
+        .env("PATH", s.dir.path())
+        .env("HOME", s.dir.path())
+        .env("XDG_DATA_HOME", s.dir.path().join("data"))
+        .output()
+        .unwrap()
+}
+
+#[cfg(unix)]
+fn step<'a>(payload: &'a Value, id: &str) -> &'a Value {
+    payload["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id)
+        .unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn init_without_a_terminal_previews_detected_agents_without_writing() {
+    let s = Scratch::new(0.0, 0.0);
+    fake_agent(
+        &s,
+        "claude",
+        r#"if [ "$2" = list ]; then echo 'cedr-tools: running'; else echo unexpected > "$HOME/add"; fi"#,
+    );
+    let out = run_init(&s, &[]);
+    assert!(out.status.success(), "{:?}", out);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("No terminal and no --yes"));
+    let payload: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(step(&payload, "route.init")["status"], "planned");
+    assert_eq!(step(&payload, "mcp.claude")["status"], "planned");
+    assert_eq!(
+        step(&payload, "mcp.claude")["command"],
+        serde_json::json!(["claude", "mcp", "add", "cedr", "--", "cedr", "mcp"])
+    );
+    assert!(!s.dir.path().join("add").exists());
+    assert!(!s.dir.path().join("config").exists());
+    assert!(!s.dir.path().join("state").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn init_preserves_existing_configuration_and_continues_on_registration_failure() {
+    let s = Scratch::new(0.0, 0.0);
+    let root = s.dir.path();
+    std::fs::create_dir(root.join(".cedr")).unwrap();
+    let routes = root.join(".cedr/routes.toml");
+    std::fs::write(&routes, "version = 1\n").unwrap();
+    let schedule = cedr_monitor::schedule::files(std::env::consts::OS, "cedr", 60).unwrap();
+    let timer = root.join(&schedule.last().unwrap().relative);
+    std::fs::create_dir_all(timer.parent().unwrap()).unwrap();
+    std::fs::write(&timer, "existing timer").unwrap();
+    fake_agent(
+        &s,
+        "claude",
+        r#"if [ "$2" = list ]; then echo 'cedr: cedr mcp'; else echo unexpected > "$HOME/claude-add"; fi"#,
+    );
+    fake_agent(
+        &s,
+        "codex",
+        r#"if [ "$2" = list ]; then exit 1; else echo unexpected > "$HOME/codex-add"; fi"#,
+    );
+    fake_agent(
+        &s,
+        "grok",
+        r#"
+if [ "$2" = add ]; then printf '%s\n' "$*" > "$HOME/grok-add"
+elif [ -f "$HOME/grok-add" ]; then echo 'cedr cedr mcp'
+fi"#,
+    );
+
+    let out = run_init(&s, &["--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{:?}", out);
+    let payload: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    for id in ["route.init", "mcp.claude", "monitor.schedule"] {
+        assert_eq!(step(&payload, id)["status"], "already", "{id}");
+    }
+    assert_eq!(step(&payload, "mcp.codex")["status"], "failed");
+    assert!(step(&payload, "mcp.codex")["error"].is_string());
+    assert_eq!(step(&payload, "mcp.grok")["status"], "applied");
+    assert_eq!(
+        std::fs::read_to_string(root.join("grok-add")).unwrap(),
+        "mcp add cedr -- cedr mcp\n"
+    );
+    assert_eq!(std::fs::read_to_string(routes).unwrap(), "version = 1\n");
+    assert_eq!(std::fs::read_to_string(timer).unwrap(), "existing timer");
+    assert!(!root.join("claude-add").exists());
+    assert!(!root.join("codex-add").exists());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Doctor:"));
+}

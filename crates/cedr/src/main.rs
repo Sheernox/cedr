@@ -7,6 +7,7 @@ mod common;
 mod compare;
 mod council;
 mod doctor;
+mod init;
 mod mcp;
 mod monitor;
 mod net;
@@ -107,6 +108,8 @@ impl FailOn {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Set up starter routes, agent MCP registrations and the Monitor timer
+    Init(init::Args),
     /// Compile and check shared agent configuration
     Sync(sync::Args),
     /// Diagnose the local machine and repository without changing them
@@ -334,6 +337,7 @@ fn dispatch(command: Command) -> ExitCode {
             .map(|()| ExitCode::SUCCESS)
             .map_err(|e| format!("mcp: {e}")),
         Command::Sync(args) => sync::run(args),
+        Command::Init(args) => init::run(args),
         Command::Doctor(args) => doctor::run(args),
         Command::Monitor(args) => monitor::run(args),
         Command::Update(args) => update::run(args),
