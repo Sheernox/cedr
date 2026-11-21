@@ -132,16 +132,29 @@ fn recover(path: &Path, run: &str, clean: impl FnOnce(&str) -> Result<()>) -> io
         }
         Err(e) => return Err(e),
     };
+    recover_file(file, path, run, clean)
+}
+
+fn recover_file(
+    file: fs::File,
+    path: &Path,
+    run: &str,
+    clean: impl FnOnce(&str) -> Result<()>,
+) -> io::Result<()> {
     match file.try_lock() {
         Ok(()) => (),
         Err(fs::TryLockError::WouldBlock) => return Ok(()),
         Err(fs::TryLockError::Error(e)) => return Err(e),
     }
-    clean(run).map_err(io::Error::other)?;
-    match fs::remove_file(path) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        result => result,
-    }
+    let result = clean(run)
+        .map_err(io::Error::other)
+        .and_then(|()| match fs::remove_file(path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        });
+    // A concurrent fork can retain the open file description until exec.
+    // Release the lock even on failure so another sweep can retry immediately.
+    result.and(file.unlock())
 }
 
 /// Remove by immutable Docker ID, containers first, keeping the lease for retry on failure.
@@ -197,10 +210,18 @@ mod tests {
         recover(&path, &run, |_| panic!("live owner was reaped")).unwrap();
         owner.unlock().unwrap();
         drop(owner);
-        assert!(recover(&path, &run, |_| Err("daemon unavailable".into())).is_err());
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        // Keep the descriptor alive as a child between fork and exec could.
+        let inherited = file.try_clone().unwrap();
+        assert!(recover_file(file, &path, &run, |_| Err("daemon unavailable".into())).is_err());
         assert!(path.exists());
         recover(&path, &run, |_| Ok(())).unwrap();
         assert!(!path.exists());
+        drop(inherited);
         let mut late = true;
         recover(&path, &run, |_| {
             late = false;
