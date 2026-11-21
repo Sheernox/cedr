@@ -6,22 +6,31 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.15.0.png" alt="cedr v0.15.0: first run" width="770">
 
-**v0.15.0** · 13 changes from 1 contributor
+**v0.15.0** · 23 changes from 1 contributor
 
 ### Highlights
 **Set up cedr in one command, with no account and no config to write.** `cedr init` shows what it will do, then creates starter routes for the agents on your machine, registers `cedr mcp` with Claude, Codex and Grok, and offers the hourly Monitor timer, one confirmation at a time. `cedr route init` creates the starter routes on their own. Nothing that exists is ever replaced.
 
-**See your day on one screen.** `cedr status` shows each plan's closest limit, what today and the last seven days cost at API prices, the latest picks still waiting for a verdict, and this repo's Sync and Guard state. It reads local data only, and agents get the same report as the `status` MCP tool.
+**Run a Council without an orchestrator, on your machine or in CI.** `cedr council run <route>` starts each reviewer headless and read-only in its own copy of `HEAD`, collects the reports, merges them in strict mode and prints the gate. The GitHub Action's new `council` input runs it on pull requests from the same repository and posts the findings as one pull request review, with inline comments on the changed lines.
 
-**Review a changed tool description with both texts.** When an MCP server rewrites a tool's description, `cedr guard diff`, `outdated` and `remote` now print the old text above the new one, so you can judge the change without digging out the old surface.
+**See your day on one screen, and what each model costs per accepted task.** `cedr status` shows each plan's closest limit, what today and the last seven days cost at API prices, picks still waiting for a verdict, and this repo's Sync and Guard state. `cedr route stats` now joins picks to Monitor sessions and reports cost per accepted task for each route and model.
+
+**Review a changed tool description with both texts.** When an MCP server rewrites a tool's description, `cedr guard diff`, `outdated` and `remote` print the old text above the new one.
 
 ### Features
-- **Starter routes:** `cedr route init [--harness H]... [--orchestrator H/MODEL] [--dry-run]` writes `review.code`, `code.impl`, `research.gather` and, with two or more vendors, `review.council`, using model families that resolve at pick time. It refuses to overwrite an existing file. See [Starter routes](docs/route.md#starter-routes).
+- **Starter routes:** `cedr route init [--harness H]... [--orchestrator H/MODEL] [--dry-run]` writes `review.code`, `code.impl`, `research.gather` and, with two or more vendors, `review.council`, using model families that resolve at pick time. See [Starter routes](docs/route.md#starter-routes).
 - **First-run setup:** `cedr init [--yes] [--dry-run] [--format json]` asks before each step, continues past a failed one, and ends with the doctor summary. Without a terminal or `--yes` it only previews. See [docs/onboarding.md](docs/onboarding.md).
-- **Guard over MCP:** `cedr mcp` adds read-only `guard_lint`, `guard_verify` and `guard_outdated`, returning the CLI's JSON.
+- **Council run:** `cedr council run <route> [--base REF | --diff RANGE] [--member H/M]... [--timeout SECS] [--out DIR]` supports Claude (plan mode) and Codex (read-only sandbox) today; other members are skipped and spares step in. See [Run](docs/council.md#run).
+- **Council in the Action:** inputs `council`, `council-base`, `council-timeout` and `council-comment`; reviewers use the vendor API keys from the workflow's secrets, fork pull requests are skipped, and a blocked or incomplete gate fails the step. See [docs/council.md](docs/council.md).
+- **One pull request comment:** the Action's `comment: true` keeps a single comment updated with Guard findings, server updates, Sync drift and the Compare table.
+- **SARIF and GitLab output:** `cedr guard lint`, `cedr guard verify`, `cedr sync check`, `cedr council merge` and `cedr council run` take `--format sarif` (SARIF 2.1.0, for code scanning) and `--format gitlab` (Code Quality). `council merge` also takes `--format github`.
+- **Cost per accepted task:** `cedr route verdict ... --session ID` links a pick to its Monitor session; without it, a pick matches when exactly one session of its agent and model started before its verdict. `reworked` counts as accepted for cost and is shown apart.
+- **Verdicts from outcomes:** `cedr council merge --author-pick ID` records `accepted`, `reworked` or `rejected` from the gate, `cedr compare run --pick ID` records one from the comparison, and `cedr route history --unjudged` lists picks without a verdict. Existing verdicts are never replaced.
+- **Guard over MCP:** `cedr mcp` adds read-only `guard_lint`, `guard_verify` and `guard_outdated`, and a `status` tool.
 - **Stale pins after Sync:** `cedr sync` warns when MCP entries it wrote no longer match their Guard pins and names `cedr guard lock`; `cedr sync check` reports the same as a warning.
-- **Preview a Monitor push:** `cedr monitor push --dry-run` prints the destination, the start in force, the first and last hour, rows by agent, project labels and anything missing, such as the API key. It sends and saves nothing. `monitor push` also takes `--format json`, and MCP gets `monitor_push_plan`.
-- **Council strict mode:** `cedr council merge --strict`, or `strict = true` on a council route, requires each text report to end with `End of review.`. A report without it may have been cut off: its findings still merge, but it does not count towards the quorum, and the output names the member to ask again.
+- **Preview a Monitor push:** `cedr monitor push --dry-run` prints the destination, the start in force, the first and last hour, rows by agent, project labels and anything missing, sending and saving nothing. MCP gets `monitor_push_plan`.
+- **Council strict mode:** `--strict`, or `strict = true` on a council route, requires each text report to end with `End of review.`; a report without it does not count towards the quorum.
+- **GitLab CI provenance:** Compare records the GitLab job and merge request in the saved result. It is not pushed yet: the app links GitHub Actions runs only.
 
 ### Fixes
 - **Compare budget:** `compare plan` and `compare run` now say for each variant whether its spend is `enforced` (Claude stops itself at what is left), checked `between_trials` (one trial can go over) or `unpriced`. A run that ends over budget records the excess and the trial that crossed it in `overrun`.
@@ -43,6 +52,16 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 * feat(council): add a strict mode that refuses to pass on cut-off reports
 * fix(monitor): save the push start before reading rows
 * chore(release): set up cedr in one command and see the day with cedr status as cedr 0.15.0
+* feat(guard): add sarif and gitlab output and gitlab ci provenance
+* feat(council): emit merged findings as annotations, sarif and gitlab
+* feat(action): add one sticky pull request comment
+* fix(compare): push ci provenance only for github actions runs
+* feat(council): run reviewers and merge their reports
+* feat(action): run council and post one pull request review
+* feat(route): report cost per accepted task
+* feat(route): record verdicts from council and compare
+* docs(readme): lead the quick start with commands that need no account
+* chore(release): add council run, ci output and cost per accepted task to cedr 0.15.0
 
 **Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.14.1...v0.15.0
 </details>
