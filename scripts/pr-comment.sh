@@ -5,7 +5,7 @@
 # an environment variable; a failure to comment warns and never changes the job's result,
 # because the lint and verify steps already decided it.
 #
-# Inputs (environment): INPUT_COMMENT, INPUT_PATH, INPUT_STRICT, INPUT_VERIFY, INPUT_SYNC, INPUT_OUTDATED,
+# Inputs (environment): INPUT_COMMENT, INPUT_PATH, INPUT_STRICT, INPUT_VERIFY, INPUT_REQUIRE_TYPED_PINS, INPUT_SYNC, INPUT_OUTDATED,
 # COMMENT_EVENT, COMMENT_PR, COMMENT_HEAD_REPO, COMMENT_BASE_REPO, COMPARE_REPORT,
 # GITHUB_REPOSITORY, GH_TOKEN (read by gh), RUNNER_TEMP, CEDR_BIN (default cedr).
 set -uo pipefail
@@ -59,7 +59,9 @@ case "${INPUT_VERIFY:-auto}" in
   true) verify_json="$work/verify.json" ;;
 esac
 if [ -n "$verify_json" ]; then
-  "$cedr_bin" verify "$INPUT_PATH" --format json >"$verify_json" 2>/dev/null || true
+  verify_args=("$cedr_bin" verify "$INPUT_PATH" --format json)
+  if [ "${INPUT_REQUIRE_TYPED_PINS:-false}" = "true" ]; then verify_args+=(--require-typed-pins); fi
+  "${verify_args[@]}" >"$verify_json" 2>/dev/null || true
 fi
 
 outdated_json=""

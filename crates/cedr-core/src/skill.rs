@@ -127,6 +127,15 @@ fn split_tool_list(list: &str) -> Vec<String> {
 /// followed: their raw target text is hashed with an `l` before the length,
 /// distinguishing links from regular files while preserving existing regular-file pins.
 pub fn content_hash(dir: &Path) -> Result<String> {
+    hash_files(dir, true)
+}
+
+/// Compatibility for pins that predate file type tags.
+pub(crate) fn legacy_content_hash(dir: &Path) -> Result<String> {
+    hash_files(dir, false)
+}
+
+fn hash_files(dir: &Path, typed: bool) -> Result<String> {
     let mut files = Vec::new();
     collect_files(dir, "", &mut files)?;
     files.sort();
@@ -138,17 +147,18 @@ pub fn content_hash(dir: &Path) -> Result<String> {
             .file_type()
             .is_symlink();
         let bytes = if is_link {
-            fs::read_link(&path)
-                .map_err(io_err(&path))?
-                .as_os_str()
-                .as_encoded_bytes()
-                .to_vec()
+            let target = fs::read_link(&path).map_err(io_err(&path))?;
+            if typed {
+                target.as_os_str().as_encoded_bytes().to_vec()
+            } else {
+                target.to_string_lossy().into_owned().into_bytes()
+            }
         } else {
             fs::read(&path).map_err(io_err(&path))?
         };
         hasher.update(rel.as_bytes());
         hasher.update([0]);
-        if is_link {
+        if typed && is_link {
             hasher.update(b"l");
         }
         hasher.update(bytes.len().to_string().as_bytes());

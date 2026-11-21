@@ -215,6 +215,9 @@ enum GuardCommand {
         /// github prints GitHub Actions annotations, sarif SARIF 2.1.0, gitlab a GitLab Code Quality report
         #[arg(long, value_enum, default_value_t = FindingFormat::Text)]
         format: FindingFormat,
+        /// Fail if a skill pin lacks the file type marker written by guard lock
+        #[arg(long)]
+        require_typed_pins: bool,
     },
     /// Inspect newer npm server versions without installing or running packages
     Outdated {
@@ -439,11 +442,15 @@ fn run(command: GuardCommand) -> cedr_core::Result<ExitCode> {
             );
             Ok(ExitCode::SUCCESS)
         }
-        GuardCommand::Verify { path, format } => {
-            let verification = verify::verify(&path)?;
+        GuardCommand::Verify {
+            path,
+            format,
+            require_typed_pins,
+        } => {
+            let verification = verify::verify_with(&path, require_typed_pins)?;
             print_skipped(&verification.skipped);
             print_report(&verification.report, format);
-            Ok(exit(!verification.report.is_empty()))
+            Ok(exit(verification.report.has_errors()))
         }
         GuardCommand::Outdated {
             path,

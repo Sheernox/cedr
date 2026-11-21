@@ -35,6 +35,8 @@ pub struct SkillEntry {
     pub path: String,
     pub content: String,
     #[serde(default)]
+    pub typed: bool,
+    #[serde(default)]
     pub allowed_tools: Vec<String>,
 }
 
@@ -101,6 +103,9 @@ impl Lock {
             kv(&mut out, "name", &quote(&s.name));
             kv(&mut out, "path", &quote(&s.path));
             kv(&mut out, "content", &quote(&s.content));
+            if s.typed {
+                kv(&mut out, "typed", "true");
+            }
             kv(&mut out, "allowed_tools", &array(&s.allowed_tools));
         }
         for m in &servers {
@@ -188,6 +193,7 @@ pub fn lock(root: &Path, options: LockOptions) -> Result<LockOutcome> {
             name: dir.dir_name.clone(),
             path: dir.path.clone(),
             content: skill::content_hash(&dir.real_path)?,
+            typed: true,
             allowed_tools,
         });
     }
@@ -495,6 +501,7 @@ mod tests {
                 name: "q\"uote".into(),
                 path: ".agents/skills/q".into(),
                 content: "sha256-0".into(),
+                typed: true,
                 allowed_tools: vec!["Bash(npm run *)".into()],
             }],
             mcp: vec![

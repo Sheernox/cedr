@@ -147,7 +147,11 @@ pub fn snapshot(path: &Path) -> Result<Snapshot, String> {
             Ok(v) => {
                 let findings = v.report.findings.len();
                 GuardState {
-                    state: check_state(findings),
+                    state: if v.report.has_errors() {
+                        "drift"
+                    } else {
+                        "clean"
+                    },
                     findings: Some(findings),
                     error: None,
                 }

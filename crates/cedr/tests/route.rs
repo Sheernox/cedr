@@ -1171,6 +1171,21 @@ fn mcp_guard_reports_match_cli_json_and_gates() {
     let s = Scratch::new(10.0, 20.0);
     let repo = s.dir.path().join("repo");
     let lint_repo = s.dir.path().join("lint-repo");
+    let legacy_repo = s.dir.path().join("legacy-repo");
+    std::fs::create_dir_all(legacy_repo.join(".cedr")).unwrap();
+    let legacy_skill = legacy_repo.join(".agents/skills/legacy");
+    std::fs::create_dir_all(&legacy_skill).unwrap();
+    std::fs::write(
+        legacy_skill.join("SKILL.md"),
+        "---\nname: legacy\ndescription: Legacy pin fixture.\n---\n",
+    )
+    .unwrap();
+    std::fs::write(legacy_skill.join("script.sh"), "payload.sh").unwrap();
+    std::fs::write(
+        legacy_repo.join(".cedr/guard.lock"),
+        include_str!("../../../fixtures/guard/legacy-untyped.lock"),
+    )
+    .unwrap();
     std::fs::create_dir(&repo).unwrap();
     std::fs::create_dir(&lint_repo).unwrap();
     std::fs::write(lint_repo.join("AGENTS.md"), "[docs](missing.md)\n").unwrap();
@@ -1214,6 +1229,18 @@ fn mcp_guard_reports_match_cli_json_and_gates() {
         ),
         ("verify", json!({}), vec![], 1),
         (
+            "verify",
+            json!({"path":legacy_repo}),
+            vec![legacy_repo.to_str().unwrap()],
+            0,
+        ),
+        (
+            "verify",
+            json!({"path":legacy_repo,"require_typed_pins":true}),
+            vec![legacy_repo.to_str().unwrap(), "--require-typed-pins"],
+            1,
+        ),
+        (
             "outdated",
             json!({"fail_on":"high"}),
             vec!["--fail-on", "high"],
@@ -1247,11 +1274,11 @@ fn mcp_guard_reports_match_cli_json_and_gates() {
     }
 
     send(
-        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{
+        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{
             "name":"guard_verify","arguments":{"path":lint_repo}
         }}),
     );
-    let missing_lock = &recv(5)["result"];
+    let missing_lock = &recv(7)["result"];
     assert_eq!(missing_lock["isError"], true);
     assert!(
         missing_lock["content"][0]["text"]

@@ -864,7 +864,13 @@ pub fn checks(root: &Path) -> Vec<Check> {
             Ok(v) => add(
                 &mut out,
                 "guard.lock",
-                if v.report.is_empty() { "ok" } else { "fail" },
+                if v.report.has_errors() {
+                    "fail"
+                } else if v.report.is_empty() {
+                    "ok"
+                } else {
+                    "warn"
+                },
                 format!("{} Guard findings", v.report.findings.len()),
                 "Run cedr guard verify and review changes before cedr guard lock",
             ),

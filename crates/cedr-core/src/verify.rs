@@ -16,6 +16,11 @@ pub struct Verification {
 }
 
 pub fn verify(root: &Path) -> Result<Verification> {
+    verify_with(root, false)
+}
+
+/// Verify without rewriting pins. Strict verification requires an explicit type marker.
+pub fn verify_with(root: &Path, require_typed_pins: bool) -> Result<Verification> {
     let (lock, lock_file) = lock::read_lock(root)?;
     let ws = discovery::discover(root)?;
     let mut findings = Vec::new();
@@ -26,6 +31,23 @@ pub fn verify(root: &Path) -> Result<Verification> {
     let current_skills: BTreeMap<&str, &discovery::SkillDir> =
         ws.skills.iter().map(|s| (s.path.as_str(), s)).collect();
     for entry in &lock.skill {
+        if !entry.typed {
+            let severity = if require_typed_pins {
+                Severity::Error
+            } else {
+                Severity::Warning
+            };
+            findings.push(Finding::new(
+                Rule::Cv006,
+                severity,
+                &entry.path,
+                None,
+                format!(
+                    "legacy untyped skill pin for \"{}\". From the repo root, run `cedr guard lock` and review `git diff -- .cedr/guard.lock .cedr/surfaces/`",
+                    entry.name
+                ),
+            ));
+        }
         match current_skills.get(entry.path.as_str()) {
             None => findings.push(error(
                 Rule::Cv003,
@@ -34,7 +56,10 @@ pub fn verify(root: &Path) -> Result<Verification> {
                 format!("skill \"{}\" was removed since it was pinned", entry.name),
             )),
             Some(dir) => {
-                if skill::content_hash(&dir.real_path)? != entry.content {
+                let matches = skill::content_hash(&dir.real_path)? == entry.content
+                    || (!entry.typed
+                        && skill::legacy_content_hash(&dir.real_path)? == entry.content);
+                if !matches {
                     findings.push(error(
                         Rule::Cv001,
                         &entry.path,

@@ -22,6 +22,9 @@ inputs:
   verify:
     description: "auto runs cedr guard verify when a lock exists; true requires one; false skips it"
     default: auto
+  require-typed-pins:
+    description: Fail verification when a skill pin lacks the file type marker
+    default: "false"
   outdated:
     description: Report newer npm server versions as annotations without failing the job
     default: "true"
@@ -131,6 +134,7 @@ runs:
       env:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_VERIFY: ${{ inputs.verify }}
+        INPUT_REQUIRE_TYPED_PINS: ${{ inputs.require-typed-pins }}
       run: |
         case "$INPUT_VERIFY" in
           false) echo "verify skipped"; exit 0 ;;
@@ -142,7 +146,13 @@ runs:
           true) ;;
           *) echo "::error title=cedr::verify must be auto, true or false"; exit 1 ;;
         esac
-        cedr verify "$INPUT_PATH" --format github
+        args=(verify "$INPUT_PATH" --format github)
+        case "$INPUT_REQUIRE_TYPED_PINS" in
+          true) args+=(--require-typed-pins) ;;
+          false) ;;
+          *) echo "::error title=cedr::require-typed-pins must be true or false"; exit 1 ;;
+        esac
+        cedr "${args[@]}"
 
     - name: cedr guard outdated
       if: ${{ always() && inputs.outdated == 'true' }}
@@ -284,6 +294,7 @@ runs:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_STRICT: ${{ inputs.strict }}
         INPUT_VERIFY: ${{ inputs.verify }}
+        INPUT_REQUIRE_TYPED_PINS: ${{ inputs.require-typed-pins }}
         INPUT_SYNC: ${{ inputs.sync }}
         INPUT_OUTDATED: ${{ inputs.outdated }}
         COMMENT_EVENT: ${{ github.event_name }}

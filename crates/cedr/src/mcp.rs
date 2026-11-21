@@ -204,6 +204,9 @@ struct GuardLintArgs {
 struct GuardVerifyArgs {
     /// Repository root, default current directory
     path: Option<PathBuf>,
+    /// Fail if a skill pin lacks the file type marker written by guard lock
+    #[serde(default)]
+    require_typed_pins: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -383,9 +386,12 @@ impl RouteServer {
     #[tool(description = "Compare repo skills and MCP settings with the Guard lock offline")]
     async fn guard_verify(&self, Parameters(a): Parameters<GuardVerifyArgs>) -> CallToolResult {
         guard_check(move || {
-            let verification = verify::verify(&a.path.unwrap_or_else(|| PathBuf::from(".")))?;
+            let verification = verify::verify_with(
+                &a.path.unwrap_or_else(|| PathBuf::from(".")),
+                a.require_typed_pins,
+            )?;
             crate::print_skipped(&verification.skipped);
-            let failed = !verification.report.is_empty();
+            let failed = verification.report.has_errors();
             Ok((json(verification.report), failed))
         })
         .await

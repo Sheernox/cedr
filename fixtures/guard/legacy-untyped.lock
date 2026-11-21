@@ -1,0 +1,7 @@
+version = 1
+
+[[skill]]
+name = "legacy"
+path = ".agents/skills/legacy"
+content = "sha256-7fc4bed67e97a9ec52ac3e695b0cffa1f4eea1b8d14052b9c36d224a50ddbc5a"
+allowed_tools = []

@@ -47,6 +47,7 @@ pub enum Rule {
     Cv003,
     Cv004,
     Cv005,
+    Cv006,
 }
 
 impl Rule {
@@ -77,6 +78,7 @@ impl Rule {
             Rule::Cv003 => "CV003",
             Rule::Cv004 => "CV004",
             Rule::Cv005 => "CV005",
+            Rule::Cv006 => "CV006",
         }
     }
 
@@ -108,6 +110,7 @@ impl Rule {
             Rule::Cv003 => "Skill or MCP server removed since the pin",
             Rule::Cv004 => "MCP server source changed since the pin",
             Rule::Cv005 => "MCP server launch changed since the pin",
+            Rule::Cv006 => "Legacy untyped skill pin",
         }
     }
 }

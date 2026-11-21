@@ -878,6 +878,68 @@ fn skill_escapes_are_cg010_and_the_rest_is_still_checked() {
     assert!(lock.contains("name = \"deploy\"") && !lock.contains("escape"));
 }
 
+#[cfg(unix)]
+#[test]
+fn verify_warns_for_untyped_symlink_pins_until_relocked() {
+    let repo = tempfile::tempdir().unwrap();
+    let root = path_str(repo.path());
+    let skill = repo.path().join(".agents/skills/legacy");
+    let lock = repo.path().join(".cedr/guard.lock");
+    fs::create_dir_all(&skill).unwrap();
+    fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: legacy\ndescription: Legacy pin fixture.\n---\n",
+    )
+    .unwrap();
+    let script = skill.join("script.sh");
+    std::os::unix::fs::symlink("payload.sh", &script).unwrap();
+    fs::copy(fixtures().join("guard/legacy-untyped.lock"), &lock).unwrap();
+
+    let out = cedr(&["guard", "verify", root, "--format", "json"]);
+    assert_eq!(code(&out), 0);
+    let report = stdout_json(&out);
+    let findings = report["findings"].as_array().unwrap();
+    assert_eq!(findings.len(), 1);
+    let warning = &findings[0];
+    assert_eq!(warning["severity"], "warning");
+    assert_eq!(warning["rule"], "CV006");
+    assert_eq!(warning["path"], ".agents/skills/legacy");
+    let message = warning["message"].as_str().unwrap();
+    assert!(message.contains("legacy untyped skill pin"));
+    assert!(message.contains("`cedr guard lock`"));
+    assert!(message.contains("`git diff -- .cedr/guard.lock .cedr/surfaces/`"));
+    // The Action uses the top-level alias to support older versions.
+    let out = cedr(&["verify", root, "--format", "github", "--require-typed-pins"]);
+    assert_eq!(code(&out), 1);
+    assert!(
+        String::from_utf8_lossy(&out.stdout)
+            .contains("::error file=.agents/skills/legacy,title=CV006")
+    );
+
+    assert_eq!(code(&cedr(&["guard", "lock", root, "--offline"])), 0);
+    assert!(fs::read_to_string(&lock).unwrap().contains("typed = true"));
+    let args = [
+        "guard",
+        "verify",
+        root,
+        "--format",
+        "json",
+        "--require-typed-pins",
+    ];
+    let out = cedr(&args);
+    assert_eq!(code(&out), 0);
+    assert!(stdout_json(&out)["findings"].as_array().unwrap().is_empty());
+    fs::remove_file(&script).unwrap();
+    fs::write(script, "payload.sh").unwrap();
+    let out = cedr(&args);
+    assert_eq!(code(&out), 1);
+    assert_eq!(
+        rules(&stdout_json(&out)),
+        BTreeSet::from(["CV001".to_string()])
+    );
+}
+
 #[test]
 fn lock_moves_a_legacy_lock_and_verify_reads_either() {
     let repo = scratch("repo-good");

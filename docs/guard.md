@@ -11,7 +11,7 @@ Lint checks the repo setup, and verify detects local drift from the lock offline
 ## Known gaps
 
 - Skill hashes do not include executable permission bits. A chmod alone does not change verification, and file modes differ across platforms.
-- Pre-upgrade symlink pins lack a type tag. Re-lock skills containing symlinks; until then, replacing a link with a regular file containing exactly its target text can still match the old pin.
+- Verify reports legacy untyped skill pins as `CV006` warnings. An untyped hash can match a regular file and a link with the same target text. From the repo root, run `cedr guard lock` and review `git diff -- .cedr/guard.lock .cedr/surfaces/` before committing the new pins. Use `cedr guard verify --require-typed-pins` or the Action input `require-typed-pins: true` to require typed pins in CI.
 - URL paths remain in source identities. Put credentials in headers or environment variables, not URL paths. Re-lock and rotate any credentials previously written into lockfiles or their Git history.
 - `cedr guard latest` and `cedr guard outdated` follow the registry's `latest` dist-tag. Newer versions under other tags do not count.
 - PyPI (`uvx`), OCI digests and git-sourced skills have no upstream version check yet.

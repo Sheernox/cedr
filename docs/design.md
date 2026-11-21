@@ -190,6 +190,7 @@ version = 1
 name = "deploy"
 path = ".agents/skills/deploy"
 content = "sha256-<hex>"            # over `<path>\0<len>\0<bytes>` per file in path order; a symlink uses `<path>\0l<len>\0<raw target bytes>`
+typed = true                       # the hash distinguishes regular files from symlinks
 allowed_tools = ["Bash(npm run *)"] # from SKILL.md frontmatter `allowed-tools`, empty when absent
 
 [[mcp]]
@@ -211,7 +212,9 @@ egress = ["api.github.com"]
 - Extracts npm surfaces statically. `--offline` skips the network and records `method = "none"`.
 - `--introspect` runs each stdio server with its configured command and a cleared environment holding only `PATH`, `HOME` and the configured env, calls `initialize` and `tools/list` with a 20-second timeout, and uses that surface (`method = "introspect"`). Egress and capabilities still come from static extraction when the package could be fetched. It prints a warning first: this executes the configured servers.
 
-`cedr guard verify [PATH] [--format text|json|github|sarif|gitlab]` never touches the network. It fails (exit 1) when a skill's content hash differs, a skill or server was added or removed, or a server's source or launch changed. Findings use the lint JSON shape with rules `CV001` (content changed), `CV002` (added), `CV003` (removed), `CV004` (source changed) and `CV005` (launch changed: command, arguments, env keys or URL). Env values are never hashed or stored, only their keys.
+`cedr guard verify [PATH] [--format text|json|github|sarif|gitlab] [--require-typed-pins]` never touches the network. It fails (exit 1) when a skill's content hash differs, a skill or server was added or removed, or a server's source or launch changed. Findings use the lint JSON shape with rules `CV001` (content changed), `CV002` (added), `CV003` (removed), `CV004` (source changed) and `CV005` (launch changed: command, arguments, env keys or URL). Env values are never hashed or stored, only their keys.
+
+A skill pin without `typed = true` produces a separate `CV006` legacy untyped skill pin finding. Verify accepts a matching current hash or, for an unmarked pin, a matching legacy hash that used the link target text as content. Other mismatches still produce `CV001`. Unmarked hashes cannot always tell a file from a symlink, even if the current skill contains only regular files. `CV006` is a warning by default and an error with `--require-typed-pins`. From the repo root, run `cedr guard lock`, then review `git diff -- .cedr/guard.lock .cedr/surfaces/` before committing the refreshed pins.
 
 ## Remote servers
 
@@ -235,7 +238,7 @@ A remote check requires the current server configuration to match the pinned lau
 
 Other sources (`pypi:`, `oci:`, `command:`, `url:`) are listed as `not checked` in text output and left out of JSON. A registry or network failure for one server is a warning naming the server, never a failure of the run. JSON output is `{"version": 1, "updates": [...]}`; `--format github` prints one summary `::warning` per update (`::error` for high), without tool descriptions. Exit 0, or 1 when an update reaches `--fail-on` (default `never`), 2 on usage or I/O failure.
 
-Existing locks with URL credentials verify after normalization but warn to re-lock and rotate those credentials, which may remain in Git history. Older clients may report CV004 on a newly redacted URL source. Skills containing symlinks must be re-locked once to adopt the type tag; regular-file-only skill pins remain valid.
+Existing locks with URL credentials verify after normalization but warn to re-lock and rotate those credentials, which may remain in Git history. Older clients may report CV004 on a newly redacted URL source.
 
 ## Local MCP tools
 
@@ -244,7 +247,7 @@ Existing locks with URL credentials verify after normalization but warn to re-lo
 | Tool | Arguments | JSON result |
 |---|---|---|
 | `guard_lint` | `path?`, `strict?` (boolean, default false) | The lint report |
-| `guard_verify` | `path?` | The verify report |
+| `guard_verify` | `path?`, `require_typed_pins?` (boolean, default false) | The verify report |
 | `guard_outdated` | `path?`, `fail_on?` (`high\|medium\|low\|never`, default `never`) | The outdated report |
 
 The optional `path` is a repo root, relative to the server's working directory when it is a relative path. It defaults to that directory. The result has the same JSON as the corresponding CLI command with `--format json`. A finding that would exit 1 returns the JSON with MCP's `isError` set. Usage and I/O failures return an MCP tool error with the failure message. Advisory messages such as registry warnings go to the server's stderr.
@@ -282,6 +285,7 @@ The public repo's root `action.yml` is a composite action: `uses: Sheernox/cedr@
 | `path` | `.` | Repo root to check |
 | `strict` | `false` | Pass `--strict` to lint |
 | `verify` | `auto` | `auto` runs `cedr guard verify` when a lock exists; `true` requires one; `false` skips it |
+| `require-typed-pins` | `false` | Pass `--require-typed-pins` when verify runs. Requires a cedr release that supports the flag |
 | `push-org` | empty | When set with the `CEDR_API_KEY` env, run `cedr guard push --org <it> --updates` after the checks, also when they fail |
 | `outdated` | `true` | Run `cedr guard outdated --format github` after verify, so newer versions of pinned servers show as annotations; it never fails the job |
 | `comment` | `false` | On a `pull_request` event, create or update one sticky pull request comment (below); the workflow needs `pull-requests: write` |

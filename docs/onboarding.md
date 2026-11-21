@@ -27,6 +27,6 @@ JSON stdout is an object with these fields. Each field is null when its source i
 | `spend` | `{todayUsd,last7DaysUsd,unpricedToday,unpricedLast7Days}` with numeric costs and arrays of model ids |
 | `pendingPicks` | Array of `{id,route,target,at}` with the recorded timestamp |
 | `sync` | `{state,findings}` with `clean` or `drift` and a finding count |
-| `guard` | `{state,findings,error}` with `clean`, `drift` or `error`, a finding count when verification completes, and an error message on failure |
+| `guard` | `{state,findings,error}` with `clean` (no verification errors), `drift` or `error`, a count including warnings when verification completes, and an error message on failure |
 
 Text omits unavailable sections. Exit 0 means the report was produced, including when it finds repo drift or a Guard error. Usage or report collection errors exit 2. The MCP `status` tool accepts an optional repository `path` and returns the same JSON.
