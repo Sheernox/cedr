@@ -38,6 +38,7 @@ Examples:
   cedr monitor --since 7d                report local API-equivalent usage
   cedr route pick review.code            pick the agent for a kind of work
   cedr route verdict <pick id> accepted  record how it went
+  cedr council run review.council        start reviewers and merge their reports
   cedr council plan review.council       name the reviewers, one per vendor
   cedr council merge a=a.md b=b.md       merge their reports into one gate
   cedr guard lint && cedr guard lock     pin the skills and MCP servers a repo loads

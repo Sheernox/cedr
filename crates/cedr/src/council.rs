@@ -14,6 +14,10 @@ use serde_json::Value;
 
 use crate::route::{self, PickFormat, SizeArg, SourceArgs, cwd, open, print_pick, record};
 
+mod runner;
+
+const PROCEDURE: &str = include_str!("council-skill.md");
+
 #[derive(Subcommand)]
 pub enum CouncilCommand {
     /// Print the Council procedure as Markdown
@@ -34,6 +38,8 @@ pub enum CouncilCommand {
         #[command(flatten)]
         sources: SourceArgs,
     },
+    /// Start read-only reviewers and merge their reports
+    Run(runner::Args),
     /// Recorded council outcomes per route
     Stats {
         /// Only this council route
@@ -301,9 +307,10 @@ pub fn run(command: CouncilCommand, config: &route::ConfigArg) -> Result<ExitCod
     let config = config.path();
     match command {
         CouncilCommand::Skill => {
-            print!("{}", include_str!("council-skill.md"));
+            print!("{PROCEDURE}");
             Ok(ExitCode::SUCCESS)
         }
+        CouncilCommand::Run(args) => runner::run(args, config),
         CouncilCommand::Stats {
             route,
             since,

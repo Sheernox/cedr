@@ -256,14 +256,14 @@ impl Report {
 }
 
 /// A workflow command's message, escaped as the runner expects.
-fn github_data(s: &str) -> String {
+pub fn github_data(s: &str) -> String {
     s.replace('%', "%25")
         .replace('\r', "%0D")
         .replace('\n', "%0A")
 }
 
 /// A workflow command property value: the message escapes plus `:` and `,`.
-fn github_property(s: &str) -> String {
+pub fn github_property(s: &str) -> String {
     github_data(s).replace(':', "%3A").replace(',', "%2C")
 }
 

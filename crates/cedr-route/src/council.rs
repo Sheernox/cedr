@@ -98,7 +98,17 @@ impl Report {
     /// cut-off reply is an error rather than a clean review. A line that starts with a location and
     /// names a severity but cannot be read is an error too, never a silently dropped finding.
     pub fn from_text(text: &str, member: &str) -> Result<Report> {
-        if text.trim().is_empty() {
+        Self::parse_text(text, member, false)
+    }
+
+    /// Recover findings when the runner knows a reviewer failed or timed out. Its reply can
+    /// contain only progress text; even a reply with the marker cannot count in a strict merge.
+    pub fn from_interrupted_text(text: &str, member: &str) -> Result<Report> {
+        Self::parse_text(text, member, true)
+    }
+
+    fn parse_text(text: &str, member: &str, interrupted: bool) -> Result<Report> {
+        if !interrupted && text.trim().is_empty() {
             return Err(Error::Usage("the report is empty".into()));
         }
         let mut findings = vec![];
@@ -141,7 +151,7 @@ impl Report {
                 .last()
                 .flatten()
         };
-        if findings.is_empty() && score.is_none() && !no_findings {
+        if !interrupted && findings.is_empty() && score.is_none() && !no_findings {
             return Err(Error::Usage(
                 "no findings, no `Score: <n>/10` line and no `No findings.` line: a failed or cut-off reply is not a clean review".into(),
             ));
@@ -152,7 +162,7 @@ impl Report {
             pick: None,
             score,
             findings,
-            ended,
+            ended: ended && !interrupted,
         })
     }
 }
@@ -952,6 +962,24 @@ mod tests {
             Gate::Pass,
             "whole reports that reach the quorum still pass, as when a member is absent"
         );
+    }
+
+    #[test]
+    fn interrupted_reviews_keep_findings_without_certifying_completion() {
+        let progress = Report::from_interrupted_text("I will read the diff.", "a").unwrap();
+        let blocking =
+            Report::from_interrupted_text("src/a.rs:1 - P1 - blocks input\nEnd of review.", "b")
+                .unwrap();
+        let merged = merge(
+            &[progress, blocking],
+            Settings {
+                strict: true,
+                ..q(2)
+            },
+        );
+        assert_eq!(merged.incomplete_reports, ["a", "b"]);
+        assert!(merged.reviewers.is_empty());
+        assert_eq!(merged.gate, Gate::Block);
     }
 
     #[test]

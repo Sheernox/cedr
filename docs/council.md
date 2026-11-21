@@ -4,7 +4,7 @@ The frozen contract for `cedr council` and its MCP tools. A change to any shape 
 
 ## Scope
 
-`cedr council plan` names the members an orchestrator should start; the orchestrator runs each review itself (as with `pick`, Cedr starts no agent); `cedr council merge` reads their reports, merges findings that point at the same place, decides the gate, and, when the gate blocks with a revision round left, writes one revision brief for the change's author (critique and revise). Out of scope: the GitHub Action and App, posting comments, and running reviewers.
+`cedr council run` starts reviewers and merges their reports for a person running the CLI. Orchestrators can still use `cedr council plan` to name the members, start each review themselves, then use `cedr council merge` to decide the gate. When the gate blocks with a revision round left, the merge prepares a revision brief for the change's author. The GitHub Action, the app and posting comments are out of scope.
 
 ## Config
 
@@ -47,6 +47,18 @@ A spare stays out unless a regular member cannot take this review. A vacancy is 
 - Text and t3 output: a line `  spare for <member>` after a spare's delegate line.
 - `--member <harness>/<model>` (repeatable; MCP `members?`): plan exactly these. A member in the candidates keeps its effort; otherwise no effort. An unknown harness is a usage error (exit 2). One that is unavailable goes in `skipped` and is never replaced: no spares run with `--member`. Same exit codes and quorum as a normal plan.
 - Warning (in the plan's `warnings`, never an error, exit code unchanged): when one vendor alone could reach the quorum among the delegates. A vendor is the harness id with any `-api` suffix removed. Text: `quorum <n> can be reached by <vendor> alone; different vendors miss different things`.
+
+## Run
+
+`cedr council run <route> [--size small|medium|large] [--base REF | --diff RANGE] [--member H/M]... [--timeout SECS] [--out DIR] [--format text|json|github]`
+
+- Plans and records one run using the same rules as `council plan`. The `claude` and `codex` harnesses are supported. A harness with no headless adapter is skipped and reported on stderr. Spares fill those seats according to the route's policy. With explicit `--member` selections, skipped members are never replaced.
+- Gives every member the same brief with the Council procedure, the diff and the text report format. By default the diff is from the merge base of `HEAD` and the default branch (the local `origin/HEAD` ref, falling back to `main`) to `HEAD`. Use `--base REF` to choose another base, or `--diff A..B` or `--diff A...B` to supply the exact range. Reviewers always inspect committed files from `HEAD` in independent temporary exports that are removed after the run, including on Ctrl-C.
+- Starts the members in parallel with their installed CLIs, using Claude's plan permission mode and Codex's read-only sandbox. Each CLI uses its own sign-in or the vendor's API key from the environment. The per-member timeout is 900 seconds by default. The selected providers receive the review brief and diff. A timed-out or failed reviewer does not count towards quorum.
+- Saves replies as `<out>/<harness>-<model>.md`. Characters outside ASCII letters, digits, period, underscore and hyphen are percent-encoded in filenames. Pre-existing report files are refused. If `--out` is omitted, a new temporary report directory is kept and printed on stderr.
+- Always asks for `End of review.` and merges in strict mode, recording the gate against the plan's run id, which is printed on stderr. Text and JSON use the merge output format. GitHub output prints one workflow annotation per finding group (error at or above the blocking severity, warning below it) and a gate summary. A block with revision rounds left saves `revision-brief.md` in the output directory and prints its path on stderr. The runner leaves the change to its author.
+
+Exit codes follow merge: 0 pass, 1 block, 3 incomplete, 2 error.
 
 ## Reports
 
@@ -142,3 +154,5 @@ Groups are in the merge's order (most severe first, then file and line); every f
 | `council_stats` | `route?`, `since?` | Council stats rows |
 
 A gate of `block` or `incomplete` is a normal result, not a tool error. `council_merge` takes report objects, which are structurally complete, so it has no `strict` argument; a strict route still shows `"strict": true`.
+
+Starting paid reviewers is a person's CLI command. There is no `council_run` MCP tool.

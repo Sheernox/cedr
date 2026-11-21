@@ -57,6 +57,35 @@ pub fn catch_interrupts() {
 #[cfg(not(unix))]
 pub fn catch_interrupts() {}
 
+/// Council needs to return through cleanup on Ctrl-C on both kinds of host.
+#[cfg(not(windows))]
+pub fn catch_interrupts_for_cleanup() -> std::io::Result<()> {
+    catch_interrupts();
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn catch_interrupts_for_cleanup() -> std::io::Result<()> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn SetConsoleCtrlHandler(handler: extern "system" fn(u32) -> i32, add: i32) -> i32;
+    }
+    extern "system" fn on_control(event: u32) -> i32 {
+        // CTRL_C_EVENT and CTRL_BREAK_EVENT. Let Windows handle close/logoff/shutdown.
+        if event <= 1 {
+            INTERRUPTED.store(true, Ordering::SeqCst);
+            1
+        } else {
+            0
+        }
+    }
+    // SAFETY: the callback is static and touches only an atomic.
+    if unsafe { SetConsoleCtrlHandler(on_control, 1) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct StepOutput {
     /// None when the step timed out, or was interrupted, and was killed.
@@ -251,7 +280,8 @@ pub fn find_program(name: &str, root: &Path) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-fn git(dir: &Path) -> Command {
+/// Git scoped to a repo even when cedr runs inside a hook.
+pub fn git(dir: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(dir);
     // A hook's environment must not point these commands at another repository.

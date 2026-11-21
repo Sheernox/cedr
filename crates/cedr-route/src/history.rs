@@ -297,6 +297,33 @@ pub fn record_council(
     now: DateTime<Utc>,
 ) -> Result<()> {
     merge_spares(path, merged, run)?;
+    append_council(path, merged, route, run, now)
+}
+
+/// A freshly generated plan can have no eligible picks. In that case its initial gate creates
+/// the run in history, so future merges naming it still use the normal validation.
+pub fn record_council_plan(
+    path: &Path,
+    merged: &mut Merged,
+    plan: &crate::council::Plan,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let route = Some(plan.pick.route.as_str());
+    let run = plan.pick.run.as_deref();
+    if plan.pick.delegates.is_empty() {
+        append_council(path, merged, route, run, now)
+    } else {
+        record_council(path, merged, route, run, now)
+    }
+}
+
+fn append_council(
+    path: &Path,
+    merged: &mut Merged,
+    route: Option<&str>,
+    run: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<()> {
     let id = crate::pick::new_id().replacen("p-", "c-", 1);
     let mut groups = BTreeMap::from([
         (Severity::P0, 0),

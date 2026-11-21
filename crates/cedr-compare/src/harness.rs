@@ -63,8 +63,17 @@ pub fn budget_enforcement(variant: &Variant) -> BudgetEnforcement {
     }
 }
 
-/// The agent's command, with the prompt to send on stdin when the harness reads it from there. The
-/// vendor CLIs read stdin so that a prompt can never be taken for a flag or hit an argv limit.
+enum Invocation<'a> {
+    Trial {
+        prompt_file: &'a Path,
+        budget_left: f64,
+        clone: &'a Path,
+    },
+    ReadOnly,
+}
+
+/// The agent's command, with the prompt to send on stdin when the harness reads it from there.
+/// Vendor CLIs read stdin so the prompt cannot become a flag or hit an argv limit.
 pub fn command(
     variant: &Variant,
     prompt: &str,
@@ -73,39 +82,90 @@ pub fn command(
     root: &Path,
     clone: &Path,
 ) -> Option<(Command, Option<String>)> {
+    let invocation = Invocation::Trial {
+        prompt_file,
+        budget_left,
+        clone,
+    };
+    let cmd = build_command(variant, root, invocation)?;
+    let stdin = (variant.harness != HarnessKind::Command).then(|| prompt.to_string());
+    Some((cmd, stdin))
+}
+
+/// A headless Council reviewer uses the user's sign-in and vendor environment credentials.
+pub fn review_command(variant: &Variant, root: &Path) -> Option<Command> {
+    use cedr_agent::Agent;
+    let (own, other) = match variant.harness {
+        HarnessKind::Claude => (Agent::Claude, Agent::Codex),
+        HarnessKind::Codex => (Agent::Codex, Agent::Claude),
+        HarnessKind::Command => return None,
+    };
+    let mut cmd = build_command(variant, root, Invocation::ReadOnly)?;
+    // Keep the chosen CLI's credentials in its inherited environment, without passing it
+    // credentials from the other vendor CLIs cedr knows about.
+    let own_keys = cedr_agent::token_env(own);
+    for key in [other, Agent::Muse, Agent::Grok, Agent::Gemini]
+        .into_iter()
+        .flat_map(cedr_agent::token_env)
+        .filter(|key| !own_keys.contains(key))
+    {
+        cmd.env_remove(key);
+    }
+    Some(cmd)
+}
+
+fn build_command(variant: &Variant, root: &Path, invocation: Invocation<'_>) -> Option<Command> {
+    let mut cmd = Command::new(exec::find_program(program(variant), root)?);
     match variant.harness {
         HarnessKind::Claude => {
-            let mut cmd = Command::new(exec::find_program("claude", root)?);
-            cmd.args([
-                "-p",
-                "--output-format",
-                "json",
-                "--no-session-persistence",
-                "--setting-sources",
-                "project,local",
-                "--strict-mcp-config",
-                "--model",
-                &variant.model,
-                "--permission-mode",
-                match variant.permissions {
-                    Permissions::Workspace => "acceptEdits",
-                    Permissions::Full => "bypassPermissions",
-                },
-                "--max-budget-usd",
-                &format!("{budget_left:.4}"),
-            ]);
-            // Strict MCP excludes account connectors, but Compare must keep the repo's servers.
-            let mcp = clone.join(".mcp.json");
-            if mcp.is_file() {
-                cmd.arg("--mcp-config").arg(mcp);
+            cmd.args(["-p", "--output-format", "json", "--no-session-persistence"]);
+            match invocation {
+                Invocation::Trial {
+                    budget_left, clone, ..
+                } => {
+                    cmd.args([
+                        "--setting-sources",
+                        "project,local",
+                        "--strict-mcp-config",
+                        "--model",
+                        &variant.model,
+                        "--permission-mode",
+                        match variant.permissions {
+                            Permissions::Workspace => "acceptEdits",
+                            Permissions::Full => "bypassPermissions",
+                        },
+                        "--max-budget-usd",
+                        &format!("{budget_left:.4}"),
+                    ]);
+                    // Strict MCP excludes account connectors, but Compare keeps the repo's servers.
+                    let mcp = clone.join(".mcp.json");
+                    if mcp.is_file() {
+                        cmd.arg("--mcp-config").arg(mcp);
+                    }
+                }
+                Invocation::ReadOnly => {
+                    // Load no settings or MCP servers from the reviewed change. Limit tools as
+                    // well as permissions so the reviewer cannot start another agent or run Bash.
+                    cmd.args([
+                        "--setting-sources",
+                        "",
+                        "--strict-mcp-config",
+                        "--model",
+                        &variant.model,
+                        "--permission-mode",
+                        "plan",
+                        "--tools",
+                        "Read,Grep,Glob",
+                    ])
+                    .env_remove("CLAUDECODE")
+                    .env("DISABLE_AUTOUPDATER", "1");
+                }
             }
             if let Some(effort) = &variant.effort {
                 cmd.args(["--effort", effort]);
             }
-            Some((cmd, Some(prompt.to_string())))
         }
         HarnessKind::Codex => {
-            let mut cmd = Command::new(exec::find_program("codex", root)?);
             cmd.args([
                 "exec",
                 "--json",
@@ -114,31 +174,62 @@ pub fn command(
                 "-m",
                 &variant.model,
             ]);
-            match variant.permissions {
-                Permissions::Workspace => cmd.args(["--sandbox", "workspace-write"]),
-                Permissions::Full => cmd.arg("--dangerously-bypass-approvals-and-sandbox"),
+            match invocation {
+                Invocation::Trial { .. } => match variant.permissions {
+                    Permissions::Workspace => cmd.args(["--sandbox", "workspace-write"]),
+                    Permissions::Full => cmd.arg("--dangerously-bypass-approvals-and-sandbox"),
+                },
+                Invocation::ReadOnly => cmd.args([
+                    "--sandbox",
+                    "read-only",
+                    "--ignore-user-config",
+                    "--ignore-rules",
+                    "-c",
+                    "approval_policy=\"never\"",
+                ]),
             };
             if let Some(effort) = &variant.effort {
-                cmd.args(["-c", &format!("model_reasoning_effort=\"{effort}\"")]);
+                let effort = serde_json::to_string(effort).ok()?;
+                cmd.args(["-c", &format!("model_reasoning_effort={effort}")]);
             }
-            // --ignore-user-config also suppresses project config on supported Codex builds. The
-            // shadow home excludes user config; trust the clone so its own setup still loads.
-            let project = serde_json::to_string(&clone.to_string_lossy()).ok()?;
-            cmd.args(["-c", &format!("projects.{project}.trust_level=\"trusted\"")]);
+            if let Invocation::Trial { clone, .. } = invocation {
+                // The shadow home excludes user config; trust the clone so its own setup loads.
+                let project = serde_json::to_string(&clone.to_string_lossy()).ok()?;
+                cmd.args(["-c", &format!("projects.{project}.trust_level=\"trusted\"")]);
+            }
             cmd.arg("-");
-            Some((cmd, Some(prompt.to_string())))
         }
         HarnessKind::Command => {
+            let Invocation::Trial { prompt_file, .. } = invocation else {
+                return None;
+            };
             let argv = variant.command.as_ref()?;
-            let fill = |arg: &String| {
+            cmd.args(argv.iter().skip(1).map(|arg| {
                 arg.replace("{prompt_file}", &prompt_file.to_string_lossy())
                     .replace("{model}", &variant.model)
                     .replace("{effort}", variant.effort.as_deref().unwrap_or(""))
-            };
-            let mut cmd = Command::new(exec::find_program(&argv[0], root)?);
-            cmd.args(argv[1..].iter().map(fill));
-            Some((cmd, None))
+            }));
         }
+    }
+    Some(cmd)
+}
+
+/// Extracts the last complete message payload from a review's captured output. Codex's JSONL
+/// survives an interruption between events, so a partial review can still report a finding.
+pub fn review_reply(kind: HarnessKind, stdout: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(stdout).ok()?;
+    match kind {
+        HarnessKind::Claude => {
+            let doc: Value = serde_json::from_str(text).ok()?;
+            claude_result(&doc)?["result"].as_str().map(str::to_string)
+        }
+        HarnessKind::Codex => text.lines().rev().find_map(|line| {
+            let event: Value = serde_json::from_str(line).ok()?;
+            (event["type"] == "item.completed" && event["item"]["type"] == "agent_message")
+                .then(|| event["item"]["text"].as_str().map(str::to_string))
+                .flatten()
+        }),
+        HarnessKind::Command => None,
     }
 }
 
@@ -197,14 +288,16 @@ fn cost(value: Option<f64>) -> Option<f64> {
     value.filter(|c| (0.0..=MAX_REPORTED_COST).contains(c))
 }
 
+fn claude_result(doc: &Value) -> Option<&Value> {
+    match doc {
+        Value::Array(events) => events.iter().rev().find(|e| e["type"] == "result"),
+        value => Some(value),
+    }
+}
+
 fn parse_claude(text: &str) -> (AgentEnd, Usage) {
     let parsed: Option<Value> = serde_json::from_str(text.trim()).ok();
-    let result = match &parsed {
-        Some(Value::Array(events)) => events.iter().rev().find(|e| e["type"] == "result"),
-        Some(value) => Some(value),
-        None => None,
-    };
-    let Some(result) = result else {
+    let Some(result) = parsed.as_ref().and_then(claude_result) else {
         return (AgentEnd::Error, Usage::default());
     };
     let mut usage = Usage {
