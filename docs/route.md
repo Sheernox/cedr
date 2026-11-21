@@ -263,8 +263,8 @@ A family's newest offered version is in preview when `[evaluation] models` is no
 | `claude` | `opus` | `sonnet` |
 | `codex` | `astra` | `sol` |
 | `antigravity` | `neon` | `flash` |
-| `grok` | `build` | `grok` |
-| `muse` | `wonder` | `spark` |
+| `grok` | `grok` | `build-fast` |
+| `muse` | `wonder` | `ember` |
 
 The starter includes local readers where available, T3 Code readings, and fallback model ids for family resolution when a reader does not supply models. `review.code` tries strong models from the other vendors. `code.impl` tries lower-cost models on small and medium work before trying strong models. `research.gather` tries lower-cost models. All three fall back to `self`. With at least two harnesses, `review.council` includes one strong model from each vendor.
 

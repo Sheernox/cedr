@@ -43,16 +43,16 @@ const AGENTS: &[Agent] = &[
     Agent {
         id: "grok",
         reader: Some(ReaderKind::Grok),
-        strong: "build",
-        cheap: "grok",
-        models: ["grok-4.7-build", "grok-4.7"],
+        strong: "grok",
+        cheap: "build-fast",
+        models: ["grok-4.7", "grok-4.7-build-fast"],
     },
     Agent {
         id: "muse",
         reader: Some(ReaderKind::Muse),
         strong: "wonder",
-        cheap: "spark",
-        models: ["muse-wonder-1.0", "muse-spark-1.3"],
+        cheap: "ember",
+        models: ["muse-wonder-1.0", "muse-ember-1.0"],
     },
 ];
 
@@ -252,5 +252,36 @@ impl Starter {
             }
         })?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AGENTS;
+    use crate::pool::resolve;
+    use crate::readings::Readings;
+
+    #[test]
+    fn starter_families_resolve_to_their_fallback_models() {
+        let mut readings = Readings::default();
+        for agent in AGENTS {
+            readings.models.insert(
+                agent.id.to_string(),
+                agent.models.iter().map(|m| m.to_string()).collect(),
+            );
+        }
+        for agent in AGENTS {
+            for (family, model) in [
+                (agent.strong, agent.models[0]),
+                (agent.cheap, agent.models[1]),
+            ] {
+                assert_eq!(
+                    resolve(agent.id, family, &readings).as_deref(),
+                    Some(model),
+                    "{}/{family}",
+                    agent.id
+                );
+            }
+        }
     }
 }
