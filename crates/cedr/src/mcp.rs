@@ -165,6 +165,17 @@ pub struct MonitorReportArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+pub struct MonitorPushPlanArgs {
+    /// Organization ID, instead of the configured one
+    org: Option<String>,
+    /// Where the organization's usage would start: all, now, YYYY-MM-DD or an RFC 3339 time
+    start: Option<String>,
+    /// Everything from the start, not just what changed since the last push
+    full: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 pub struct RepoArgs {
     /// Repository root, default current directory
     path: Option<PathBuf>,
@@ -452,6 +463,29 @@ impl RouteServer {
                 eprintln!("cedr: {warning}");
             }
             cedr_monitor::limits::report(&db).map_err(|e| cedr_route::Error::Usage(e.to_string()))
+        })
+        .await
+    }
+    #[tool(
+        description = "Show what cedr monitor push would send to the organization (destination, hours, rows by harness, project labels, readings, start) without sending or saving anything. Run before a first upload; pushing itself stays a CLI step the person approves."
+    )]
+    async fn monitor_push_plan(
+        &self,
+        Parameters(a): Parameters<MonitorPushPlanArgs>,
+    ) -> CallToolResult {
+        blocking(move || {
+            let usage = |e: Box<dyn std::error::Error + Send + Sync>| {
+                cedr_route::Error::Usage(e.to_string())
+            };
+            let start = a
+                .start
+                .as_deref()
+                .map(cedr_monitor::push::parse_start)
+                .transpose()
+                .map_err(usage)?;
+            let sync = crate::monitor::dry_run_target(a.org.as_deref(), None).map_err(usage)?;
+            let db = cedr_monitor::collect().map_err(usage)?;
+            crate::monitor::dry_run_value(&db, &sync, a.full.unwrap_or(false), start).map_err(usage)
         })
         .await
     }

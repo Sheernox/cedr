@@ -126,32 +126,45 @@ pub fn parse_start(s: &str) -> Result<i64> {
             .map_err(|_| "--start takes all, now, YYYY-MM-DD or an RFC 3339 time".into()),
     }
 }
-/// Sends usage at or after the org's start (`chosen` from `--start`, else the one saved by an earlier push, else
-/// everything) and saves the start first, so later scheduled, automatic and `--full` pushes keep to it. A start
-/// moved earlier resends from it; one moved later stops sending older usage but cannot remove what was already sent.
-/// `defaulted` in the reply is true when no start had been chosen and everything was sent.
-#[allow(clippy::too_many_arguments)]
-pub fn send_with(
+/// What a push to one org and URL would send, and the state it would save, worked out without changing anything.
+struct Prepared {
+    watermarks: BTreeMap<String, i64>,
+    starts: BTreeMap<String, i64>,
+    identity: String,
+    /// The start chosen with `--start`, and the one saved by an earlier push.
+    chosen: Option<i64>,
+    saved: Option<i64>,
+    /// The start in force: nothing before it is sent.
+    cutoff: i64,
+    /// A start moved earlier forgets the push time, so every later attempt sends from it until one succeeds.
+    forget: bool,
+    /// The push time saved once every batch is accepted; taken before reading the store, so nothing recorded during
+    /// the push falls behind it.
+    at: i64,
+    rows: Vec<Value>,
+    readings: Vec<Value>,
+    last_repair: Option<i64>,
+}
+
+fn read_map(path: &Path) -> Result<BTreeMap<String, i64>> {
+    match std::fs::read(path) {
+        Ok(b) => Ok(serde_json::from_slice(&b)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Reads the push time and start for `sync` from `path` and its sibling `monitor-start.json`, then the rows, repairs
+/// and readings a push would send. Writes nothing, so a dry run and a real push see the same thing.
+fn prepare(
     db: &Store,
     sync: &Sync,
     full: bool,
     chosen: Option<i64>,
     path: &Path,
-    machine: &str,
-    name: &str,
-    mut post: impl FnMut(&Value) -> Result<Value>,
-) -> Result<Value> {
-    let mut watermarks: BTreeMap<String, i64> = match std::fs::read(path) {
-        Ok(b) => serde_json::from_slice(&b)?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-        Err(e) => return Err(e.into()),
-    };
-    let start_path = path.with_file_name("monitor-start.json");
-    let mut starts: BTreeMap<String, i64> = match std::fs::read(&start_path) {
-        Ok(b) => serde_json::from_slice(&b)?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-        Err(e) => return Err(e.into()),
-    };
+) -> Result<Prepared> {
+    let watermarks = read_map(path)?;
+    let starts = read_map(&path.with_file_name("monitor-start.json"))?;
     let identity = crate::digest(&format!("{}:{}", sync.org, sync.url()));
     let saved = starts.get(&identity).copied();
     // A start moved later on a store that has pushed takes effect at the next whole hour: the app replaces whole
@@ -163,17 +176,12 @@ pub fn send_with(
         .or(chosen)
         .or(saved)
         .unwrap_or(0);
-    // The start is saved before anything is sent, so an interrupted push cannot fall back to everything. Moving it
-    // earlier first forgets the push time, so every later attempt sends from the new start until one succeeds.
-    if chosen.is_some_and(|s| saved.is_some_and(|o| s < o)) {
-        watermarks.remove(&identity);
-        write_atomic(path, &watermarks)?;
-    }
-    let previous = watermarks.get(&identity).copied().unwrap_or(0);
-    if saved != Some(cutoff) {
-        starts.insert(identity.clone(), cutoff);
-        write_atomic(&start_path, &starts)?;
-    }
+    let forget = chosen.is_some_and(|s| saved.is_some_and(|o| s < o));
+    let previous = if forget {
+        0
+    } else {
+        watermarks.get(&identity).copied().unwrap_or(0)
+    };
     let at = chrono::Utc::now().timestamp();
     let mut rows = crate::report::hourly(
         db,
@@ -263,6 +271,99 @@ pub fn send_with(
         )?
         .map(|r| Ok(serde_json::from_str::<Value>(&r?)?))
         .collect::<Result<Vec<_>>>()?;
+    Ok(Prepared {
+        watermarks,
+        starts,
+        identity,
+        chosen,
+        saved,
+        cutoff,
+        forget,
+        at,
+        rows,
+        readings,
+        last_repair,
+    })
+}
+
+/// What `monitor push` would send to `sync` (docs/monitor.md, Push), with the same arguments, changing nothing: no
+/// request is made and neither the push time nor the start is saved.
+pub fn dry_run(
+    db: &Store,
+    sync: &Sync,
+    full: bool,
+    chosen: Option<i64>,
+    path: &Path,
+) -> Result<Value> {
+    let p = prepare(db, sync, full, chosen, path)?;
+    let mut harnesses: BTreeMap<String, u64> = BTreeMap::new();
+    let mut projects = std::collections::BTreeSet::new();
+    for row in &p.rows {
+        *harnesses
+            .entry(row["harness"].as_str().unwrap_or_default().to_string())
+            .or_default() += 1;
+        if let Some(project) = row["project"].as_str() {
+            projects.insert(project.to_string());
+        }
+    }
+    let hours = p.rows.iter().filter_map(|r| r["hour"].as_str());
+    let source = match (p.chosen, p.saved) {
+        (Some(_), _) => "flag",
+        (None, Some(_)) => "saved",
+        (None, None) => "default",
+    };
+    Ok(json!({
+        "url": cedr_route::sync::display_url(&format!("{}/monitor/usage", sync.url()))?,
+        "org": sync.org,
+        "initial": !p.watermarks.contains_key(&p.identity),
+        "full": full,
+        "start": {"at": (p.cutoff > 0).then(|| crate::report::stamp(p.cutoff)), "source": source},
+        "first_hour": hours.clone().min(),
+        "last_hour": hours.max(),
+        "rows": p.rows.len(),
+        "harnesses": harnesses,
+        "projects": projects,
+        "readings": p.readings.len(),
+    }))
+}
+
+/// Sends usage at or after the org's start (`chosen` from `--start`, else the one saved by an earlier push, else
+/// everything) and saves the start first, so later scheduled, automatic and `--full` pushes keep to it. A start
+/// moved earlier resends from it; one moved later stops sending older usage but cannot remove what was already sent.
+/// `defaulted` in the reply is true when no start had been chosen and everything was sent.
+#[allow(clippy::too_many_arguments)]
+pub fn send_with(
+    db: &Store,
+    sync: &Sync,
+    full: bool,
+    chosen: Option<i64>,
+    path: &Path,
+    machine: &str,
+    name: &str,
+    mut post: impl FnMut(&Value) -> Result<Value>,
+) -> Result<Value> {
+    let Prepared {
+        mut watermarks,
+        mut starts,
+        identity,
+        saved,
+        cutoff,
+        forget,
+        at,
+        rows,
+        readings,
+        last_repair,
+        ..
+    } = prepare(db, sync, full, chosen, path)?;
+    // The start is saved before anything is sent, so an interrupted push cannot fall back to everything.
+    if forget {
+        watermarks.remove(&identity);
+        write_atomic(path, &watermarks)?;
+    }
+    if saved != Some(cutoff) {
+        starts.insert(identity.clone(), cutoff);
+        write_atomic(&path.with_file_name("monitor-start.json"), &starts)?;
+    }
     let mut accepted = 0u64;
     let mut skipped = 0u64;
     let sources = db
@@ -743,6 +844,58 @@ mod tests {
         .unwrap();
         rows.sort();
         rows
+    }
+    #[test]
+    fn a_dry_run_counts_what_the_push_sends_and_saves_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let db = Store::open(&d.path().join("db")).unwrap();
+        // 10:00 UTC from Codex, 12:00 UTC from Claude in a named project.
+        response(&db, "a", "s-1", 1793354400);
+        db.upsert(&Row {
+            id: "b".into(),
+            harness: "claude".into(),
+            session: "s-2".into(),
+            model: "claude-x".into(),
+            project: Some("web".into()),
+            at: 1793354400 + 7200,
+            ..Default::default()
+        })
+        .unwrap();
+        let path = d.path().join("push.json");
+        let starts = path.with_file_name("monitor-start.json");
+
+        let everything = dry_run(&db, &sync(), false, None, &path).unwrap();
+        assert_eq!(everything["url"], "https://api.cedr.dev/v1/monitor/usage");
+        assert_eq!(everything["org"], "fixture");
+        assert_eq!(everything["initial"], true);
+        assert_eq!(
+            everything["start"],
+            json!({"at": null, "source": "default"})
+        );
+        assert_eq!(everything["rows"], 2);
+        assert_eq!(everything["harnesses"], json!({"claude": 1, "codex": 1}));
+        assert_eq!(everything["projects"], json!(["web"]));
+        assert_eq!(everything["first_hour"], "2026-10-30T10:00:00Z");
+        assert_eq!(everything["last_hour"], "2026-10-30T12:00:00Z");
+        assert_eq!(everything["readings"], 0);
+
+        let from_eleven = dry_run(&db, &sync(), false, Some(1793358000), &path).unwrap();
+        assert_eq!(
+            from_eleven["start"],
+            json!({"at": "2026-10-30T11:00:00Z", "source": "flag"})
+        );
+        assert_eq!(from_eleven["harnesses"], json!({"claude": 1}));
+        assert!(
+            !path.exists() && !starts.exists(),
+            "a dry run saves nothing"
+        );
+
+        // The push it described sends exactly those rows, then later dry runs read what it saved.
+        assert_eq!(sent(&db, &path, Some(1793358000)), [("s-2".into(), 1, 0)]);
+        let after = dry_run(&db, &sync(), false, None, &path).unwrap();
+        assert_eq!(after["initial"], false);
+        assert_eq!(after["start"]["source"], "saved");
+        assert_eq!(after["start"]["at"], "2026-10-30T11:00:00Z");
     }
     #[test]
     fn a_moved_response_records_its_old_key_in_the_same_write() {

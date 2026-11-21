@@ -1,5 +1,6 @@
 //! Monitor commands collect local counts before presenting or sending them.
 use cedr_monitor::{self as monitor, Result, report::Options};
+use cedr_route::config::Sync;
 use clap::{Args, Subcommand};
 use serde_json::Value;
 use std::{
@@ -85,6 +86,12 @@ enum MonitorCommand {
         /// Saved, so scheduled, automatic and --full pushes keep to it until changed
         #[arg(long)]
         start: Option<String>,
+        /// Print what a push would send and change nothing: no request, and no push time or start saved
+        #[arg(long)]
+        dry_run: bool,
+        /// json prints the dry run or the reply for scripts and agents
+        #[arg(long,default_value="text",value_parser=["text","json"])]
+        format: String,
     },
     /// Install or remove a per-user timer that pushes on a schedule
     Schedule {
@@ -121,21 +128,33 @@ fn execute(a: MonitorArgs) -> Result<()> {
             let mut push_target = None;
             let mut _push_lock = None;
             if let Some(MonitorCommand::Push {
-                org, config, quiet, ..
+                org,
+                config,
+                quiet,
+                dry_run,
+                ..
             }) = &command
             {
-                let Some(lock) = cedr_route::sync::monitor_lock()? else {
-                    if *quiet {
-                        return Ok(());
-                    }
-                    return Err("another monitor push is running".into());
-                };
-                _push_lock = Some(lock);
-                let c = monitor::config::Config::load()?;
-                push_target = Some((
-                    monitor::push::settings(org.as_deref(), config.as_deref(), &c)?,
-                    cedr_route::sync::api_key()?,
-                ));
+                // A dry run changes nothing, so it needs neither the lock nor a key; it says what is missing instead.
+                if *dry_run {
+                    push_target = Some((
+                        dry_run_target(org.as_deref(), config.as_deref())?,
+                        String::new(),
+                    ));
+                } else {
+                    let Some(lock) = cedr_route::sync::monitor_lock()? else {
+                        if *quiet {
+                            return Ok(());
+                        }
+                        return Err("another monitor push is running".into());
+                    };
+                    _push_lock = Some(lock);
+                    let c = monitor::config::Config::load()?;
+                    push_target = Some((
+                        monitor::push::settings(org.as_deref(), config.as_deref(), &c)?,
+                        cedr_route::sync::api_key()?,
+                    ));
+                }
             }
             let db = monitor::collect()?;
             if let Ok(sources) = db.source_values() {
@@ -181,12 +200,23 @@ fn execute(a: MonitorArgs) -> Result<()> {
                     quiet,
                     full,
                     start,
+                    dry_run,
+                    format,
                 }) => {
                     let start = start
                         .as_deref()
                         .map(monitor::push::parse_start)
                         .transpose()?;
                     let (sync, key) = push_target.take().expect("resolved before collecting");
+                    if dry_run {
+                        let v = dry_run_value(&db, &sync, full, start)?;
+                        if format == "json" {
+                            println!("{}", serde_json::to_string_pretty(&v)?);
+                        } else {
+                            print!("{}", dry_run_text(&v));
+                        }
+                        return Ok(());
+                    }
                     let machine_config = if org.is_some() && config.is_none() {
                         None
                     } else {
@@ -202,7 +232,11 @@ fn execute(a: MonitorArgs) -> Result<()> {
                         start,
                         machine_config.as_deref(),
                     )?;
-                    if !quiet {
+                    if quiet {
+                        // Timers and background runs read the exit code only.
+                    } else if format == "json" {
+                        println!("{}", serde_json::to_string_pretty(&v)?);
+                    } else {
                         println!("accepted {} rows, skipped {}", v["accepted"], v["skipped"]);
                         if v["defaulted"] == true {
                             println!(
@@ -216,6 +250,110 @@ fn execute(a: MonitorArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+/// Where `monitor push` would send, refusing a destination it could not send to. Shared with the MCP tool.
+pub(crate) fn dry_run_target(org: Option<&str>, config: Option<&Path>) -> Result<Sync> {
+    let c = monitor::config::Config::load()?;
+    let sync = monitor::push::settings(org, config, &c)?;
+    cedr_route::sync::validate_url(sync.url())?;
+    Ok(sync)
+}
+
+/// `monitor push --dry-run` as JSON (docs/monitor.md, Push), plus what a real push would still need. Changes nothing
+/// beyond collecting logs into the local store. Shared with the MCP tool.
+pub(crate) fn dry_run_value(
+    db: &monitor::store::Store,
+    sync: &Sync,
+    full: bool,
+    start: Option<i64>,
+) -> Result<Value> {
+    let state = cedr_route::config::xdg_dir("XDG_STATE_HOME", ".local/state")
+        .join("cedr/monitor-push.json");
+    let mut v = monitor::push::dry_run(db, sync, full, start, &state)?;
+    let missing: Vec<String> = cedr_route::sync::api_key()
+        .err()
+        .map(|e| e.to_string())
+        .into_iter()
+        .collect();
+    v["missing"] = serde_json::json!(missing);
+    Ok(v)
+}
+
+/// The dry run for people (docs/monitor.md, Push). Project labels come from local logs, so they are cleaned before
+/// they reach the terminal.
+fn dry_run_text(v: &Value) -> String {
+    let clean = |s: &str| s.chars().filter(|c| !c.is_control()).collect::<String>();
+    let text = |key: &str| v[key].as_str().map_or("none".into(), clean);
+    let mut out = format!(
+        "monitor push dry run: nothing sent, nothing saved\n  to        {} (organization {})\n",
+        text("url"),
+        text("org")
+    );
+    out.push_str(&format!(
+        "  upload    {}\n",
+        match (v["initial"] == true, v["full"] == true) {
+            (true, _) =>
+                "initial: no push to this organization has been accepted from this machine",
+            (false, true) => "full: everything from the start, again",
+            (false, false) => "since the last accepted push, with a 2-hour overlap",
+        }
+    ));
+    let start = &v["start"];
+    let from = match start["source"].as_str() {
+        Some("flag") => "--start",
+        Some("saved") => "saved by an earlier push",
+        _ => "the default, since no start was chosen",
+    };
+    out.push_str(&format!(
+        "  start     {} ({from})\n",
+        start["at"]
+            .as_str()
+            .map_or("everything in the store".into(), |at| format!("from {at}"))
+    ));
+    match (v["first_hour"].as_str(), v["last_hour"].as_str()) {
+        (Some(first), Some(last)) => {
+            out.push_str(&format!("  hours     {first} to {last} (UTC)\n"))
+        }
+        _ => out.push_str("  hours     none\n"),
+    }
+    let by_harness = v["harnesses"]
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .map(|(h, n)| format!("{} {n}", clean(h)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    out.push_str(&format!(
+        "  rows      {}{}\n",
+        v["rows"],
+        if by_harness.is_empty() {
+            String::new()
+        } else {
+            format!(": {by_harness}")
+        }
+    ));
+    let projects = v["projects"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .map(clean)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "none".into());
+    out.push_str(&format!("  projects  {projects}\n"));
+    out.push_str(&format!("  readings  {} plan readings\n", v["readings"]));
+    for missing in v["missing"].as_array().into_iter().flatten() {
+        out.push_str(&format!(
+            "  missing   {}\n",
+            clean(missing.as_str().unwrap_or_default())
+        ));
+    }
+    out
 }
 fn display(v: &Value) -> String {
     match v {

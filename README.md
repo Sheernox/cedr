@@ -281,7 +281,7 @@ codex mcp add cedr -- cedr mcp
 - Picks, verdicts and stats stay on your machine. `cedr route sync` sends them to cedr.dev only when you add a `[sync]` section and a cedr.dev API key.
 - `cedr guard lock` runs an MCP server only when you pass `--introspect`, and warns before it does.
 - `cedr guard push` sends names, versions, hashes and findings, never file contents, environment values or how a server is started.
-- `cedr monitor` stays local until you run `push` or enable automatic pushes, and then sends counts only: never prompts, responses, file paths or credentials.
+- `cedr monitor` stays local until you run `push` or enable automatic pushes, and then sends counts only: never prompts, responses, file paths or credentials. `cedr monitor push --dry-run` shows what a push would send, without sending it.
 - `cedr sync push` reports drift without sending file contents or environment values.
 - cedr sends anonymous usage data (command names, exit codes, timing, version, OS and which agents are installed) with a random install ID, after telling you on its first run. Never arguments, paths, repo names or code. `cedr telemetry off`, `CEDR_TELEMETRY=0` or `DO_NOT_TRACK=1` turn it off. Every field: [docs/telemetry.md](docs/telemetry.md).
 

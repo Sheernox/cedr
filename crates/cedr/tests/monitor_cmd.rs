@@ -60,6 +60,66 @@ fn a_push_with_nowhere_to_send_fails_before_reading_any_log() {
     );
 }
 #[test]
+fn a_dry_run_needs_a_destination_but_no_key_and_saves_nothing() {
+    let d = tempfile::tempdir().unwrap();
+    let cedr = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_cedr"))
+            .args(args)
+            .current_dir(d.path())
+            .env("HOME", d.path())
+            .env("XDG_STATE_HOME", d.path().join("state"))
+            .env("XDG_CONFIG_HOME", d.path().join("config"))
+            .env("XDG_DATA_HOME", d.path().join("data"))
+            .env("CLAUDE_CONFIG_DIR", d.path().join("claude"))
+            .env("CODEX_HOME", d.path().join("codex"))
+            .env("COPILOT_HOME", d.path().join("copilot"))
+            .env("OPENCODE_DB", d.path().join("missing.db"))
+            .env_remove("CEDR_API_KEY")
+            .output()
+            .unwrap()
+    };
+    let nowhere = cedr(&["monitor", "push", "--dry-run"]);
+    assert_eq!(nowhere.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&nowhere.stderr).contains("no organization"));
+
+    let out = cedr(&[
+        "monitor",
+        "push",
+        "--dry-run",
+        "--org",
+        "acme",
+        "--start",
+        "now",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["org"], "acme");
+    assert_eq!(v["initial"], true);
+    assert_eq!(v["start"]["source"], "flag");
+    assert_eq!(v["rows"], 0);
+    assert!(
+        v["missing"][0].as_str().unwrap().contains("no API key"),
+        "{v}"
+    );
+
+    let text = cedr(&["monitor", "push", "--dry-run", "--org", "acme"]);
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(text.contains("nothing sent, nothing saved"), "{text}");
+    assert!(
+        text.contains("everything in the store (the default, since no start was chosen)"),
+        "{text}"
+    );
+    for saved in ["monitor-push.json", "monitor-start.json"] {
+        assert!(!d.path().join("state/cedr").join(saved).exists(), "{saved}");
+    }
+}
+#[test]
 fn limits_include_claude_codes_usage_cache_without_a_status_line() {
     let d = tempfile::tempdir().unwrap();
     let claude = d.path().join("claude");

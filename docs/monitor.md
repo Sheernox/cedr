@@ -63,7 +63,7 @@ Every key is optional; a missing file is the defaults. An unknown key or `versio
 - `cedr monitor sessions [--since] [--limit 15]`: the costliest sessions: harness, project, models, first and last time, responses, tokens, cost.
 - `cedr monitor limits [--format text|json]`: the latest reading of each plan window: what T3 Code last read of the plans it runs (Antigravity included; see `t3` in [route.md](route.md), Built-in readers), then, for the plans it has no current reading for, the built-in readers (Claude's status line capture and Claude Code's own usage cache, Codex's app server and rollout snapshots, Muse's usage command, Grok's agent): used percent, reset time, elapsed share of the window (rounded to a whole percent in text, numeric in JSON), projected use at reset (`used / elapsed` once 3% has elapsed and use is above zero), the time it would run out before reset (null when the projection reaches or exceeds the reset), and an outlook: `idle`, `early`, `on track`, `tight` (projection 70% or more), `limit risk` (projection 100% or more), `at limit` (used 100%), `unknown`.
 - `cedr monitor sources [--format]`: per harness: found or absent, files, responses, first and last response, malformed records, and why a harness has no data.
-- `cedr monitor push [--org ID] [--config FILE] [--quiet] [--full] [--start all|now|<YYYY-MM-DD>|<RFC 3339>]`: see Push.
+- `cedr monitor push [--org ID] [--config FILE] [--quiet] [--full] [--start all|now|<YYYY-MM-DD>|<RFC 3339>] [--dry-run] [--format text|json]`: see Push.
 - `cedr monitor schedule [--every <minutes>] [--remove]`: installs (or removes) a user-level timer running `cedr monitor push --quiet` every 60 minutes by default: a systemd user timer on Linux (`~/.config/systemd/user/cedr-monitor.{service,timer}`), a launch agent on macOS (`~/Library/LaunchAgents/dev.cedr.monitor.plist`), a scheduled task on Windows (`schtasks`, task `cedr monitor`). The first run is scheduled when installed: after two minutes on Linux and Windows (plus scheduler jitter on Linux), and at load on macOS. It prints what it wrote and how to check it. No root.
 - `cedr monitor reset`: deletes the store.
 
@@ -94,7 +94,23 @@ Exit 0 success, 2 usage or I/O failure. Reports never fail on findings.
 - Repairs: after responses moved to another session (see Store), the next push to each org also resends every affected hour at or after its start in full (repairs before the start wait until the start moves back), and sends a row with every count 0 for each old key that no longer has usage, so the app's copy of the old key is replaced rather than counted beside the new one. The app treats such a zero row as no usage for that key.
 - Start: `--start` chooses where the org's usage begins: `all` (everything in the store, the default), `now` (only usage from this moment), or a date (UTC midnight) or time. Responses before it are never sent, by any later push (manual, scheduled, automatic or `--full`); the choice is kept in `$XDG_STATE_HOME/cedr/monitor-start.json` per org and URL, saved before anything is sent, so an interrupted push keeps it. A start inside an hour sends that hour's usage from the start on, and its active time counts only gaps between responses after it. A first push without `--start` sends everything and says so. Moving the start earlier resends from it once; moving it later stops sending older usage but does not remove what the app already has, and on a machine that has pushed it takes effect at the next whole hour (UTC), since the app replaces whole hourly rows. Setup (the app's or an agent's) passes `--start` on the first push.
 - The reply is `{"accepted": n, "skipped": n, "historyDays": 90}`: rows older than the plan's history are skipped. The push time is kept in `$XDG_STATE_HOME/cedr/monitor-push.json` per org and URL and advances only after every batch is accepted.
-- Exit 0 sent, 2 on failure (the message names the HTTP status and the API's error text, never the key).
+- Exit 0 sent, 2 on failure (the message names the HTTP status and the API's error text, never the key). `--format json` prints the reply as `{"accepted", "skipped", "defaulted"}`, where `defaulted` is true when no start had been chosen and everything was sent; `--quiet` prints nothing.
+
+`--dry-run` works out exactly what the same push would send and prints a summary, sending nothing: no request, and neither the push time nor the start is saved, so it can be run before choosing a start for the first upload. It still collects logs into the local store. It needs an organization and a valid destination (exit 2 without one) but no API key, and takes no lock. With `--format json`:
+
+```json
+{"url": "https://api.cedr.dev/v1/monitor/usage", "org": "org-1a2b3c4d5e6f", "initial": true, "full": false,
+ "start": {"at": "2026-11-01T00:00:00Z", "source": "flag"}, "first_hour": "2026-11-01T00:00:00Z", "last_hour": "2026-11-21T16:00:00Z",
+ "rows": 812, "harnesses": {"claude": 640, "codex": 172}, "projects": ["web"], "readings": 14, "missing": []}
+```
+
+- `url` is the destination with no credentials, query or fragment.
+- `initial` is true when no push to this organization and URL has been accepted from this machine.
+- `start` is the start in force: `at` is null for everything in the store, and `source` is `flag` (`--start`, including a later start rounded up to the next whole hour), `saved` (an earlier push's) or `default` (none chosen, so everything would be sent).
+- `first_hour` and `last_hour` are the earliest and latest hours of the rows, null with none. Rows include repairs and zero rows, as described above.
+- `harnesses` counts rows per harness, and `projects` lists the distinct project labels the rows would share.
+- `readings` counts the plan readings that would go in `limits`.
+- `missing` lists what a real push would still need, such as an API key, each with what to do.
 
 With `auto = true` and an org, `cedr route statusline` (which records the Claude readings) starts `cedr monitor push --quiet` in the background at most every 30 minutes, the way Route's automatic sync starts.
 
@@ -107,6 +123,7 @@ With `auto = true` and an org, `cedr route statusline` (which records the Claude
 | `monitor_report` | `since?`, `by?`, `harness?`, `project?` | The report JSON |
 | `monitor_limits` | none | The limits JSON |
 | `monitor_sources` | none | The sources JSON |
+| `monitor_push_plan` | `org?`, `start?`, `full?` | The `monitor push --dry-run` JSON; sends and saves nothing |
 
 ## JSON
 

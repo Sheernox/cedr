@@ -559,6 +559,17 @@ pub fn validate_url(url: &str) -> Result<()> {
     client(url).map(|_| ())
 }
 
+/// A destination for people to read: scheme, host, port and path, never credentials, a query or a fragment.
+pub fn display_url(url: &str) -> Result<String> {
+    let mut parsed = reqwest::Url::parse(url).map_err(|e| sync_err("url", e))?;
+    // Both fail only for URLs that cannot carry credentials, which then have none to remove.
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    Ok(parsed.to_string())
+}
+
 /// A nonce-protected lock on `$XDG_STATE_HOME/cedr/<name>`, for other background CLI work (telemetry
 /// flushes, self-updates) that must run one at a time per machine. `stale_after` must exceed the
 /// longest the holder can run, or a second holder takes it over while the first still works.
@@ -765,6 +776,16 @@ pub fn doctor_release(sync: &Sync) -> Result<Value> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn a_displayed_destination_keeps_no_credentials_query_or_fragment() {
+        let userinfo = ["user", "pw"].join(":");
+        let url = format!("https://{userinfo}@example.com:8443/v1/monitor/usage?token=x#frag");
+        assert_eq!(
+            display_url(&url).unwrap(),
+            "https://example.com:8443/v1/monitor/usage"
+        );
+    }
 
     #[test]
     fn background_syncs_start_at_most_once_a_window() {
