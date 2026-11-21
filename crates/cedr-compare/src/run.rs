@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::harness::{self, AgentEnd, Usage};
 use crate::report::{
     CompareResult, Count, Status, Stop, SuiteInfo, Summary, TaskRow, Trial, VERSION, VariantInfo,
-    VariantName, Variants, separated, summarize,
+    VariantName, Variants, overrun, separated, summarize,
 };
 use crate::suite::{HarnessKind, Loaded, Task, Variant};
 use crate::{Result, exec, invalid};
@@ -91,6 +91,7 @@ fn variant_info(root: &Path, variant: &Variant) -> Result<VariantInfo> {
         git_ref,
         commit,
         resolved_models: Vec::new(),
+        budget_enforcement: Some(harness::budget_enforcement(variant)),
     })
 }
 
@@ -236,6 +237,15 @@ pub fn run(
         .collect::<Result<Vec<_>>>()?;
     let timeout = Duration::from_secs(suite.timeout_seconds);
     exec::catch_interrupts();
+    // After catching signals: progress to a closed stderr must not end the run.
+    for (name, info) in [
+        ("baseline", &plan.variants.baseline),
+        ("candidate", &plan.variants.candidate),
+    ] {
+        if let Some(enforcement) = info.budget_enforcement {
+            progress(&format!("{name} budget: {}", enforcement.describe()));
+        }
+    }
     let started_at = now();
     let mut trials: Vec<Trial> = Vec::new();
     let mut spent = 0.0_f64;
@@ -264,12 +274,7 @@ pub fn run(
                     stop = Some(Stop::Budget);
                     break 'run;
                 }
-                let label = format!(
-                    "{} {} {number}/{}",
-                    task.id,
-                    variant_label(name),
-                    plan.trials_each
-                );
+                let label = format!("{} {} {number}/{}", task.id, name.name(), plan.trials_each);
                 progress(&format!("{label}: running"));
                 let budget_left = options.budget_usd - spent;
                 let trial = run_trial(TrialInput {
@@ -318,13 +323,6 @@ pub fn run(
 /// The first trial always runs when the cap is above 0, since nothing is known about its cost.
 pub fn over_budget(spent: f64, dearest: f64, budget: f64) -> bool {
     spent >= budget || spent + dearest > budget
-}
-
-fn variant_label(name: VariantName) -> &'static str {
-    match name {
-        VariantName::Baseline => "baseline",
-        VariantName::Candidate => "candidate",
-    }
 }
 
 struct TrialInput<'a> {
@@ -565,6 +563,7 @@ fn assemble(
         _ => None,
     };
     let finished_at = now();
+    let overrun = overrun(&trials, budget_usd);
     CompareResult {
         version: VERSION,
         source: None,
@@ -578,6 +577,7 @@ fn assemble(
         budget_usd,
         spent_usd: (spent * 10000.0).round() / 10000.0,
         unpriced_trials: trials.iter().filter(|t| t.spent_unknown()).count() as u32,
+        overrun,
         complete,
         stop,
         variants,

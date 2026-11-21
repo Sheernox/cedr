@@ -244,6 +244,40 @@ fn the_budget_stops_the_run_evenly_and_an_incomplete_run_never_passes() {
     assert_eq!(r["summary"]["baseline"]["scored"], 1);
     assert_eq!(r["summary"]["candidate"]["scored"], 1);
     assert_eq!(r["budget_usd"], 0.25);
+    assert_eq!(r["overrun"], Value::Null);
+    assert_eq!(r["variants"]["baseline"]["budget_enforcement"], "unpriced");
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("candidate budget: unpriced: the budget cannot see what it spends"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The first trial always runs, and one that costs more than the cap is recorded as passing it.
+    let out = repo.run(&[
+        "compare",
+        "run",
+        &suite,
+        "--allow-unpriced",
+        "--budget-usd",
+        "0.04",
+        "--no-record",
+    ]);
+    assert_eq!(code(&out), 3);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains(
+            "spent $0.06 over the $0.04 budget; write-done baseline trial 1 took it over"
+        ),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let mut args = run_args(&suite);
+    args.extend(["--budget-usd", "0.04", "--no-record"]);
+    let r = stdout_json(&repo.run(&args));
+    assert_eq!(
+        r["overrun"],
+        serde_json::json!({"usd": 0.06, "task": "write-done", "variant": "baseline", "trial": 1})
+    );
 }
 
 #[test]
@@ -403,6 +437,10 @@ fn plan_shows_the_work_and_starts_nothing() {
     assert_eq!(plan["total_trials"], 4);
     assert_eq!(plan["budget_usd"], 2.0);
     assert_eq!(plan["tasks"][0]["test"], "test -f done");
+    assert_eq!(
+        plan["variants"]["candidate"]["budget_enforcement"],
+        "unpriced"
+    );
     assert!(
         plan["warnings"]
             .as_array()
@@ -413,6 +451,10 @@ fn plan_shows_the_work_and_starts_nothing() {
     assert!(!marker.exists());
     let text = repo.run(&["compare", "plan", &suite]);
     assert!(String::from_utf8_lossy(&text.stdout).contains("4 trials"));
+    assert!(
+        String::from_utf8_lossy(&text.stdout)
+            .contains("    budget: unpriced: the budget cannot see what it spends")
+    );
     // The one suite in .cedr/compare/ is found without naming it.
     assert_eq!(code(&repo.run(&["compare", "plan"])), 0);
 }
@@ -570,6 +612,7 @@ test = "true"
     assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
     let r = stdout_json(&out);
     assert_eq!(r["spent_usd"], 1.0);
+    assert_eq!(r["variants"]["candidate"]["budget_enforcement"], "enforced");
     assert_eq!(
         r["variants"]["baseline"]["harness_version"],
         "9.9.9 (Claude Code)"

@@ -8,6 +8,7 @@ use std::process::Command;
 use serde_json::Value;
 
 use crate::exec;
+use crate::report::BudgetEnforcement;
 use crate::suite::{HarnessKind, Permissions, Variant};
 
 /// What a harness reported about a finished run.
@@ -48,6 +49,17 @@ pub fn priced(variant: &Variant) -> bool {
         HarnessKind::Claude => true,
         HarnessKind::Codex => cedr_monitor::pricing::price(&variant.model).is_some(),
         HarnessKind::Command => false,
+    }
+}
+
+/// How the run's budget holds this variant's spend: only `claude` takes a spending limit of its own.
+pub fn budget_enforcement(variant: &Variant) -> BudgetEnforcement {
+    if !priced(variant) {
+        BudgetEnforcement::Unpriced
+    } else if variant.harness == HarnessKind::Claude {
+        BudgetEnforcement::Enforced
+    } else {
+        BudgetEnforcement::BetweenTrials
     }
 }
 
@@ -339,6 +351,27 @@ mod tests {
             permissions: Permissions::Workspace,
             command: None,
         }
+    }
+
+    #[test]
+    fn only_claude_enforces_the_budget_and_an_unpriced_variant_says_so() {
+        use BudgetEnforcement::*;
+        assert_eq!(
+            budget_enforcement(&variant(HarnessKind::Claude, "x")),
+            Enforced
+        );
+        assert_eq!(
+            budget_enforcement(&variant(HarnessKind::Codex, "gpt-6.1-sol")),
+            BetweenTrials
+        );
+        assert_eq!(
+            budget_enforcement(&variant(HarnessKind::Codex, "no-such-model")),
+            Unpriced
+        );
+        assert_eq!(
+            budget_enforcement(&variant(HarnessKind::Command, "x")),
+            Unpriced
+        );
     }
 
     #[test]

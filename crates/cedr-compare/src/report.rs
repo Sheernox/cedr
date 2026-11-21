@@ -16,6 +16,15 @@ pub enum VariantName {
     Candidate,
 }
 
+impl VariantName {
+    pub fn name(self) -> &'static str {
+        match self {
+            VariantName::Baseline => "baseline",
+            VariantName::Candidate => "candidate",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
@@ -55,6 +64,33 @@ pub enum Stop {
     Interrupted,
 }
 
+/// How a variant's spend is held to the run's budget (docs/compare.md, Budget).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetEnforcement {
+    /// The harness receives what is left of the budget as its own limit.
+    Enforced,
+    /// Checked only before each trial, so one trial can pass the cap.
+    BetweenTrials,
+    /// The budget cannot see what the variant spends.
+    Unpriced,
+}
+
+impl BudgetEnforcement {
+    /// One line for people, stating the guarantee and nothing more.
+    pub fn describe(self) -> &'static str {
+        match self {
+            BudgetEnforcement::Enforced => {
+                "enforced: the harness receives what is left of the budget as its own limit"
+            }
+            BudgetEnforcement::BetweenTrials => {
+                "between trials: checked only between trials, so a trial can overrun the budget"
+            }
+            BudgetEnforcement::Unpriced => "unpriced: the budget cannot see what it spends",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailOn {
     Never,
@@ -86,6 +122,19 @@ pub struct VariantInfo {
     pub commit: String,
     pub config_sha256: String,
     pub resolved_models: Vec<String>,
+    /// Null in results saved before it was recorded.
+    #[serde(default)]
+    pub budget_enforcement: Option<BudgetEnforcement>,
+}
+
+/// How far a run's known spend passed its budget, and the trial whose cost took it over.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Overrun {
+    pub usd: f64,
+    pub task: String,
+    pub variant: VariantName,
+    pub trial: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,6 +239,9 @@ pub struct CompareResult {
     pub budget_usd: f64,
     pub spent_usd: f64,
     pub unpriced_trials: u32,
+    /// Null when the run stayed within its budget, and in results saved before it was recorded.
+    #[serde(default)]
+    pub overrun: Option<Overrun>,
     pub complete: bool,
     pub stop: Option<Stop>,
     pub variants: Variants,
@@ -254,6 +306,25 @@ pub fn summarize(trials: &[Trial], variant: VariantName) -> VariantSummary {
     }
 }
 
+/// The overrun of a run whose known costs, summed in trial order, pass `budget`: the excess over
+/// the budget and the first trial after which the sum was over it.
+pub fn overrun(trials: &[Trial], budget: f64) -> Option<Overrun> {
+    let mut spent = 0.0_f64;
+    let mut crossed = None;
+    for trial in trials {
+        spent += trial.cost_usd.unwrap_or(0.0);
+        if crossed.is_none() && spent > budget {
+            crossed = Some(trial);
+        }
+    }
+    crossed.map(|trial| Overrun {
+        usd: ((spent - budget) * 10000.0).round() / 10000.0,
+        task: trial.task.clone(),
+        variant: trial.variant,
+        trial: trial.trial,
+    })
+}
+
 /// True when both intervals exist and do not overlap.
 pub fn separated(baseline: &VariantSummary, candidate: &VariantSummary) -> bool {
     match (baseline.interval, candidate.interval) {
@@ -308,6 +379,16 @@ impl CompareResult {
             out.push_str(&format!(
                 "{} trials reported no cost, so the real spend is higher\n",
                 self.unpriced_trials
+            ));
+        }
+        if let Some(over) = &self.overrun {
+            out.push_str(&format!(
+                "spent {} over the {} budget; {} {} trial {} took it over\n",
+                money(over.usd),
+                money(self.budget_usd),
+                clean(&over.task),
+                over.variant.name(),
+                over.trial
             ));
         }
         out.push_str("              passed  rate   95%          median  cost\n");
@@ -437,6 +518,36 @@ mod tests {
     }
 
     #[test]
+    fn an_overrun_names_the_trial_that_crossed_the_budget_and_the_final_excess() {
+        use Status::*;
+        let mut trials = vec![
+            trial(VariantName::Baseline, Passed, 1, Some(0.5)),
+            trial(VariantName::Candidate, Timeout, 1, None),
+            trial(VariantName::Baseline, Passed, 1, Some(0.75)),
+            trial(VariantName::Candidate, Passed, 1, Some(0.25)),
+        ];
+        trials[2].trial = 2;
+        assert_eq!(overrun(&trials, 1.5), None, "at the cap is not over it");
+        assert_eq!(
+            overrun(&trials, 1.0),
+            Some(Overrun {
+                usd: 0.5,
+                task: "t".into(),
+                variant: VariantName::Baseline,
+                trial: 2,
+            })
+        );
+        let mut r = result((0, 0), (0, 0), false);
+        r.overrun = overrun(&trials, 1.0);
+        assert!(
+            r.text()
+                .contains("spent $0.50 over the $2.00 budget; t baseline trial 2 took it over"),
+            "{}",
+            r.text()
+        );
+    }
+
+    #[test]
     fn wilson_matches_known_values_and_handles_the_edges() {
         assert_eq!(wilson(2, 3), Some([0.208, 0.939]));
         assert_eq!(wilson(3, 3), Some([0.439, 1.0]));
@@ -483,6 +594,7 @@ mod tests {
             commit: "c".into(),
             config_sha256: "s".into(),
             resolved_models: vec![],
+            budget_enforcement: Some(BudgetEnforcement::Enforced),
         };
         let (b, c) = (row(baseline), row(candidate));
         CompareResult {
@@ -498,6 +610,7 @@ mod tests {
             budget_usd: 2.0,
             spent_usd: 0.0,
             unpriced_trials: 0,
+            overrun: None,
             complete,
             stop: None,
             variants: Variants {

@@ -61,7 +61,8 @@ pub enum CompareCommand {
     Run {
         /// Suite file; default the only *.toml in .cedr/compare/
         suite: Option<PathBuf>,
-        /// Cap in USD at API prices, instead of the one in your settings
+        /// Cap in USD at API prices, instead of the one in your settings; only claude also stops
+        /// itself at it, others are checked between trials
         #[arg(long, value_name = "USD")]
         budget_usd: Option<f64>,
         /// Only this task; repeatable
@@ -886,6 +887,11 @@ fn plan_text(plan: &Value) -> String {
             text("ref"),
             &commit[..commit.len().min(12)],
         ));
+        if let Ok(enforcement) =
+            serde_json::from_value::<report::BudgetEnforcement>(v["budget_enforcement"].clone())
+        {
+            out.push_str(&format!("    budget: {}\n", enforcement.describe()));
+        }
     }
     for task in plan["tasks"].as_array().into_iter().flatten() {
         let text = |key: &str| report::clean(task[key].as_str().unwrap_or(""));

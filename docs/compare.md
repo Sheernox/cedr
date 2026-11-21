@@ -87,7 +87,17 @@ Every run has a cap in USD at API prices, including on a plan where nothing is b
 
 A suite can never set its own budget. The cap must be a finite number above 0. A settings file that cannot be read or does not parse, or a broken value in it, is an error rather than the default.
 
-Before each trial, a run stops when what it has spent plus the most expensive trial so far would pass the cap. `claude` also receives what is left as its own limit. Other harnesses are only checked between trials, so a trial can overrun the cap, by at most what it spends before its timeout. A run stopped this way is incomplete, with `stop` set to `"budget"`.
+Before each trial, a run stops when what it has spent plus the most expensive trial so far would pass the cap. A run stopped this way is incomplete, with `stop` set to `"budget"`. The first trial always runs, since nothing is known about its cost yet.
+
+What the cap guarantees depends on the variant. `compare plan` and `compare run` (on stderr, before the first trial) state it for each variant, and its `budget_enforcement` records it:
+
+| `budget_enforcement` | Variants | Guarantee |
+|---|---|---|
+| `enforced` | `claude` | The harness also receives what is left of the cap as its own limit (`--max-budget-usd`) and stops itself there; how closely it holds that limit is the vendor's |
+| `between_trials` | priced `codex` | Checked only between trials, so a trial can pass the cap, by at most what it spends before its timeout |
+| `unpriced` | `command`, and `codex` with a model missing from the price table | The budget cannot see the spend at all; such a variant runs only with `--allow-unpriced` |
+
+When a run's known spend ends above the cap, the result's `overrun` records by how much and which trial's cost took it over, and the text report says so.
 
 A trial whose agent was killed at its timeout or by an interrupt, or an agent that reports no cost, has an unknown cost: it is left out of `spent_usd` and counted in `unpriced_trials`. The budget cannot see that spend, so the run stops there, incomplete, with `stop` set to `"unknown_cost"`, unless `--allow-unpriced` was passed.
 
@@ -125,7 +135,7 @@ Writes a commented starter suite to `.cedr/compare/<name>.toml` (default `suite`
 
 ### `cedr compare plan [SUITE] [--task ID]... [--trials N] [--format text|json]`
 
-Validates the suite, resolves the refs and prints what a run would do, starting nothing. JSON: `{"suite", "sha256", "trials_each", "total_trials", "budget_usd", "budget_source", "variants": {"baseline": <variant>, "candidate": <variant>}, "tasks": [{"id", "setup", "test", "test_files"}], "warnings": []}`, where a warning covers a harness that is not installed, `full` permissions, an unpriced variant and a `codex` model priced by its family's older version ([monitor.md](monitor.md), Pricing). Exit 0, or 2 on any error.
+Validates the suite, resolves the refs and prints what a run would do, starting nothing. JSON: `{"suite", "sha256", "trials_each", "total_trials", "budget_usd", "budget_source", "variants": {"baseline": <variant>, "candidate": <variant>}, "tasks": [{"id", "setup", "test", "test_files"}], "warnings": []}`, where each variant has the Result's variant fields, including `budget_enforcement` ([Budget](#budget)), where a warning covers a harness that is not installed, `full` permissions, an unpriced variant and a `codex` model priced by its family's older version ([monitor.md](monitor.md), Pricing). Exit 0, or 2 on any error.
 
 ### `cedr compare run [SUITE] [--budget-usd N] [--task ID]... [--trials N] [--fail-on never|lower|separated] [--allow-unpriced] [--no-record] [--no-push] [--repo NAME] [--format text|json]`
 
@@ -161,13 +171,14 @@ Remove a result by deleting its file. Results moved from the former state direct
   "budget_usd": 2.0,
   "spent_usd": 1.27,
   "unpriced_trials": 0,
+  "overrun": null,
   "complete": true,
   "stop": null,
   "variants": {
     "baseline": {
       "harness": "claude", "clean_home": true, "harness_version": "2.5.0", "model": "claude-sonnet-5-5", "effort": "medium",
       "permissions": "workspace", "ref": "main", "commit": "<sha>", "config_sha256": "<sha256>",
-      "resolved_models": ["claude-sonnet-5-5"]
+      "resolved_models": ["claude-sonnet-5-5"], "budget_enforcement": "enforced"
     },
     "candidate": {}
   },
@@ -191,6 +202,8 @@ Remove a result by deleting its file. Results moved from the former state direct
 - `harness_version` is the CLI's own `--version` line, and null for `command`.
 - `resolved_models` is what the harness reports having used; `codex` does not report one, so it repeats the requested model.
 - `cost_usd` and `pass_rate` are null when nothing can fill them. `spent_usd` is the sum of known costs and `unpriced_trials` counts the rest.
+- `budget_enforcement` is `enforced`, `between_trials` or `unpriced`, as in [Budget](#budget). It is null in results saved before it was recorded.
+- `overrun` is null unless `spent_usd` ends above `budget_usd`. Then it is `{"usd": 0.31, "task": "fix-parser", "variant": "candidate", "trial": 2}`: `usd` is `spent_usd` minus `budget_usd`, and the rest names the first trial after which the known costs, summed in trial order, passed the cap. Spend in unpriced trials is not in it. It is null in results saved before it was recorded.
 - `interval` is a 95% Wilson score interval over scored trials, null with none scored. `separated` is true when the variants' intervals do not overlap. Trials of one task are not independent samples of every task, so treat it as a floor: overlapping intervals mean this run does not tell the variants apart, not that they are equal.
 - Results are saved locally and can be sent to an organization as described below. They hold prompts by reference only: the suite's digest and task ids, never the prompt text, agent output or paths.
 - `source` is optional, defaults to null for older files, and is not part of the consistency checks. Its repo name is the first valid name from `--repo`, `GITHUB_REPOSITORY` on GitHub Actions, the last two path segments of a network `origin` remote (without `.git`), or the git top level's directory name. Only 1-128 characters of `A-Z a-z 0-9 . _ / -` are allowed. Only a non-file URL with a host or scp-style `host:path` can supply an origin name; local paths, `file://` and relative remotes fall through to the directory name. Derived names containing `.` or `..` segments are refused. Remote hosts, users and credentials are never kept. Invalid inferred names are ignored; with no valid name, `repo` is null.
@@ -234,7 +247,7 @@ compare agent-config: complete, $1.27 of $2.00 (c-20261101T193000Z-1a2b3c)
 pass rate +33 points; the intervals overlap, so this run does not separate them
 ```
 
-An incomplete run says `incomplete (budget)`, `incomplete (unknown cost)`, `incomplete (interrupted)` or `incomplete (N unscored)` on its first line.
+An incomplete run says `incomplete (budget)`, `incomplete (unknown cost)`, `incomplete (interrupted)` or `incomplete (N unscored)` on its first line. A run that passed its cap adds a line after it: `spent $0.31 over the $2.00 budget; fix-parser candidate trial 2 took it over`.
 
 ## MCP tools
 
