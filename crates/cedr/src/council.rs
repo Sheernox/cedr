@@ -83,12 +83,50 @@ pub enum CouncilCommand {
     },
 }
 
-/// Merge output: the gate summary, its JSON, or only the author's revision brief.
+/// Merge output: the gate summary, its JSON, only the author's revision brief, GitHub
+/// annotations, SARIF 2.1.0, or a GitLab Code Quality report. The gate exit code never changes.
 #[derive(Clone, Copy, clap::ValueEnum)]
 pub enum MergeFormat {
     Text,
     Json,
     Brief,
+    Github,
+    Sarif,
+    Gitlab,
+}
+
+/// One SARIF/GitLab/GitHub finding per merged group, at the group's file and lowest line.
+/// P0 and P1 are errors, P2 a warning and P3 a note; the members are named in the message so
+/// no reporter is lost when groups collapse several findings into one result.
+fn council_findings(m: &Merged) -> Vec<cedr_core::report::OutputFinding> {
+    use cedr_core::report::{GitlabSeverity, OutputFinding, OutputLevel};
+    use cedr_route::council::Severity;
+    m.groups
+        .iter()
+        .map(|g| {
+            let (level, gitlab_severity) = match g.severity {
+                Severity::P0 => (OutputLevel::Error, GitlabSeverity::Blocker),
+                Severity::P1 => (OutputLevel::Error, GitlabSeverity::Critical),
+                Severity::P2 => (OutputLevel::Warning, GitlabSeverity::Major),
+                Severity::P3 => (OutputLevel::Note, GitlabSeverity::Minor),
+            };
+            let severity = format!("{:?}", g.severity);
+            let message = if g.members.is_empty() {
+                g.headline().to_string()
+            } else {
+                format!("{} (reported by {})", g.headline(), g.members.join(", "))
+            };
+            OutputFinding {
+                rule_description: format!("Council review finding ({severity})"),
+                rule_id: severity,
+                level,
+                gitlab_severity,
+                message,
+                path: g.file.clone(),
+                line: (g.line > 0).then_some(g.line),
+            }
+        })
+        .collect()
 }
 
 /// One report argument: a JSON report, or text whose member the argument names. An argument that is
@@ -162,6 +200,28 @@ pub fn print_merged(m: &Merged, format: MergeFormat) {
                 "{}",
                 serde_json::to_string_pretty(m).expect("merge serializes")
             );
+            return;
+        }
+        MergeFormat::Github => {
+            // The annotation title names the severity and the reporting members.
+            let mut findings = council_findings(m);
+            for (f, g) in findings.iter_mut().zip(&m.groups) {
+                if !g.members.is_empty() {
+                    f.rule_id = format!("{} ({})", f.rule_id, g.members.join(", "));
+                }
+            }
+            print!("{}", cedr_core::report::github(&findings));
+            return;
+        }
+        MergeFormat::Sarif => {
+            println!(
+                "{}",
+                cedr_core::report::sarif(&council_findings(m), env!("CARGO_PKG_VERSION"))
+            );
+            return;
+        }
+        MergeFormat::Gitlab => {
+            println!("{}", cedr_core::report::gitlab(&council_findings(m)));
             return;
         }
         MergeFormat::Brief => {

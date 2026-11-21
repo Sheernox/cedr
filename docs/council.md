@@ -71,7 +71,7 @@ When the merge is not strict, the marker changes nothing about the gate.
 
 ## Merge
 
-`cedr council merge [--route R] [--run RUN] [--quorum N] [--block P0|P1|P2|P3] [--rounds N] [--round N] [--previous FILE] [--strict] [--no-record] [--format text|json|brief] <report>...`, where each report is `<path>` (JSON) or `<member>=<path>` (text, or JSON whose own `member` is then overridden). `-` reads one report from stdin. The quorum, blocking severity and rounds come from the flags, else the route's `quorum`, `block` and `rounds`, else 2, P1 and 1. `--round` is the review being merged: 1 (the default) for the first, 2 after one revision, and so on, up to `rounds + 1`. With numbered rounds, a later `--round` is a usage error (exit 2) and nothing is recorded, because the gate already stood; a new review of the change starts a new run.
+`cedr council merge [--route R] [--run RUN] [--quorum N] [--block P0|P1|P2|P3] [--rounds N] [--round N] [--previous FILE] [--strict] [--no-record] [--format text|json|brief|github|sarif|gitlab] <report>...`, where each report is `<path>` (JSON) or `<member>=<path>` (text, or JSON whose own `member` is then overridden). `-` reads one report from stdin. The quorum, blocking severity and rounds come from the flags, else the route's `quorum`, `block` and `rounds`, else 2, P1 and 1. `--round` is the review being merged: 1 (the default) for the first, 2 after one revision, and so on, up to `rounds + 1`. With numbered rounds, a later `--round` is a usage error (exit 2) and nothing is recorded, because the gate already stood; a new review of the change starts a new run.
 
 1. Findings are grouped by file. Within a file, sorted by line, a finding joins the previous group when its line is at most 3 after that group's last line; otherwise it starts a new group.
 2. A group's severity is the most severe of its findings, its line the lowest, and its members the distinct members that reported in it. Every finding is kept with its member, severity, line, claim and scenario: dissent is shown, never voted away.
@@ -93,6 +93,8 @@ JSON output:
  "groups": [{"file": "src/a.rs", "line": 12, "severity": "P1", "members": ["codex/gpt-6.1-sol"],
    "findings": [{"member": "codex/gpt-6.1-sol", "severity": "P1", "line": 12, "claim": "...", "scenario": null}]}]}
 ```
+
+The other formats are local output only, one result per group at the group's file and lowest line, with the group's headline as the message and its reporting members named in it. `--format github` prints one workflow annotation per group (`::error` for P0 and P1, `::warning` for P2, `::notice` for P3; the title is the severity and its members). `--format sarif` prints the SARIF 2.1.0 shape from [design.md](design.md) with one rule per severity (`P0` to `P3`) and level `error`, `error`, `warning` or `note`. `--format gitlab` prints the GitLab Code Quality shape with severity `blocker`, `critical`, `major` or `minor`. Every format keeps the gate exit code.
 
 `brief` is present only when `next` is `revise`. `scores` has every reviewer, null when it gave none. The JSON also has `"strict"` (bool) and `"incomplete_reports"` (members, sorted; always empty when not strict).
 

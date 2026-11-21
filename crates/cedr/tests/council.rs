@@ -169,6 +169,130 @@ fn merge_reads_text_and_json_reports_and_blocks_on_p1() {
 }
 
 #[test]
+fn merge_sarif_gitlab_and_github_cover_every_severity() {
+    let s = Scratch::new(10.0, 20.0);
+    let dir = s.dir.path();
+    std::fs::write(
+        dir.join("a.json"),
+        json!({"member": "codex/sol", "findings": [
+            {"file": "src/a.rs", "line": 10, "severity": "P0", "claim": "data loss"},
+            {"file": "src/b.rs", "line": 20, "severity": "P2", "claim": "slow path"},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("b.json"),
+        json!({"member": "claude/opus", "findings": [
+            {"file": "src/c.rs", "line": 30, "severity": "P1", "claim": "wrong result"},
+            {"file": "src/d.rs", "line": 40, "severity": "P3", "claim": "naming"},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let a = dir.join("a.json").display().to_string();
+    let b = dir.join("b.json").display().to_string();
+    let merge = |format: &str| {
+        s.cedr(&[
+            "council",
+            "merge",
+            &a,
+            &b,
+            "--no-record",
+            "--format",
+            format,
+        ])
+    };
+
+    let sarif_out = merge("sarif");
+    assert_eq!(sarif_out.status.code(), Some(1), "gate still blocks");
+    let sarif: Value = serde_json::from_slice(&sarif_out.stdout).unwrap();
+    assert_eq!(sarif["runs"][0]["tool"]["driver"]["name"], "cedr");
+    let by_rule: std::collections::BTreeMap<String, String> = sarif["runs"][0]["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["ruleId"].as_str().unwrap().into(),
+                r["level"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        by_rule,
+        std::collections::BTreeMap::from([
+            ("P0".to_string(), "error".to_string()),
+            ("P1".to_string(), "error".to_string()),
+            ("P2".to_string(), "warning".to_string()),
+            ("P3".to_string(), "note".to_string()),
+        ])
+    );
+    let first = &sarif["runs"][0]["results"][0];
+    assert_eq!(
+        first["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        "src/a.rs"
+    );
+    assert_eq!(
+        first["locations"][0]["physicalLocation"]["region"]["startLine"],
+        10
+    );
+    assert!(
+        first["message"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("codex/sol")
+    );
+
+    let gitlab_out = merge("gitlab");
+    assert_eq!(gitlab_out.status.code(), Some(1));
+    let gitlab: Value = serde_json::from_slice(&gitlab_out.stdout).unwrap();
+    let sevs: std::collections::BTreeMap<String, String> = gitlab
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["check_name"].as_str().unwrap().into(),
+                e["severity"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        sevs,
+        std::collections::BTreeMap::from([
+            ("P0".to_string(), "blocker".to_string()),
+            ("P1".to_string(), "critical".to_string()),
+            ("P2".to_string(), "major".to_string()),
+            ("P3".to_string(), "minor".to_string()),
+        ])
+    );
+    assert!(
+        gitlab
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["fingerprint"].as_str().is_some_and(|f| f.len() == 64))
+    );
+
+    let github_out = merge("github");
+    assert_eq!(github_out.status.code(), Some(1));
+    let github = stdout(&github_out);
+    assert!(
+        github.contains("::error file=src/a.rs,line=10,title=P0 (codex/sol)::"),
+        "{github}"
+    );
+    assert!(
+        github.contains("::warning file=src/b.rs,line=20"),
+        "{github}"
+    );
+    assert!(
+        github.contains("::notice file=src/d.rs,line=40"),
+        "{github}"
+    );
+}
+
+#[test]
 fn merge_without_quorum_is_incomplete_and_text_needs_a_member() {
     let s = Scratch::new(10.0, 20.0);
     let path = s.dir.path().join("clean.json");
