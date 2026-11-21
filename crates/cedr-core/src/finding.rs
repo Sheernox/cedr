@@ -79,6 +79,37 @@ impl Rule {
             Rule::Cv005 => "CV005",
         }
     }
+
+    /// Short description for SARIF rule metadata; the full definitions are in the contracts.
+    pub fn description(self) -> &'static str {
+        match self {
+            Rule::Cs001 => "Generated file differs from what cedr sync would write",
+            Rule::Cs002 => "Generated file was edited by hand",
+            Rule::Cs003 => "Generated file is missing",
+            Rule::Cs004 => "Invalid Sync source",
+            Rule::Cs005 => "Sync could not read or compare the Guard lock or MCP config",
+            Rule::Cs101 => "MCP server matches a banned server pattern",
+            Rule::Cs102 => "Unrestricted shell allowed while the organization forbids it",
+            Rule::Cs103 => "Unpinned MCP server while the organization requires pinned servers",
+            Rule::Cs104 => "Required organization skill is missing or was changed",
+            Rule::Cs105 => "Required target is not configured",
+            Rule::Cg001 => "Instruction file references a missing npm script",
+            Rule::Cg002 => "Relative markdown link target does not exist",
+            Rule::Cg003 => "CLAUDE.md or GEMINI.md differs from AGENTS.md",
+            Rule::Cg004 => "SKILL.md frontmatter is missing or invalid",
+            Rule::Cg005 => "Hidden Unicode in an instruction or skill file",
+            Rule::Cg006 => "Unpinned MCP server",
+            Rule::Cg007 => "Broad agent permissions",
+            Rule::Cg008 => "Remote MCP server over plain http",
+            Rule::Cg009 => "Suspicious pattern matched in a skill",
+            Rule::Cg010 => "Skill directory links outside the repo root",
+            Rule::Cv001 => "Pinned content changed",
+            Rule::Cv002 => "Skill or MCP server added since the pin",
+            Rule::Cv003 => "Skill or MCP server removed since the pin",
+            Rule::Cv004 => "MCP server source changed since the pin",
+            Rule::Cv005 => "MCP server launch changed since the pin",
+        }
+    }
 }
 
 /// Lint rules, in order; `.cedr/guard.toml` may name only these.
@@ -166,6 +197,15 @@ impl Report {
 
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).expect("findings serialize")
+    }
+    /// SARIF 2.1.0 for code-scanning uploads; see [`crate::report`].
+    pub fn to_sarif(&self) -> String {
+        crate::report::sarif(&crate::report::from_report(self), env!("CARGO_PKG_VERSION"))
+    }
+
+    /// GitLab Code Quality JSON; see [`crate::report`].
+    pub fn to_gitlab(&self) -> String {
+        crate::report::gitlab(&crate::report::from_report(self))
     }
 
     /// One finding per line: `path:line rule severity message`.

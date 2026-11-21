@@ -133,7 +133,7 @@ It refuses to run when `.cedr/sync.toml` exists. It writes sources only; run `ce
 
 ## Check: `cedr sync check`
 
-`cedr sync check [PATH] [--format text|json|github]` never touches the network and never writes. Findings from compilation or organization rules fail the check (exit 1). Guard pin warnings are advisory. Findings use Guard's lint JSON shape and `--format github` annotations ([design.md](design.md), Lint rules):
+`cedr sync check [PATH] [--format text|json|github|sarif|gitlab]` never touches the network and never writes. Findings from compilation or organization rules fail the check (exit 1). Guard pin warnings are advisory. Findings use Guard's lint JSON shape, `--format github` annotations and the SARIF and GitLab shapes ([design.md](design.md), Lint rules):
 
 | ID | Severity | Finds |
 |---|---|---|

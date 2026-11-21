@@ -224,6 +224,7 @@ pub struct Ci {
 #[serde(rename_all = "lowercase")]
 pub enum CiProvider {
     Github,
+    Gitlab,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

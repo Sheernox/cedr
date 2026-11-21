@@ -280,7 +280,7 @@ pub fn run(command: CompareCommand) -> Result<ExitCode, String> {
     }
 }
 
-/// Captures repository identity and GitHub run context, never a remote URL or checkout path.
+/// Captures repository identity and CI run context, never a remote URL or checkout path.
 fn source(flag: Option<&str>, root: Option<&Path>) -> Source {
     let valid = |name: String| {
         (!name.split('/').any(|part| matches!(part, "." | "..")))
@@ -288,11 +288,18 @@ fn source(flag: Option<&str>, root: Option<&Path>) -> Source {
             .flatten()
     };
     let github = std::env::var("GITHUB_ACTIONS").is_ok_and(|v| v == "true");
+    let gitlab = std::env::var("GITLAB_CI").is_ok_and(|v| v == "true");
     let repo = flag
         .map(str::to_owned)
         .or_else(|| {
             github
                 .then(|| std::env::var("GITHUB_REPOSITORY").ok())
+                .flatten()
+                .and_then(valid)
+        })
+        .or_else(|| {
+            gitlab
+                .then(|| std::env::var("CI_PROJECT_PATH").ok())
                 .flatten()
                 .and_then(valid)
         })
@@ -311,7 +318,10 @@ fn source(flag: Option<&str>, root: Option<&Path>) -> Source {
             remote_repo(remote.trim()).and_then(valid)
         })
         .or_else(|| common::repo_name(None, root?).ok().and_then(valid));
-    let ci = github.then(github_ci).flatten();
+    let ci = github
+        .then(github_ci)
+        .flatten()
+        .or_else(|| gitlab.then(gitlab_ci).flatten());
     Source {
         repo,
         root_commit: root.and_then(root_commit),
@@ -396,25 +406,33 @@ fn current_repo(flag: Option<&str>) -> Result<Source, String> {
     Ok(source)
 }
 
+/// A CI link worth keeping: https, a host, and no credentials, query or fragment, so an
+/// environment value can never smuggle a token into a saved or pushed result.
+fn clean_https_url(raw: &str) -> Option<()> {
+    let url = reqwest::Url::parse(raw).ok()?;
+    (url.scheme() == "https"
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none())
+    .then_some(())
+}
+
 fn github_ci() -> Option<Ci> {
-    let server = std::env::var("GITHUB_SERVER_URL").ok()?;
-    let repo = std::env::var("GITHUB_REPOSITORY").ok()?;
-    let run = std::env::var("GITHUB_RUN_ID").ok()?;
+    github_ci_from(|k| std::env::var(k).ok())
+}
+
+fn github_ci_from(get: impl Fn(&str) -> Option<String>) -> Option<Ci> {
+    let server = get("GITHUB_SERVER_URL")?;
+    let repo = get("GITHUB_REPOSITORY")?;
+    let run = get("GITHUB_RUN_ID")?;
     if server.is_empty() || repo.is_empty() || run.is_empty() {
         return None;
     }
     let run_url = format!("{}/{repo}/actions/runs/{run}", server.trim_end_matches('/'));
-    let url = reqwest::Url::parse(&run_url).ok()?;
-    if url.scheme() != "https"
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return None;
-    }
-    let pr = std::env::var("GITHUB_REF").ok().and_then(|r| {
+    clean_https_url(&run_url)?;
+    let pr = get("GITHUB_REF").and_then(|r| {
         let number = r.strip_prefix("refs/pull/")?.strip_suffix("/merge")?;
         (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
             .then(|| number.parse().ok())
@@ -422,6 +440,37 @@ fn github_ci() -> Option<Ci> {
     });
     Some(Ci {
         provider: CiProvider::Github,
+        pr,
+        run_url,
+    })
+}
+
+fn gitlab_ci() -> Option<Ci> {
+    gitlab_ci_from(|k| std::env::var(k).ok())
+}
+
+/// GitLab CI provenance from its predefined variables only. `CI_JOB_URL` is the run URL; it must
+/// sit under `$CI_SERVER_URL/$CI_PROJECT_PATH/` or it is dropped, as is any non-https URL.
+fn gitlab_ci_from(get: impl Fn(&str) -> Option<String>) -> Option<Ci> {
+    let server = get("CI_SERVER_URL")?;
+    let project = get("CI_PROJECT_PATH")?;
+    let run_url = get("CI_JOB_URL")?;
+    if server.is_empty() || project.is_empty() || run_url.is_empty() {
+        return None;
+    }
+    clean_https_url(&server)?;
+    clean_https_url(&run_url)?;
+    let prefix = format!("{}/{project}/", server.trim_end_matches('/'));
+    if !run_url.starts_with(&prefix) {
+        return None;
+    }
+    let pr = get("CI_MERGE_REQUEST_IID").and_then(|n| {
+        (!n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| n.parse().ok())
+            .flatten()
+    });
+    Some(Ci {
+        provider: CiProvider::Gitlab,
         pr,
         run_url,
     })
@@ -1120,6 +1169,95 @@ fn print_result(result: &CompareResult, format: Format) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gitlab_ci_keeps_only_https_job_urls_under_the_project() {
+        let env = |pairs: &[(&str, &str)]| {
+            let map: std::collections::HashMap<String, String> = pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            move |k: &str| map.get(k).cloned()
+        };
+        let good = gitlab_ci_from(env(&[
+            ("CI_SERVER_URL", "https://gitlab.example.com"),
+            ("CI_PROJECT_PATH", "group/proj"),
+            (
+                "CI_JOB_URL",
+                "https://gitlab.example.com/group/proj/-/jobs/42",
+            ),
+            ("CI_MERGE_REQUEST_IID", "7"),
+        ]))
+        .expect("gitlab ci");
+        assert!(matches!(good.provider, CiProvider::Gitlab));
+        assert_eq!(good.pr, Some(7));
+        assert_eq!(
+            good.run_url,
+            "https://gitlab.example.com/group/proj/-/jobs/42"
+        );
+        // An http job URL is dropped, not kept or upgraded.
+        assert!(
+            gitlab_ci_from(env(&[
+                ("CI_SERVER_URL", "https://gitlab.example.com"),
+                ("CI_PROJECT_PATH", "group/proj"),
+                (
+                    "CI_JOB_URL",
+                    "http://gitlab.example.com/group/proj/-/jobs/42"
+                ),
+            ]))
+            .is_none()
+        );
+        // A job URL outside the project, credentials, a query, and a non-numeric MR id.
+        assert!(
+            gitlab_ci_from(env(&[
+                ("CI_SERVER_URL", "https://gitlab.example.com"),
+                ("CI_PROJECT_PATH", "group/proj"),
+                (
+                    "CI_JOB_URL",
+                    "https://gitlab.example.com/other/proj/-/jobs/42"
+                ),
+            ]))
+            .is_none()
+        );
+        assert!(
+            gitlab_ci_from(env(&[
+                ("CI_SERVER_URL", "https://gitlab.example.com"),
+                ("CI_PROJECT_PATH", "group/proj"),
+                (
+                    "CI_JOB_URL",
+                    // Built in two parts so the literal never reads as an address.
+                    concat!(
+                        "https://user:token",
+                        "@",
+                        "gitlab.example.com/group/proj/-/jobs/42"
+                    )
+                ),
+            ]))
+            .is_none()
+        );
+        assert!(
+            gitlab_ci_from(env(&[
+                ("CI_SERVER_URL", "https://gitlab.example.com"),
+                ("CI_PROJECT_PATH", "group/proj"),
+                (
+                    "CI_JOB_URL",
+                    "https://gitlab.example.com/group/proj/-/jobs/42?token=x"
+                ),
+            ]))
+            .is_none()
+        );
+        let no_mr = gitlab_ci_from(env(&[
+            ("CI_SERVER_URL", "https://gitlab.example.com"),
+            ("CI_PROJECT_PATH", "group/proj"),
+            (
+                "CI_JOB_URL",
+                "https://gitlab.example.com/group/proj/-/jobs/42",
+            ),
+            ("CI_MERGE_REQUEST_IID", "x7"),
+        ]))
+        .expect("ci without mr");
+        assert_eq!(no_mr.pr, None);
+    }
 
     #[test]
     fn outgoing_machine_name_removes_controls_before_clipping() {

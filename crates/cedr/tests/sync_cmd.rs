@@ -207,6 +207,57 @@ fn reports_source_drift_edits_missing_and_invalid_config() {
     assert!(cedr_sync::check(d.path()).to_text().contains("CS004"));
 }
 #[test]
+fn sync_check_sarif_and_gitlab_report_drift() {
+    let d = fixture();
+    let p = cedr_sync::plan(d.path()).unwrap();
+    cedr_sync::apply(d.path(), &p, false).unwrap();
+    fs::write(
+        d.path().join(".cedr/rules/10-style.md"),
+        "Use narrower types.\n",
+    )
+    .unwrap();
+    for format in ["sarif", "gitlab"] {
+        let out = run(d.path(), &["sync", "check", "--format", format]);
+        assert_eq!(out.status.code(), Some(1), "{format}");
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let found = if format == "sarif" {
+            assert_eq!(doc["runs"][0]["tool"]["driver"]["name"], "cedr");
+            doc["runs"][0]["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["ruleId"] == "CS001" && r["level"] == "error")
+        } else {
+            doc.as_array().unwrap().iter().any(|e| {
+                e["check_name"] == "CS001"
+                    && e["severity"] == "major"
+                    && e["fingerprint"].as_str().is_some_and(|f| f.len() == 64)
+            })
+        };
+        assert!(found, "{format}: {doc}");
+    }
+    // Clean check passes in both formats.
+    fs::write(
+        d.path().join(".cedr/rules/10-style.md"),
+        "Use precise types.\n",
+    )
+    .ok();
+    let p = cedr_sync::plan(d.path()).unwrap();
+    cedr_sync::apply(d.path(), &p, false).unwrap();
+    let clean = run(d.path(), &["sync", "check", "--format", "gitlab"]);
+    assert_eq!(
+        clean.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&clean.stdout)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&clean.stdout).unwrap(),
+        json!([])
+    );
+}
+
+#[test]
 fn merge_preserves_foreign_keys_order_and_toml_comments() {
     let d = fixture();
     fs::create_dir_all(d.path().join(".codex")).unwrap();

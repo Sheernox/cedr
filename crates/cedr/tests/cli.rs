@@ -294,6 +294,114 @@ fn verify_passes_then_reports_each_kind_of_drift() {
 }
 
 #[test]
+fn lint_and_verify_sarif_and_gitlab_keep_exit_codes() {
+    // Lint: repo-bad has error and warning findings.
+    let bad = scratch("repo-bad");
+    let sarif_out = cedr(&["guard", "lint", path_str(bad.path()), "--format", "sarif"]);
+    assert_eq!(code(&sarif_out), 1);
+    let sarif = stdout_json(&sarif_out);
+    assert_eq!(sarif["version"], "2.1.0");
+    assert_eq!(sarif["runs"][0]["tool"]["driver"]["name"], "cedr");
+    let results = sarif["runs"][0]["results"].as_array().unwrap();
+    assert!(!results.is_empty());
+    let levels: BTreeSet<&str> = results
+        .iter()
+        .map(|r| r["level"].as_str().unwrap())
+        .collect();
+    assert_eq!(levels, BTreeSet::from(["error", "warning"]));
+    let rule_ids: BTreeSet<&str> = sarif["runs"][0]["tool"]["driver"]["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        results
+            .iter()
+            .all(|r| rule_ids.contains(r["ruleId"].as_str().unwrap()))
+    );
+    assert!(results.iter().all(|r| {
+        r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+            .as_str()
+            .is_some_and(|u| !u.starts_with('/'))
+    }));
+
+    let gitlab_out = cedr(&["guard", "lint", path_str(bad.path()), "--format", "gitlab"]);
+    assert_eq!(code(&gitlab_out), 1);
+    let gitlab = stdout_json(&gitlab_out);
+    let entries = gitlab.as_array().unwrap();
+    assert_eq!(entries.len(), results.len());
+    assert!(
+        entries
+            .iter()
+            .all(|e| e["fingerprint"].as_str().is_some_and(|f| f.len() == 64))
+    );
+    let sevs: BTreeSet<&str> = entries
+        .iter()
+        .map(|e| e["severity"].as_str().unwrap())
+        .collect();
+    assert_eq!(sevs, BTreeSet::from(["major", "minor"]));
+
+    // Clean lint: both machine formats are empty but well-formed, exit 0.
+    let good = scratch("repo-good");
+    let clean = cedr(&["guard", "lint", path_str(good.path()), "--format", "sarif"]);
+    assert_eq!(code(&clean), 0);
+    assert_eq!(
+        stdout_json(&clean)["runs"][0]["results"],
+        Value::Array(vec![])
+    );
+    assert_eq!(
+        stdout_json(&cedr(&[
+            "guard",
+            "lint",
+            path_str(good.path()),
+            "--format",
+            "gitlab"
+        ])),
+        Value::Array(vec![])
+    );
+
+    // Verify: drift after a lock is an error finding in both formats.
+    let repo = scratch("repo-good");
+    let root = repo.path();
+    assert_eq!(code(&cedr(&["lock", path_str(root), "--offline"])), 0);
+    fs::write(
+        root.join(".agents/skills/deploy/scripts/deploy.sh"),
+        "#!/bin/sh\nchanged\n",
+    )
+    .unwrap();
+    for format in ["sarif", "gitlab"] {
+        let out = cedr(&["guard", "verify", path_str(root), "--format", format]);
+        assert_eq!(code(&out), 1, "{format}");
+        let doc = stdout_json(&out);
+        let found = if format == "sarif" {
+            doc["runs"][0]["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["ruleId"] == "CV001" && r["level"] == "error")
+        } else {
+            doc.as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["check_name"] == "CV001" && e["severity"] == "major")
+        };
+        assert!(found, "{format}: {doc}");
+    }
+    // Outdated is not a finding command: sarif stays a usage error there.
+    assert_eq!(
+        code(&cedr(&[
+            "guard",
+            "outdated",
+            path_str(root),
+            "--format",
+            "sarif"
+        ])),
+        2
+    );
+}
+
+#[test]
 fn verify_accepts_resolved_unpinned_packages_but_rejects_source_changes() {
     let repo = tempfile::tempdir().unwrap();
     let config = repo.path().join(".mcp.json");

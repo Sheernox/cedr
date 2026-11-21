@@ -109,6 +109,11 @@ impl Repo {
             .env_remove("GITHUB_SERVER_URL")
             .env_remove("GITHUB_RUN_ID")
             .env_remove("GITHUB_REF")
+            .env_remove("GITLAB_CI")
+            .env_remove("CI_SERVER_URL")
+            .env_remove("CI_PROJECT_PATH")
+            .env_remove("CI_JOB_URL")
+            .env_remove("CI_MERGE_REQUEST_IID")
             .env(
                 "PATH",
                 format!(

@@ -264,6 +264,18 @@ The cedr action installs a released `cedr` (checked against the release's `SHA25
 
 Replace `vX.Y.Z` with the [latest release](https://github.com/Sheernox/cedr/releases/latest). A pinned tag means your CI changes only when you choose.
 
+On GitLab CI, run the CLI directly and publish its Code Quality report so findings appear in the merge request (install `cedr` first, as above; `cedr guard lint --format sarif` works the same way for SARIF viewers):
+
+```yaml
+cedr:
+  script:
+    - cedr guard lint . --format gitlab > cedr-codequality.json
+  artifacts:
+    when: always
+    reports:
+      codequality: cedr-codequality.json
+```
+
 Inputs: `version`, `path`, `strict`, `verify` (`auto`, `true` or `false`), `sync`, `sync-fix`, `outdated` (default `true`, annotations never fail the job) and `push-org`, which with a `CEDR_API_KEY` secret also sends each result and npm updates to the app. Repo-level settings, such as extra skill folders and checks to skip, go in `.cedr/guard.toml`. See the [Guard design](docs/design.md) for every field.
 
 ## 🔌 Use it from your agent

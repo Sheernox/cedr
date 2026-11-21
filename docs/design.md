@@ -112,7 +112,7 @@ Findings never show a URL's user info, query or fragment, and show a `command:` 
 | CG009 | per pattern | A ported SkillSpector pattern matched in a skill directory; SkillSpector high maps to error, medium and low to warning, and the message keeps the original severity |
 | CG010 | error | A skill directory that links outside the repo root (it is skipped, not read) |
 
-`cedr guard lint [PATH] [--format text|json|github] [--strict]`. With no findings, text output is one line, `cedr: no findings in <n> instruction files, <n> skills and <n> MCP servers`; JSON and GitHub output keep their shapes. Exit 0 when clean, 1 when any error is found (or any warning with `--strict`), 2 on usage or I/O failure.
+`cedr guard lint [PATH] [--format text|json|github|sarif|gitlab] [--strict]`. With no findings, text output is one line, `cedr: no findings in <n> instruction files, <n> skills and <n> MCP servers`; the machine formats keep their shapes (empty results in SARIF, `[]` in GitLab). Exit 0 when clean, 1 when any error is found (or any warning with `--strict`), 2 on usage or I/O failure.
 
 `--format github` (lint and verify) prints one GitHub Actions workflow command per finding, `::error file=<path>,line=<line>,title=<rule>::<message>` (`::warning` for warnings; `line=` omitted when `line` is null), so findings show as annotations on the pull request. Values are escaped as the runner expects: `%` `\r` `\n` as `%25` `%0D` `%0A` in the message, and additionally `:` and `,` as `%3A` and `%2C` in properties. Diagnostics on stderr escape control characters in repo paths, so no repo content starts a workflow command. A last line `cedr: <n> errors, <m> warnings` follows on stdout.
 
@@ -123,6 +123,10 @@ Findings never show a URL's user info, query or fragment, and show a `command:` 
 ```
 
 Paths are relative to the scanned root with `/` separators; `line` is 1-based or `null`.
+
+`--format sarif` (lint, verify and `cedr sync check`) prints SARIF 2.1.0 (`$schema`, `version` "2.1.0", one run) for upload to GitHub code scanning or any SARIF viewer. The tool driver is `cedr` with the CLI version and one rule per finding kind (`id`, `name` and a short description). Each result has `ruleId`, `ruleIndex`, `level` (`error` or `warning` from the finding severity; Council can also emit `note`, see [council.md](council.md)), `message.text` and, when a path is known, a physical location whose `artifactLocation.uri` is relative to the scanned root, with `region.startLine` when a line is known.
+
+`--format gitlab` (the same commands) prints a GitLab Code Quality report: a JSON array of `{description, check_name, fingerprint, severity, location: {path, lines: {begin}}}`. Guard and Sync map `error` to `major` and `warning` to `minor`. `fingerprint` is the SHA-256 hex of rule, path, line and message joined by NUL bytes. When no line is known, `begin` is 1 because GitLab requires one. Both formats share the text and JSON exit codes; the format never changes whether a command passes.
 
 ## Surface
 
@@ -207,7 +211,7 @@ egress = ["api.github.com"]
 - Extracts npm surfaces statically. `--offline` skips the network and records `method = "none"`.
 - `--introspect` runs each stdio server with its configured command and a cleared environment holding only `PATH`, `HOME` and the configured env, calls `initialize` and `tools/list` with a 20-second timeout, and uses that surface (`method = "introspect"`). Egress and capabilities still come from static extraction when the package could be fetched. It prints a warning first: this executes the configured servers.
 
-`cedr guard verify [PATH] [--format text|json|github]` never touches the network. It fails (exit 1) when a skill's content hash differs, a skill or server was added or removed, or a server's source or launch changed. Findings use the lint JSON shape with rules `CV001` (content changed), `CV002` (added), `CV003` (removed), `CV004` (source changed) and `CV005` (launch changed: command, arguments, env keys or URL). Env values are never hashed or stored, only their keys.
+`cedr guard verify [PATH] [--format text|json|github|sarif|gitlab]` never touches the network. It fails (exit 1) when a skill's content hash differs, a skill or server was added or removed, or a server's source or launch changed. Findings use the lint JSON shape with rules `CV001` (content changed), `CV002` (added), `CV003` (removed), `CV004` (source changed) and `CV005` (launch changed: command, arguments, env keys or URL). Env values are never hashed or stored, only their keys.
 
 ## Remote servers
 

@@ -17,6 +17,7 @@ mod npm;
 pub mod outdated;
 mod patterns;
 pub mod remote;
+pub mod report;
 pub mod risk;
 pub mod skill;
 pub mod source;

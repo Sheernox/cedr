@@ -1,5 +1,5 @@
 //! Sync CLI, online pull and privacy-bounded inventory push.
-use crate::{ReportFormat, common};
+use crate::{FindingFormat, common};
 use clap::{Args as ClapArgs, Subcommand};
 use serde_json::{Value, json};
 use std::{path::PathBuf, process::ExitCode};
@@ -33,9 +33,9 @@ enum Command {
         /// Repository root
         #[arg(default_value = ".")]
         path: PathBuf,
-        /// Output text, JSON or GitHub annotations
-        #[arg(long,value_enum,default_value_t=ReportFormat::Text)]
-        format: ReportFormat,
+        /// Output text, JSON, GitHub annotations, SARIF or a GitLab Code Quality report
+        #[arg(long,value_enum,default_value_t=FindingFormat::Text)]
+        format: FindingFormat,
     },
     /// Vendor organization rules from the app
     Pull(Online),

@@ -69,7 +69,18 @@ enum Format {
     Json,
 }
 
-/// Formats for lint and verify findings; `github` prints workflow annotations.
+/// Formats for lint, verify and sync check findings; `github` prints workflow annotations,
+/// `sarif` prints SARIF 2.1.0 and `gitlab` prints a GitLab Code Quality report.
+#[derive(Clone, Copy, ValueEnum)]
+enum FindingFormat {
+    Text,
+    Json,
+    Github,
+    Sarif,
+    Gitlab,
+}
+
+/// Formats for outdated updates, which are not findings.
 #[derive(Clone, Copy, ValueEnum)]
 enum ReportFormat {
     Text,
@@ -175,9 +186,9 @@ enum GuardCommand {
     Lint {
         #[arg(default_value = ".")]
         path: PathBuf,
-        /// github prints GitHub Actions annotations
-        #[arg(long, value_enum, default_value_t = ReportFormat::Text)]
-        format: ReportFormat,
+        /// github prints GitHub Actions annotations, sarif SARIF 2.1.0, gitlab a GitLab Code Quality report
+        #[arg(long, value_enum, default_value_t = FindingFormat::Text)]
+        format: FindingFormat,
         /// Fail on warnings too
         #[arg(long)]
         strict: bool,
@@ -200,9 +211,9 @@ enum GuardCommand {
     Verify {
         #[arg(default_value = ".")]
         path: PathBuf,
-        /// github prints GitHub Actions annotations
-        #[arg(long, value_enum, default_value_t = ReportFormat::Text)]
-        format: ReportFormat,
+        /// github prints GitHub Actions annotations, sarif SARIF 2.1.0, gitlab a GitLab Code Quality report
+        #[arg(long, value_enum, default_value_t = FindingFormat::Text)]
+        format: FindingFormat,
     },
     /// Inspect newer npm server versions without installing or running packages
     Outdated {
@@ -376,7 +387,7 @@ fn run(command: GuardCommand) -> cedr_core::Result<ExitCode> {
             let report = lint::lint_workspace(&ws)?;
             print_report(&report, format);
             // An empty text report would print nothing; say what was checked instead.
-            if report.is_empty() && matches!(format, ReportFormat::Text) {
+            if report.is_empty() && matches!(format, FindingFormat::Text) {
                 println!(
                     "cedr: no findings in {} instruction files, {} skills and {} MCP servers",
                     ws.instructions.len(),
@@ -641,11 +652,13 @@ fn lint_failed(report: &Report, strict: bool) -> bool {
     report.has_errors() || (strict && !report.is_empty())
 }
 
-fn print_report(report: &Report, format: ReportFormat) {
+fn print_report(report: &Report, format: FindingFormat) {
     match format {
-        ReportFormat::Json => println!("{}", report.to_json()),
-        ReportFormat::Text => print!("{}", report.to_text()),
-        ReportFormat::Github => print!("{}", report.to_github()),
+        FindingFormat::Json => println!("{}", report.to_json()),
+        FindingFormat::Text => print!("{}", report.to_text()),
+        FindingFormat::Github => print!("{}", report.to_github()),
+        FindingFormat::Sarif => println!("{}", report.to_sarif()),
+        FindingFormat::Gitlab => println!("{}", report.to_gitlab()),
     }
 }
 
