@@ -171,7 +171,7 @@ A surface is what a server exposes to a model, as one JSON document. It is store
 | `tool_added`, `schema_changed` | medium |
 | `tool_removed`, `egress_removed`, `capability_removed` | low |
 
-`detail` is the host or capability for egress and capability changes, the new description or schema for `description_changed` and `schema_changed`, and the tool's description for `tool_added` and `tool_removed` (empty when there is none). `before` is the old description or schema for `description_changed` and `schema_changed` (empty string when there was none) and `null` for every other kind; text output prints it on a `was:` line under the change.
+`detail` is the host or capability for egress and capability changes, the new description or schema for `description_changed` and `schema_changed`, and the tool's description for `tool_added` and `tool_removed` (empty when there is none). `before` is the old description or schema for `description_changed` and `schema_changed` (empty string when there was none) and `null` for every other kind. For `description_changed`, both strings contain at most 1024 Unicode characters. The full new description determines severity. The text output of diff, outdated and remote displays the old description under `before:` and then the new description under `after:`. Diff shows the old schema on a `was:` line.
 
 Changes are ordered by severity (high first), then kind name alphabetically, then tool.
 
@@ -229,7 +229,7 @@ A remote check requires the current server configuration to match the pinned lau
 2. When it is newer than the locked version (semver; an unpinned entry compares the version it resolved to), extract the newer version's surface statically (as `cedr guard surface`) and diff it against the locked surface (as `cedr guard diff`; an entry locked with `method = "none"` reports the version alone).
 3. Report one update per server: `{"client", "name", "source", "latest", "severity", "changes": [<diff changes>]}`, where `severity` is the highest change's (`none` when the surfaces match).
 
-Other sources (`pypi:`, `oci:`, `command:`, `url:`) are listed as `not checked` in text output and left out of JSON. A registry or network failure for one server is a warning naming the server, never a failure of the run. JSON output is `{"version": 1, "updates": [...]}`; `--format github` prints one `::warning` per update (`::error` for high). Exit 0, or 1 when an update reaches `--fail-on` (default `never`), 2 on usage or I/O failure.
+Other sources (`pypi:`, `oci:`, `command:`, `url:`) are listed as `not checked` in text output and left out of JSON. A registry or network failure for one server is a warning naming the server, never a failure of the run. JSON output is `{"version": 1, "updates": [...]}`; `--format github` prints one summary `::warning` per update (`::error` for high), without tool descriptions. Exit 0, or 1 when an update reaches `--fail-on` (default `never`), 2 on usage or I/O failure.
 
 Existing locks with URL credentials verify after normalization but warn to re-lock and rotate those credentials, which may remain in Git history. Older clients may report CV004 on a newly redacted URL source. Skills containing symlinks must be re-locked once to adopt the type tag; regular-file-only skill pins remain valid.
 

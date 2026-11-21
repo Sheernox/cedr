@@ -82,6 +82,10 @@ impl Report {
                 u.changes.len()
             ));
             for c in &u.changes {
+                if let Some(comparison) = c.description_comparison("  ") {
+                    out.push_str(&comparison);
+                    continue;
+                }
                 out.push_str(&format!(
                     "  {} {}{}: {}\n",
                     c.severity.as_str(),
@@ -334,15 +338,21 @@ mod tests {
         )
         .unwrap();
         assert!(!same.tools.is_empty());
-        let empty = Surface::new(
+        let mut older_tools = same.tools.clone();
+        older_tools
+            .iter_mut()
+            .find(|tool| tool.name == "get_weather")
+            .unwrap()
+            .description = Some("Previous forecast description".into());
+        let older = Surface::new(
             "npm:changed@1.0.0".into(),
             Method::Static,
             None,
-            vec![],
-            vec![],
-            vec![],
+            older_tools,
+            same.egress.clone(),
+            same.capabilities.clone(),
         );
-        for (name, s) in [("same", &same), ("changed", &empty)] {
+        for (name, s) in [("same", &same), ("changed", &older)] {
             fs::write(
                 root.path()
                     .join(lock::SURFACE_DIR)
@@ -376,7 +386,12 @@ mod tests {
         assert_eq!(report.warnings.len(), 1);
         assert!(report.warnings[0].contains("copilot.broken"));
         assert!(report.warnings[0].contains("503"));
-        assert!(report.to_text().contains("copilot.local: not checked"));
+        let text = report.to_text();
+        assert!(text.contains("copilot.local: not checked"));
+        assert!(text.contains(
+            "    before: Previous forecast description\n    after:  Get the current weather"
+        ));
+        assert!(!report.to_github().contains("Previous forecast description"));
         let json: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
         assert_eq!(json.as_object().unwrap().len(), 2);
         assert_eq!(json["version"], 1);
@@ -384,7 +399,15 @@ mod tests {
         assert_eq!(u.as_object().unwrap().len(), 6);
         assert_eq!(u["source"], "npm:changed@1.0.0");
         assert_eq!(u["latest"], "npm:changed@1.1.0");
-        assert!(u["changes"].is_array());
+        let change = &u["changes"][0];
+        assert_eq!(change["kind"], "description_changed");
+        assert_eq!(change["before"], "Previous forecast description");
+        assert!(
+            change["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("Get the current weather")
+        );
     }
 
     #[test]

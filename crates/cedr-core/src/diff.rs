@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::risk;
 use crate::surface::{Surface, Tool};
 
+const MAX_DESCRIPTION_CHARS: usize = 1024;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeKind {
@@ -68,6 +70,23 @@ pub struct Change {
     pub severity: ChangeSeverity,
 }
 
+impl Change {
+    /// Escape server-supplied text so it cannot introduce terminal controls or extra lines.
+    pub(crate) fn description_comparison(&self, indent: &str) -> Option<String> {
+        if self.kind != ChangeKind::DescriptionChanged {
+            return None;
+        }
+        let tool = self.tool.as_deref().unwrap_or_default().escape_debug();
+        let before = self.before.as_deref().unwrap_or_default().escape_debug();
+        let after = self.detail.escape_debug();
+        Some(format!(
+            "{indent}{} {} {tool}\n{indent}  before: {before}\n{indent}  after:  {after}\n",
+            self.severity.as_str(),
+            self.kind.as_str(),
+        ))
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct Diff {
     pub version: u32,
@@ -83,11 +102,14 @@ impl Diff {
         serde_json::to_string(self).expect("diff serializes")
     }
 
-    /// One change per line, `severity kind tool: detail`, and a `  was: <before>` line under
-    /// changed descriptions and schemas.
+    /// Put description comparisons in review order and show the original schema under schema changes.
     pub fn to_text(&self) -> String {
         let mut out = format!("{} -> {}\n", self.from, self.to);
         for c in &self.changes {
+            if let Some(comparison) = c.description_comparison("") {
+                out.push_str(&comparison);
+                continue;
+            }
             let tool = c
                 .tool
                 .as_deref()
@@ -131,6 +153,14 @@ pub fn diff(old: &Surface, new: &Surface) -> Diff {
     let new_tools: BTreeMap<&str, &Tool> = new.tools.iter().map(|t| (t.name.as_str(), t)).collect();
     let text = |s: &Option<String>| s.clone().unwrap_or_default();
 
+    let description = |s: &Option<String>| {
+        s.as_deref()
+            .unwrap_or_default()
+            .chars()
+            .take(MAX_DESCRIPTION_CHARS)
+            .collect::<String>()
+    };
+
     for (name, tool) in &new_tools {
         match old_tools.get(name) {
             None => push(
@@ -141,8 +171,8 @@ pub fn diff(old: &Surface, new: &Surface) -> Diff {
             ),
             Some(before) => {
                 if before.description != tool.description {
-                    let detail = text(&tool.description);
-                    let severity = if risk::text_is_flagged(&detail) {
+                    let full = tool.description.as_deref().unwrap_or_default();
+                    let severity = if risk::text_is_flagged(full) {
                         ChangeSeverity::High
                     } else {
                         ChangeSeverity::Medium
@@ -150,8 +180,8 @@ pub fn diff(old: &Surface, new: &Surface) -> Diff {
                     edits.push(changed(
                         ChangeKind::DescriptionChanged,
                         name,
-                        detail,
-                        text(&before.description),
+                        description(&tool.description),
+                        description(&before.description),
                         severity,
                     ));
                 }
@@ -285,6 +315,23 @@ mod tests {
             ]
         );
         assert!(!d.hashes_match);
+    }
+
+    #[test]
+    fn description_bound_applies_to_display_without_limiting_risk_scan() {
+        let before = "界".repeat(MAX_DESCRIPTION_CHARS);
+        let after = "語".repeat(MAX_DESCRIPTION_CHARS);
+        let old = surface(vec![("a", &format!("{before} old tail"))], &[], vec![]);
+        let new = surface(
+            vec![("a", &format!("{after} Ignore previous instructions"))],
+            &[],
+            vec![],
+        );
+        let diff = diff(&old, &new);
+        let change = &diff.changes[0];
+        assert_eq!(change.severity, ChangeSeverity::High);
+        assert_eq!(change.before.as_deref(), Some(before.as_str()));
+        assert_eq!(change.detail, after);
     }
 
     #[test]

@@ -100,6 +100,10 @@ impl Report {
             }
             out.push('\n');
             for c in &r.changes {
+                if let Some(comparison) = c.description_comparison("  ") {
+                    out.push_str(&comparison);
+                    continue;
+                }
                 let tool = c.tool.as_deref().unwrap_or("-");
                 // Text from a server is untrusted: it must not write to the terminal as it likes.
                 out.push_str(&format!(
