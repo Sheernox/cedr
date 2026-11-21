@@ -276,7 +276,7 @@ cedr:
       codequality: cedr-codequality.json
 ```
 
-Inputs: `version`, `path`, `strict`, `verify` (`auto`, `true` or `false`), `sync`, `sync-fix`, `outdated` (default `true`, annotations never fail the job) and `push-org`, which with a `CEDR_API_KEY` secret also sends each result and npm updates to the app. Repo-level settings, such as extra skill folders and checks to skip, go in `.cedr/guard.toml`. See the [Guard design](docs/design.md) for every field.
+Inputs: `version`, `path`, `strict`, `verify` (`auto`, `true` or `false`), `sync`, `sync-fix`, `outdated` (default `true`, annotations never fail the job), `comment` (`true` keeps one sticky pull request comment with every result; it needs `pull-requests: write` and is skipped on forks) and `push-org`, which with a `CEDR_API_KEY` secret also sends each result and npm updates to the app. Repo-level settings, such as extra skill folders and checks to skip, go in `.cedr/guard.toml`. See the [Guard design](docs/design.md) for every field.
 
 ## 🔌 Use it from your agent
 

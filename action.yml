@@ -46,6 +46,9 @@ inputs:
   push-org:
     description: When set with the CEDR_API_KEY env, send Guard, Sync and saved Compare results to this cedr.dev organization (also when checks fail; a Compare send failure only warns)
     default: ""
+  comment:
+    description: "On a pull request, create or update one sticky comment with the Guard, Sync and Compare results; the workflow needs pull-requests: write. Skipped on forks and on other events"
+    default: "false"
 
 runs:
   using: composite
@@ -101,6 +104,7 @@ runs:
       shell: bash
       continue-on-error: true
       env:
+        INPUT_COMMENT: ${{ inputs.comment }}
         INPUT_PATH: ${{ inputs.path }}
         INPUT_STRICT: ${{ inputs.strict }}
       run: |
@@ -259,6 +263,24 @@ runs:
         fi
         # --org without --config reads no routes.toml from the checkout, so it cannot redirect the key.
         cedr push "$INPUT_PATH" --org "$INPUT_ORG" --repo "$GITHUB_REPOSITORY" --updates
+
+    - name: cedr pull request comment
+      if: ${{ always() && inputs.comment != 'false' }}
+      shell: bash
+      env:
+        INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_STRICT: ${{ inputs.strict }}
+        INPUT_VERIFY: ${{ inputs.verify }}
+        INPUT_SYNC: ${{ inputs.sync }}
+        INPUT_OUTDATED: ${{ inputs.outdated }}
+        COMMENT_EVENT: ${{ github.event_name }}
+        COMMENT_PR: ${{ github.event.pull_request.number }}
+        COMMENT_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        COMMENT_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+        COMPARE_REPORT: ${{ runner.temp }}/cedr-compare-report.txt
+        GH_TOKEN: ${{ github.token }}
+      run: bash "${{ github.action_path }}/scripts/pr-comment.sh"
 
     - name: Result
       if: ${{ always() }}
