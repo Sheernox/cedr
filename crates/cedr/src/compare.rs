@@ -539,13 +539,6 @@ fn push_machine_name(config: &config::Config) -> String {
 
 const MAX_PUSH_BYTES: usize = 256 * 1024;
 
-/// The app links GitHub Actions runs only, so other CI provenance stays in the saved result and is not pushed.
-fn pushed_ci(source: Option<&Source>) -> Option<&Ci> {
-    source
-        .and_then(|s| s.ci.as_ref())
-        .filter(|ci| matches!(ci.provider, CiProvider::Github))
-}
-
 fn push_body(
     result: &CompareResult,
     sync: &config::Sync,
@@ -568,7 +561,7 @@ fn push_body(
         .remove("source");
     let body = json!({
         "org": sync.org, "cli": env!("CARGO_PKG_VERSION"), "repo": repo,
-        "machine": machine, "ci": pushed_ci(result.source.as_ref()),
+        "machine": machine, "ci": result.source.as_ref().and_then(|s| s.ci.as_ref()),
         "result": saved,
     });
     if body.to_string().len() > MAX_PUSH_BYTES {
@@ -1213,22 +1206,6 @@ fn print_result(result: &CompareResult, format: Format) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_github_runs_are_pushed_as_ci_provenance() {
-        let source = |provider| Source {
-            repo: None,
-            root_commit: None,
-            ci: Some(Ci {
-                provider,
-                pr: Some(7),
-                run_url: "https://example.com/run".into(),
-            }),
-        };
-        assert!(pushed_ci(Some(&source(CiProvider::Github))).is_some());
-        assert!(pushed_ci(Some(&source(CiProvider::Gitlab))).is_none());
-        assert!(pushed_ci(None).is_none());
-    }
 
     #[test]
     fn gitlab_ci_keeps_only_https_job_urls_under_the_project() {
