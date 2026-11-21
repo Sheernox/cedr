@@ -78,7 +78,7 @@ paths = [".agents/skills/security-audit/**"]   # globs over the finding's path, 
 | Gemini CLI | `GEMINI.md` | `.gemini/skills/<name>/SKILL.md` | `.gemini/settings.json` (`mcpServers`; `httpUrl` is remote) | |
 | Copilot | `.github/copilot-instructions.md` | `.github/skills/<name>/SKILL.md` | `.vscode/mcp.json` (`servers`), `.github/mcp.json` (`mcpServers`) | |
 | opencode | | `.opencode/skills/<name>/SKILL.md` | `opencode.json` (`mcp`: `type` `local` with a `command` array, or `remote` with `url`) | |
-| Gemini | | | `.agents/mcp_config.json` (`mcpServers`; `serverUrl` is remote) | |
+| Antigravity | | | `.agents/mcp_config.json` (`mcpServers`; `serverUrl` is remote) | |
 | Grok | | `.grok/skills/<name>/SKILL.md` | `.grok/config.toml` (`[mcp_servers.<name>]`) | |
 
 Each JSON MCP file in this table must hold a JSON object: an array, scalar or `null` file is an error naming it (exit 2, and `cedr guard lock` writes nothing), while an object without the MCP section has no servers. Lint also requires `.claude/settings.json` to hold an object when it checks permissions; lock and verify do not read that permissions file. A server entry is stdio (`command`, `args`, `env`) or remote (`url`, `httpUrl`, `serverUrl`, or `type`/`transport` of `http`/`sse`). Clients are `claude`, `codex`, `cursor`, `gemini`, `copilot`, `opencode`, `antigravity` and `grok`. The same server name in two clients is two lock entries keyed by `client` and `name`.
@@ -207,7 +207,7 @@ egress = ["api.github.com"]
 - Extracts npm surfaces statically. `--offline` skips the network and records `method = "none"`.
 - `--introspect` runs each stdio server with its configured command and a cleared environment holding only `PATH`, `HOME` and the configured env, calls `initialize` and `tools/list` with a 20-second timeout, and uses that surface (`method = "introspect"`). Egress and capabilities still come from static extraction when the package could be fetched. It prints a warning first: this executes the configured servers.
 
-`cedr guard verify [PATH] [--format text|json|github]` never touches the network. It fails (exit 1) when a skill's content hash differs, a skill or server was added or removed, or a server's source changed. Findings use the lint JSON shape with rules `CV001` (content changed), `CV002` (added), `CV003` (removed), `CV004` (source changed) and `CV005` (launch changed: command, arguments, env keys or URL). Env values are never hashed or stored, only their keys.
+`cedr guard verify [PATH] [--format text|json|github]` never touches the network. It fails (exit 1) when a skill's content hash differs, a skill or server was added or removed, or a server's source or launch changed. Findings use the lint JSON shape with rules `CV001` (content changed), `CV002` (added), `CV003` (removed), `CV004` (source changed) and `CV005` (launch changed: command, arguments, env keys or URL). Env values are never hashed or stored, only their keys.
 
 ## Remote servers
 
