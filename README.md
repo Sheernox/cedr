@@ -98,9 +98,20 @@ cargo install --locked --git https://github.com/Sheernox/cedr cedr
 
 cedr keeps itself up to date: once a day it checks for a release in the background, verifies the archive against `SHA256SUMS` and replaces itself. `cedr update` updates right away, `cedr update --check` only reports, and `cedr update --auto off` (or `CEDR_NO_AUTO_UPDATE=1`) turns the daily update off. It never updates in CI, and a `cargo install` tells you to update with cargo instead. See [docs/update.md](docs/update.md).
 
-Run [`cedr init`](docs/onboarding.md#first-run-setup) for guided setup without an account. Use [`cedr status`](docs/onboarding.md#daily-status) to see local usage, pending verdicts and repo drift.
+## 🚀 Try it with no account
 
-## 🚀 Quick start with Route
+None of these needs an account, an API key or a config file:
+
+```sh
+cedr monitor limits        # each plan window: used, resets, outlook
+cedr monitor --since 7d    # a week of agent usage at API prices
+cedr guard lint            # problems in this repo's agent setup
+cedr sync init             # import this repo's agent files into .cedr/
+```
+
+Then run [`cedr init`](docs/onboarding.md#first-run-setup) for guided setup (starter routes, `cedr mcp` for your agents, the hourly Monitor timer), and [`cedr status`](docs/onboarding.md#daily-status) any time to see limits, spend, pending verdicts and repo drift.
+
+## 🧭 Quick start with Route
 
 **1. Generate routes** for the agents installed on your machine.
 
@@ -129,8 +140,6 @@ $ cedr route verdict p-979e77351990 accepted
 
 `cedr route stats` then shows which model does each kind of work best.
 
-Sync and Monitor need no config to try: run `cedr sync init` in a repo, or `cedr monitor limits` anywhere.
-
 ## 🧰 Commands
 
 <details>
@@ -155,6 +164,7 @@ Run `cedr council skill` for the review procedure. Councils support spare member
 
 | Command | What it does |
 | --- | --- |
+| `cedr council run <route>` | Start the reviewers read-only, merge their reports and decide the gate |
 | `cedr council plan <route>` | Name the eligible reviewers to start and the quorum |
 | `cedr council merge <reports>...` | Merge their reports and decide the gate |
 
