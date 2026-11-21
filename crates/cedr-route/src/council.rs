@@ -12,6 +12,10 @@ use crate::pick::{Context, Pick, Size};
 /// Findings within this many lines of the previous one in a group join that group.
 pub const GROUP_LINES: u64 = 3;
 
+/// The line a strict council asks every text report to end with, so a cut-off reply shows
+/// (docs/council.md, Strict mode).
+pub const END_MARKER: &str = "End of review.";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Severity {
     P0,
@@ -59,6 +63,10 @@ pub struct Report {
     pub score: Option<f64>,
     /// Required, so a report that lost its findings is an error rather than a clean review.
     pub findings: Vec<Finding>,
+    /// Whether the report is known to be whole: JSON that parsed, or text whose last line is
+    /// [`END_MARKER`]. Only a strict merge reads it.
+    #[serde(skip)]
+    pub ended: bool,
 }
 
 impl Report {
@@ -79,6 +87,8 @@ impl Report {
             )));
         }
         report.score = report.score.map(|s| if s == 0.0 { 0.0 } else { s });
+        // A JSON document that parsed cannot have been cut off.
+        report.ended = true;
         Ok(report)
     }
 
@@ -113,13 +123,15 @@ impl Report {
                 )));
             }
         }
+        let filled: Vec<(usize, &str)> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| !l.trim().is_empty())
+            .collect();
+        let ended = filled.last().is_some_and(|(_, l)| is_end_marker(l));
         let score = {
-            let last = text
-                .lines()
-                .enumerate()
-                .filter(|(_, l)| !l.trim().is_empty())
-                .map(|(i, _)| i)
-                .last();
+            // The score is still the reply's last word when only the end marker follows it.
+            let last = filled.iter().rev().nth(usize::from(ended)).map(|(i, _)| *i);
             text.lines()
                 .enumerate()
                 .filter(|(i, l)| {
@@ -140,8 +152,17 @@ impl Report {
             pick: None,
             score,
             findings,
+            ended,
         })
     }
+}
+
+/// The end marker, allowing the Markdown a reply may wrap it in and any case.
+fn is_end_marker(line: &str) -> bool {
+    unwrap_line(line)
+        .trim_matches(['*', '_', '`'])
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case(END_MARKER.trim_end_matches('.'))
 }
 
 /// Separators a finding line may put between its fields: a spaced hyphen, en dash or em dash, or a
@@ -480,6 +501,10 @@ pub struct Merged {
     /// Each reviewer's score out of 10; null when it gave none.
     pub scores: BTreeMap<String, Option<f64>>,
     pub groups: Vec<Group>,
+    pub strict: bool,
+    /// Strict only: members whose text report lacks the end marker, so it may have been cut off.
+    /// They are not reviewers, but their findings still count.
+    pub incomplete_reports: Vec<String>,
 }
 
 /// The Markdown revision brief (docs/council.md, Critique and revise): every group in merge order
@@ -524,15 +549,27 @@ pub fn merge(reports: &[Report], settings: Settings) -> Merged {
         block,
         rounds,
         round,
+        strict,
     } = settings;
+    // A report that may have been cut off cannot count towards passing, since its missing part
+    // could have held a blocking finding; what it did report still counts.
+    let incomplete_reports: BTreeSet<String> = reports
+        .iter()
+        .filter(|r| strict && !r.ended)
+        .map(|r| r.member.clone())
+        .collect();
     let reviewers: Vec<String> = reports
         .iter()
         .map(|r| r.member.clone())
+        .filter(|m| !incomplete_reports.contains(m))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
     let mut scores: BTreeMap<String, Option<f64>> = BTreeMap::new();
-    for r in reports {
+    for r in reports
+        .iter()
+        .filter(|r| !incomplete_reports.contains(&r.member))
+    {
         let score = scores.entry(r.member.clone()).or_default();
         *score = r.score.or(*score);
     }
@@ -608,6 +645,8 @@ pub fn merge(reports: &[Report], settings: Settings) -> Merged {
         reviewers,
         scores,
         groups,
+        strict,
+        incomplete_reports: incomplete_reports.into_iter().collect(),
     }
 }
 
@@ -669,6 +708,8 @@ pub struct Plan {
     pub fixes: crate::config::Fixes,
     pub advisory: crate::config::Advisory,
     pub rounds: Option<u32>,
+    /// Each member's text reply must end with [`END_MARKER`].
+    pub strict: bool,
 }
 
 /// How a merge decides: the quorum, the least severe finding that blocks, the revision rounds
@@ -679,16 +720,21 @@ pub struct Settings {
     pub block: Severity,
     pub rounds: Option<u32>,
     pub round: u32,
+    /// Text reports must end with [`END_MARKER`] to count towards the quorum.
+    pub strict: bool,
 }
 
 /// Merge settings: given values first, then the council route's, then quorum 2, P1 and 1 round.
 /// `round` defaults to 1 and, with numbered rounds, is at most `rounds + 1`, the review after the
-/// last revision. `config` is read only when a route is named.
+/// last revision. Strict when asked for or when the route is. `config` is read only when a route
+/// is named.
+#[allow(clippy::too_many_arguments)]
 pub fn settings(
     quorum: Option<usize>,
     block: Option<Severity>,
     rounds: Option<u32>,
     round: Option<u32>,
+    strict: bool,
     route: Option<&str>,
     config: impl FnOnce() -> Result<crate::config::Config>,
 ) -> Result<Settings> {
@@ -709,7 +755,7 @@ pub fn settings(
                 .get(r)
                 .filter(|x| x.council)
                 .ok_or_else(|| Error::Usage(format!("{r:?} is not a council route")))?;
-            Some((route.quorum(), route.block(), route.rounds()))
+            Some((route.quorum(), route.block(), route.rounds(), route.strict))
         }
         None => None,
     };
@@ -732,6 +778,7 @@ pub fn settings(
         block: block.or(from_route.map(|r| r.1)).unwrap_or(Severity::P1),
         rounds,
         round,
+        strict: strict || from_route.is_some_and(|r| r.3),
     })
 }
 
@@ -776,6 +823,7 @@ pub fn plan_members(
         fixes: route.fixes.unwrap_or_default(),
         advisory: route.advisory.unwrap_or_default(),
         rounds: route.rounds(),
+        strict: route.strict,
         quorum_reachable: pick.delegates.len() >= quorum,
         pick,
         quorum,
@@ -803,6 +851,7 @@ mod tests {
             block: Severity::P1,
             rounds: Some(1),
             round: 1,
+            strict: false,
         }
     }
 
@@ -833,7 +882,114 @@ mod tests {
             pick: None,
             score: None,
             findings,
+            ended: true,
         }
+    }
+
+    #[test]
+    fn only_a_reply_that_ends_with_the_marker_or_json_is_known_whole() {
+        let ended = |text: &str| Report::from_text(text, "a").unwrap().ended;
+        let whole = Report::from_text(
+            "src/a.rs:1 - P3 - nit\nScore: 8/10\nEnd of review.\n\n",
+            "a",
+        )
+        .unwrap();
+        assert!(whole.ended);
+        assert_eq!(whole.score, Some(8.0), "the marker does not hide the score");
+        let listed =
+            Report::from_text("No findings.\n- Score: 7/10\n**End of review**", "a").unwrap();
+        assert_eq!((listed.ended, listed.score), (true, Some(7.0)));
+        assert!(ended("No findings.\n> end of review."));
+        assert!(!ended("src/a.rs:1 - P3 - nit"), "cut off after a finding");
+        assert!(
+            !ended("End of review.\nsrc/a.rs:1 - P3 - nit"),
+            "not the last line"
+        );
+        assert!(!ended("No findings.\nEnd of review, more to follow"));
+        assert!(
+            Report::from_json(json!({"member": "a", "findings": []}), None)
+                .unwrap()
+                .ended
+        );
+    }
+
+    #[test]
+    fn a_strict_merge_keeps_a_cut_off_reports_findings_but_never_passes_on_it() {
+        let strict = Settings {
+            strict: true,
+            ..q(2)
+        };
+        let whole = report("a", vec![]);
+        let mut cut = Report::from_text("src/a.rs:1 - P3 - nit\nScore: 9/10", "b").unwrap();
+        assert!(!cut.ended);
+        let m = merge(&[whole.clone(), cut.clone()], strict);
+        assert_eq!(m.gate, Gate::Incomplete);
+        assert_eq!(
+            (m.reviewers.clone(), m.incomplete_reports.clone()),
+            (vec!["a".to_string()], vec!["b".to_string()])
+        );
+        assert_eq!(m.groups[0].members, ["b"], "its findings still merge");
+        assert!(!m.scores.contains_key("b"));
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(
+            (v["strict"].clone(), v["incomplete_reports"].clone()),
+            (json!(true), json!(["b"]))
+        );
+
+        cut.findings[0].severity = Severity::P1;
+        assert_eq!(
+            merge(&[whole.clone(), cut.clone()], strict).gate,
+            Gate::Block
+        );
+
+        cut.findings[0].severity = Severity::P3;
+        let relaxed = merge(&[whole.clone(), cut.clone()], q(2));
+        assert_eq!(relaxed.gate, Gate::Pass, "non-strict merges are unchanged");
+        assert!(relaxed.incomplete_reports.is_empty() && !relaxed.strict);
+        let third = report("c", vec![]);
+        assert_eq!(
+            merge(&[whole, cut, third], strict).gate,
+            Gate::Pass,
+            "whole reports that reach the quorum still pass, as when a member is absent"
+        );
+    }
+
+    #[test]
+    fn strict_comes_from_the_flag_or_the_route() {
+        let route = |strict: &str| {
+            let text = format!(
+                "version = 1\n[harnesses.codex]\n[routes.c]\ncouncil = true\n{strict}candidates = [{{ target = \"codex/sol\" }}]\n"
+            );
+            move || crate::config::Config::parse(&text, std::path::Path::new("t.toml"))
+        };
+        assert!(
+            settings(
+                None,
+                None,
+                None,
+                None,
+                false,
+                Some("c"),
+                route("strict = true\n")
+            )
+            .unwrap()
+            .strict
+        );
+        assert!(
+            !settings(None, None, None, None, false, Some("c"), route(""))
+                .unwrap()
+                .strict
+        );
+        assert!(
+            settings(None, None, None, None, true, Some("c"), route(""))
+                .unwrap()
+                .strict
+        );
+        assert!(
+            settings(None, None, None, None, true, None, route(""))
+                .unwrap()
+                .strict
+        );
     }
 
     #[test]
@@ -1018,26 +1174,26 @@ mod tests {
                 std::path::Path::new("t.toml"),
             )
         };
-        let s = settings(None, None, None, None, Some("c"), config).unwrap();
+        let s = settings(None, None, None, None, false, Some("c"), config).unwrap();
         assert_eq!((s.rounds, s.round), (Some(2), 1));
         assert_eq!(
-            settings(None, None, Some(0), Some(1), Some("c"), config)
+            settings(None, None, Some(0), Some(1), false, Some("c"), config)
                 .unwrap()
                 .rounds,
             Some(0)
         );
         assert_eq!(
-            settings(None, None, None, Some(3), Some("c"), config)
+            settings(None, None, None, Some(3), false, Some("c"), config)
                 .unwrap()
                 .round,
             3
         );
-        let past = settings(None, None, None, Some(4), Some("c"), config).unwrap_err();
+        let past = settings(None, None, None, Some(4), false, Some("c"), config).unwrap_err();
         assert!(
             past.to_string()
                 .contains("round 4 is past the last review (3) for rounds = 2")
         );
-        assert!(settings(None, None, Some(0), Some(2), Some("c"), config).is_err());
+        assert!(settings(None, None, Some(0), Some(2), false, Some("c"), config).is_err());
         let unlimited = || {
             crate::config::Config::parse(
                 "version = 1\n[harnesses.codex]\n[routes.c]\ncouncil = true\nrounds = \"unlimited\"\ncandidates = [{ target = \"codex/sol\" }]\n",
@@ -1045,19 +1201,19 @@ mod tests {
             )
         };
         assert_eq!(
-            settings(None, None, None, Some(50), Some("c"), unlimited)
+            settings(None, None, None, Some(50), false, Some("c"), unlimited)
                 .unwrap()
                 .round,
             50
         );
         assert_eq!(
-            settings(None, None, None, None, None, config)
+            settings(None, None, None, None, false, None, config)
                 .unwrap()
                 .rounds,
             Some(1)
         );
-        assert!(settings(None, None, Some(4), None, None, config).is_err());
-        assert!(settings(None, None, None, Some(0), None, config).is_err());
+        assert!(settings(None, None, Some(4), None, false, None, config).is_err());
+        assert!(settings(None, None, None, Some(0), false, None, config).is_err());
     }
 
     #[test]

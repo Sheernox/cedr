@@ -492,6 +492,9 @@ pub struct Route {
     pub fixes: Option<Fixes>,
     pub advisory: Option<Advisory>,
     pub spares: Option<Spares>,
+    /// Councils only: text reports must end with the end marker to count (docs/council.md).
+    #[serde(default)]
+    pub strict: bool,
     /// A cascade: the route that judges this route's work (docs/route.md, Cascade).
     pub judge: Option<String>,
     /// With `judge`: where escalated work goes; none means the orchestrator takes it.
@@ -631,6 +634,9 @@ impl Config {
                 return Err(format!(
                     "route {id}: fixes, advisory and spares are for councils only"
                 ));
+            }
+            if !route.council && route.strict {
+                return Err(format!("route {id}: strict is for councils only"));
             }
             self.validate_cascade(id, route)?;
             if route.council {
@@ -1201,6 +1207,7 @@ mod tests {
                 .contains("between 0 and 3")
         );
         assert!(cascade_err("rounds = 1\n").contains("rounds is for councils only"));
+        assert!(cascade_err("strict = true\n").contains("strict is for councils only"));
     }
 
     #[test]

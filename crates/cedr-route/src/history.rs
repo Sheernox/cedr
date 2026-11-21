@@ -784,12 +784,13 @@ mod tests {
         let mut p = pick(&["draft"], "codex/sol");
         p.run = Some("r-plan".into());
         record_pick(&path, &p, Size::Small, now()).unwrap();
-        let reports = vec![Report::from_json(serde_json::json!({"member":"a","findings":[{"file":"private.rs","line":1,"severity":"P1","claim":"private claim"},{"file":"other.rs","line":10,"severity":"P3","claim":"advisory"}]}),None).unwrap(),Report {spare_for:None,member:"b".into(),pick:None,score:None,findings:vec![]}];
+        let reports = vec![Report::from_json(serde_json::json!({"member":"a","findings":[{"file":"private.rs","line":1,"severity":"P1","claim":"private claim"},{"file":"other.rs","line":10,"severity":"P3","claim":"advisory"}]}),None).unwrap(),Report {spare_for:None,member:"b".into(),pick:None,score:None,findings:vec![],ended:true}];
         let settings = Settings {
             quorum: 2,
             block: Severity::P1,
             rounds: Some(1),
             round: 1,
+            strict: false,
         };
         let mut first = council::merge(&reports, settings);
         assert!(record_council(&path, &mut first, None, Some("unknown"), now()).is_err());
@@ -801,6 +802,7 @@ mod tests {
                 pick: None,
                 score: None,
                 findings: vec![],
+                ended: true,
             },
             Report {
                 spare_for: None,
@@ -808,6 +810,7 @@ mod tests {
                 pick: None,
                 score: None,
                 findings: vec![],
+                ended: true,
             },
         ];
         let mut second = council::merge(

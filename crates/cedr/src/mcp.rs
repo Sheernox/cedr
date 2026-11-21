@@ -606,6 +606,8 @@ impl RouteServer {
                 block,
                 a.rounds,
                 a.round,
+                // Reports here are JSON objects, which cannot be cut off, so there is no strict flag.
+                false,
                 a.route.as_deref(),
                 || {
                     let cwd = std::env::current_dir().map_err(|source| cedr_route::Error::Io {

@@ -74,6 +74,10 @@ pub enum CouncilCommand {
         /// JSON output of the previous round
         #[arg(long)]
         previous: Option<PathBuf>,
+        /// Text reports must end with the line "End of review." to count towards the quorum (also
+        /// on when the route sets strict = true)
+        #[arg(long)]
+        strict: bool,
         #[arg(long, value_enum, default_value_t = MergeFormat::Text)]
         format: MergeFormat,
     },
@@ -188,6 +192,12 @@ pub fn print_merged(m: &Merged, format: MergeFormat) {
             .collect();
         println!("scores: {}", scores.join(", "));
     }
+    for member in &m.incomplete_reports {
+        println!(
+            "incomplete report: {member} did not end with \"{}\", so it may be cut off and does not count; retrieve its report again",
+            council::END_MARKER
+        );
+    }
     for g in &m.groups {
         println!(
             "{:?} {}:{} [{}] {}",
@@ -301,6 +311,12 @@ pub fn run(command: CouncilCommand, config: &route::ConfigArg) -> Result<ExitCod
                     plan.pick.delegates.len(),
                     plan.pick.run.as_deref().expect("plan run")
                 );
+                if plan.strict {
+                    println!(
+                        "strict: ask each member to end its reply with the line \"{}\"",
+                        council::END_MARKER
+                    );
+                }
             }
             Ok(match (plan.pick.delegates.len(), plan.quorum_reachable) {
                 (0, _) => ExitCode::from(1),
@@ -318,13 +334,19 @@ pub fn run(command: CouncilCommand, config: &route::ConfigArg) -> Result<ExitCod
             rounds,
             round,
             previous,
+            strict,
             format,
         } => {
             let block = block.as_deref().and_then(council::Severity::parse);
-            let settings =
-                council::settings(quorum, block, rounds, round, route.as_deref(), || {
-                    Ok(Session::config_only(config, &cwd()?)?.config)
-                })?;
+            let settings = council::settings(
+                quorum,
+                block,
+                rounds,
+                round,
+                strict,
+                route.as_deref(),
+                || Ok(Session::config_only(config, &cwd()?)?.config),
+            )?;
             let reports = reports
                 .iter()
                 .map(|a| read_report(a))

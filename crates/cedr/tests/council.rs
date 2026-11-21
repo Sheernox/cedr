@@ -232,6 +232,78 @@ fn merge_without_quorum_is_incomplete_and_text_needs_a_member() {
 }
 
 #[test]
+fn a_strict_merge_names_a_report_without_the_end_marker_and_stays_incomplete() {
+    let s = Scratch::new(10.0, 20.0);
+    let dir = s.dir.path();
+    std::fs::write(
+        dir.join("a.md"),
+        "No findings.\nScore: 8/10\nEnd of review.\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("b.md"), "src/a.rs:4 - P3 - naming\n").unwrap();
+    let a = format!("codex/sol={}", dir.join("a.md").display());
+    let b = format!("claude/opus={}", dir.join("b.md").display());
+    let merge = |extra: &[&str]| {
+        let mut args = vec!["council", "merge", a.as_str(), b.as_str(), "--no-record"];
+        args.extend(extra);
+        s.cedr(&args)
+    };
+    assert_eq!(merge(&[]).status.code(), Some(0), "not strict: unchanged");
+    let o = merge(&["--strict"]);
+    assert_eq!(
+        o.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let out = stdout(&o);
+    assert!(
+        out.starts_with("council: incomplete (1 of quorum 2 reviewed"),
+        "{out}"
+    );
+    assert!(
+        out.contains("incomplete report: claude/opus did not end with \"End of review.\", so it may be cut off and does not count; retrieve its report again"),
+        "{out}"
+    );
+    let v: Value =
+        serde_json::from_slice(&merge(&["--strict", "--format", "json"]).stdout).unwrap();
+    assert_eq!(v["incomplete_reports"], json!(["claude/opus"]));
+    assert_eq!(v["reviewers"], json!(["codex/sol"]));
+
+    // A strict route asks for the marker in its plan and applies it to merges without the flag.
+    let strict = std::fs::read_to_string(config()).unwrap().replacen(
+        "council = true\n",
+        "council = true\nstrict = true\n",
+        1,
+    );
+    let cfg = dir.join("strict.toml");
+    std::fs::write(&cfg, strict).unwrap();
+    let cfg = cfg.display().to_string();
+    let readings = s.readings();
+    let plan = s.cedr(&[
+        "council",
+        "plan",
+        "council",
+        "--config",
+        &cfg,
+        "--readings",
+        &readings,
+    ]);
+    assert!(
+        stdout(&plan)
+            .contains("strict: ask each member to end its reply with the line \"End of review.\""),
+        "{}",
+        stdout(&plan)
+    );
+    assert_eq!(
+        merge(&["--route", "council", "--config", &cfg])
+            .status
+            .code(),
+        Some(3)
+    );
+}
+
+#[test]
 fn the_status_line_captures_rate_limits_and_can_wrap_another_command() {
     let s = Scratch::new(10.0, 20.0);
     let input = json!({"model": {"id": "claude-opus-5-5"}, "rate_limits": {
