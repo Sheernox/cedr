@@ -30,6 +30,11 @@ pub fn digest(text: &str) -> String {
         .collect()
 }
 
+/// The counts-only id used by all Monitor sources and by local Route verdicts.
+pub fn session_id(harness: &str, native: &str) -> String {
+    format!("s-{}", &digest(&format!("{harness}:{native}"))[..12])
+}
+
 pub fn collect() -> Result<store::Store> {
     let config = config::Config::load()?;
     let mut store = store::Store::open(&store::path())?;

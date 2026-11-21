@@ -45,6 +45,18 @@ impl Store {
         store.source_values()
     }
 
+    /// Open the existing usage store without creating it or importing source logs.
+    pub fn open_read_only(path: &Path) -> Result<Option<Self>> {
+        match std::fs::metadata(path) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        }
+        let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        db.busy_timeout(Duration::from_secs(30))?;
+        Ok(Some(Self { db }))
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(p) = path.parent() {
             std::fs::create_dir_all(p)?;

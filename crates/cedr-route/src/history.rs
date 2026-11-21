@@ -97,6 +97,8 @@ enum Record {
         task: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
     },
 }
 
@@ -169,39 +171,54 @@ pub fn record_pick(path: &Path, pick: &Pick, size: Size, now: DateTime<Utc>) -> 
     append(path, &records)
 }
 
+/// Optional metadata written with a manual verdict.
+#[derive(Default)]
+pub struct VerdictDetails<'a> {
+    pub task: Option<&'a str>,
+    pub note: Option<&'a str>,
+    pub session: Option<String>,
+}
+
+fn find_pick<'a>(records: &'a [Record], path: &Path, id: &str) -> Result<&'a str> {
+    records
+        .iter()
+        .find_map(|r| match r {
+            Record::Pick { id: p, target, .. } if p == id => Some(target.as_str()),
+            _ => None,
+        })
+        .ok_or_else(|| Error::Usage(format!("no recorded pick {id:?} in {}", path.display())))
+}
+
+/// Returns the recorded harness/model, including for picks from older configurations.
+pub fn pick_target(path: &Path, id: &str) -> Result<String> {
+    find_pick(&read(path)?, path, id).map(str::to_owned)
+}
+
 /// Records a verdict on a recorded pick; a later verdict for the same pick replaces the earlier one.
 pub fn record_verdict(
     path: &Path,
     id: &str,
     verdict: Verdict,
-    task: Option<&str>,
-    note: Option<&str>,
+    details: VerdictDetails<'_>,
     now: DateTime<Utc>,
 ) -> Result<()> {
-    if let Some(n) = note
+    if let Some(n) = details.note
         && (n.chars().count() > MAX_NOTE || n.contains(['\n', '\r']))
     {
         return Err(Error::Usage(format!(
             "a note is one line of at most {MAX_NOTE} characters"
         )));
     }
-    let known = read(path)?
-        .iter()
-        .any(|r| matches!(r, Record::Pick { id: p, .. } if p == id));
-    if !known {
-        return Err(Error::Usage(format!(
-            "no recorded pick {id:?} in {}",
-            path.display()
-        )));
-    }
+    find_pick(&read(path)?, path, id)?;
     append(
         path,
         &[Record::Verdict {
             id: id.to_string(),
             at: stamp(now),
             verdict,
-            task: task.map(str::to_string),
-            note: note.map(str::to_string),
+            task: details.task.map(str::to_string),
+            note: details.note.map(str::to_string),
+            session: details.session,
         }],
     )
 }
@@ -417,14 +434,25 @@ pub struct StatRow {
     pub provisional: bool,
     pub judged: Option<usize>,
     pub escalated: Option<usize>,
+    pub matched_picks: usize,
+    pub tokens: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub cost_per_accepted_usd: Option<f64>,
 }
 
-/// Picks grouped by route, target and preview status, with latest verdict latency.
+#[derive(Debug, Default)]
+pub struct SessionUsage {
+    pub tokens: i64,
+    pub cost_usd: f64,
+}
+
+/// Picks grouped by route, target and preview status, with latest verdict latency and usage.
 pub fn stats(
     path: &Path,
     route: Option<&str>,
     since: Option<&str>,
     config: &Config,
+    mut session_usage: impl FnMut(&str, Option<&str>, i64, i64) -> Result<Option<SessionUsage>>,
 ) -> Result<Vec<StatRow>> {
     let since = since_date(since)?;
     let records = read(path)?;
@@ -448,7 +476,7 @@ pub fn stats(
             _ => None,
         })
         .collect();
-    let mut rows: BTreeMap<_, (StatRow, Vec<f64>)> = BTreeMap::new();
+    let mut rows: BTreeMap<_, (StatRow, Vec<f64>, usize)> = BTreeMap::new();
     for r in &records {
         let Record::Pick {
             id,
@@ -465,7 +493,7 @@ pub fn stats(
             continue;
         }
         let cascade = config.routes.get(rid).is_some_and(|r| r.judge.is_some());
-        let (row, minutes) = rows
+        let (row, minutes, matched_accepted) = rows
             .entry((rid.clone(), target.clone(), *preview))
             .or_insert_with(|| {
                 (
@@ -478,6 +506,7 @@ pub fn stats(
                         ..Default::default()
                     },
                     Vec::new(),
+                    0,
                 )
             });
         row.picks += 1;
@@ -488,7 +517,10 @@ pub fn stats(
             *n += usize::from(escalated.contains(id.as_str()));
         }
         if let Some(Record::Verdict {
-            verdict, at: end, ..
+            verdict,
+            session,
+            at: end,
+            ..
         }) = latest.get(id.as_str())
         {
             match verdict {
@@ -503,12 +535,28 @@ pub fn stats(
                 DateTime::parse_from_rfc3339(end),
             ) {
                 minutes.push((end - start).num_milliseconds() as f64 / 60000.0);
+                if let Some(usage) = session_usage(
+                    target,
+                    session.as_deref(),
+                    start.timestamp(),
+                    end.timestamp(),
+                )? {
+                    row.matched_picks += 1;
+                    *row.tokens.get_or_insert(0) += usage.tokens;
+                    *row.cost_usd.get_or_insert(0.0) += usage.cost_usd;
+                    *matched_accepted +=
+                        usize::from(matches!(verdict, Verdict::Accepted | Verdict::Reworked));
+                }
             }
         }
     }
     Ok(rows
         .into_values()
-        .map(|(mut r, mut minutes)| {
+        .map(|(mut r, mut minutes, matched_accepted)| {
+            r.cost_per_accepted_usd = r
+                .cost_usd
+                .filter(|_| matched_accepted > 0)
+                .map(|cost| cost / matched_accepted as f64);
             r.accepted_pct = (r.verdicts > 0)
                 .then(|| (r.accepted as f64 * 1000.0 / r.verdicts as f64).round() / 10.0);
             minutes.sort_by(f64::total_cmp);
@@ -684,6 +732,15 @@ mod tests {
     use crate::pick::{Delegate, T3Target};
     use crate::pool::State;
 
+    fn stats(
+        path: &Path,
+        route: Option<&str>,
+        since: Option<&str>,
+        config: &Config,
+    ) -> Result<Vec<StatRow>> {
+        super::stats(path, route, since, config, |_, _, _, _| Ok(None))
+    }
+
     fn test_config() -> Config {
         Config::parse("version = 1", Path::new("test")).unwrap()
     }
@@ -752,8 +809,7 @@ mod tests {
                 &path,
                 id,
                 Verdict::Accepted,
-                None,
-                None,
+                VerdictDetails::default(),
                 now() + chrono::Duration::minutes(minutes),
             )
             .unwrap();
@@ -763,8 +819,7 @@ mod tests {
             &path,
             "a",
             Verdict::Rejected,
-            None,
-            None,
+            VerdictDetails::default(),
             now() + chrono::Duration::minutes(1),
         )
         .unwrap();
@@ -906,8 +961,10 @@ mod tests {
             &path,
             "old",
             Verdict::Accepted,
-            Some("task"),
-            None,
+            VerdictDetails {
+                task: Some("task"),
+                ..Default::default()
+            },
             now() + chrono::Duration::days(2),
         )
         .unwrap();
@@ -961,17 +1018,34 @@ mod tests {
             now(),
         )
         .unwrap();
-        record_verdict(&path, "p-1", Verdict::Rejected, None, None, now()).unwrap();
+        record_verdict(
+            &path,
+            "p-1",
+            Verdict::Rejected,
+            VerdictDetails::default(),
+            now(),
+        )
+        .unwrap();
         record_verdict(
             &path,
             "p-1",
             Verdict::Accepted,
-            Some("task-1"),
-            Some("fine"),
+            VerdictDetails {
+                task: Some("task-1"),
+                note: Some("fine"),
+                session: None,
+            },
             now(),
         )
         .unwrap();
-        record_verdict(&path, "p-2", Verdict::Reworked, None, None, now()).unwrap();
+        record_verdict(
+            &path,
+            "p-2",
+            Verdict::Reworked,
+            VerdictDetails::default(),
+            now(),
+        )
+        .unwrap();
         let rows = stats(&path, None, None, &test_config()).unwrap();
         assert_eq!(rows.len(), 1);
         let r = &rows[0];
@@ -988,12 +1062,43 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("h.jsonl");
         record_pick(&path, &pick(&["p-1"], "codex/x"), Size::Small, now()).unwrap();
-        assert!(record_verdict(&path, "p-9", Verdict::Accepted, None, None, now()).is_err());
         assert!(
-            record_verdict(&path, "p-1", Verdict::Accepted, None, Some("a\nb"), now()).is_err()
+            record_verdict(
+                &path,
+                "p-9",
+                Verdict::Accepted,
+                VerdictDetails::default(),
+                now()
+            )
+            .is_err()
+        );
+        assert!(
+            record_verdict(
+                &path,
+                "p-1",
+                Verdict::Accepted,
+                VerdictDetails {
+                    note: Some("a\nb"),
+                    ..Default::default()
+                },
+                now()
+            )
+            .is_err()
         );
         let long = "x".repeat(MAX_NOTE + 1);
-        assert!(record_verdict(&path, "p-1", Verdict::Accepted, None, Some(&long), now()).is_err());
+        assert!(
+            record_verdict(
+                &path,
+                "p-1",
+                Verdict::Accepted,
+                VerdictDetails {
+                    note: Some(&long),
+                    ..Default::default()
+                },
+                now()
+            )
+            .is_err()
+        );
     }
 
     #[test]

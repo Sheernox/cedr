@@ -17,6 +17,23 @@ pub struct Price {
     pub long_prompt: Option<LongPrompt>,
 }
 
+impl Price {
+    /// Apply Monitor's base rates to input, 5m and 1h writes, cache reads and output.
+    pub(crate) fn token_cost(&self, tokens: [i64; 5]) -> f64 {
+        tokens
+            .into_iter()
+            .zip([
+                self.input,
+                self.cache_write5m,
+                self.cache_write1h,
+                self.cache_read,
+                self.output,
+            ])
+            .map(|(n, rate)| n as f64 / 1e6 * rate)
+            .sum()
+    }
+}
+
 /// Request-level premium; aggregate session tokens cannot select this tier.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

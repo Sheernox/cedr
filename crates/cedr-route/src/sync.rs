@@ -178,7 +178,13 @@ fn pending(history: &Path, offset: u64) -> Result<Vec<(u64, Value)>> {
             break;
         }
         at += line.len() as u64;
-        if let Ok(v) = serde_json::from_str::<Value>(line.trim_end()) {
+        if let Ok(mut v) = serde_json::from_str::<Value>(line.trim_end()) {
+            if v["type"] == "verdict"
+                && let Some(record) = v.as_object_mut()
+            {
+                // The app's verdict schema does not retain Monitor session ids.
+                record.remove("session");
+            }
             out.push((at, v));
         }
     }
@@ -875,6 +881,21 @@ mod tests {
         let records = pending(&path, 0).unwrap();
         assert_eq!(records, vec![(line.len() as u64, record)]);
         assert!(pending(&path, records[0].0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn verdict_sessions_stay_local_when_history_syncs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history");
+        let mut verdict = json!({"type":"verdict","id":"p-0123456789ab",
+            "at":"2026-10-29T00:00:00Z","verdict":"accepted","session":"s-0123456789ab"});
+        let line = format!("{verdict}\n");
+        std::fs::write(&path, &line).unwrap();
+        verdict.as_object_mut().unwrap().remove("session");
+        assert_eq!(
+            pending(&path, 0).unwrap(),
+            vec![(line.len() as u64, verdict)]
+        );
     }
 
     #[test]

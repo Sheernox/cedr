@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use cedr_core::{discovery, lint, outdated, verify};
 use cedr_route::council::{self, Report};
-use cedr_route::history::{self, Verdict};
+use cedr_route::history;
 use cedr_route::pick::{self, Size};
 use cedr_route::session::{Overrides, Session};
 use chrono::Utc;
@@ -133,6 +133,8 @@ pub struct VerdictArgs {
     task: Option<String>,
     /// One line, at most 120 characters
     note: Option<String>,
+    /// Monitor session id (s- plus 12 hex digits) or the harness's native id
+    session: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -546,14 +548,12 @@ impl RouteServer {
     async fn route_verdict(&self, Parameters(a): Parameters<VerdictArgs>) -> CallToolResult {
         let me = self.clone();
         blocking(move || {
-            let v = Verdict::parse(&a.verdict)?;
-            history::record_verdict(
-                &history::default_path(),
+            crate::route::record_verdict(
                 &a.id,
-                v,
+                &a.verdict,
                 a.task.as_deref(),
                 a.note.as_deref(),
-                Utc::now(),
+                a.session.as_deref(),
             )?;
             crate::route::auto_sync(me.config.as_deref());
             Ok(serde_json::json!({"recorded": true}))
@@ -637,7 +637,9 @@ impl RouteServer {
         .await
     }
 
-    #[tool(description = "Picks, verdicts, latency and cascade outcomes per route and model.")]
+    #[tool(
+        description = "Picks, verdicts, latency, cascade outcomes and matched Monitor usage per route and model."
+    )]
     async fn route_stats(&self, Parameters(a): Parameters<StatsArgs>) -> CallToolResult {
         let me = self.clone();
         blocking(move || {
@@ -646,8 +648,7 @@ impl RouteServer {
                 source,
             })?;
             let loaded = Session::config_only(me.config.as_deref(), &cwd)?;
-            Ok(json(history::stats(
-                &history::default_path(),
+            Ok(json(crate::route::stats(
                 a.route.as_deref(),
                 a.since.as_deref(),
                 &loaded.config,

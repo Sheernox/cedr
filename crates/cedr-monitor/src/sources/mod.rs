@@ -67,7 +67,7 @@ fn metadata(h: &str, v: &Value, state: &Value, c: &Config) -> Option<Row> {
     Some(Row {
         harness: h.into(),
         at,
-        session: format!("s-{}", &crate::digest(&format!("{h}:{native}"))[..12]),
+        session: crate::session_id(h, native),
         project: c.project(cwd)?,
         model: if s(state, "model").is_empty() {
             "unknown".into()
@@ -411,7 +411,7 @@ fn parse(
                 // the thread that made it, not to the rollout's own session.
                 let thread = s(p, "thread_id");
                 if !thread.is_empty() {
-                    r.session = format!("s-{}", &crate::digest(&format!("codex:{thread}"))[..12]);
+                    r.session = crate::session_id("codex", thread);
                 }
                 r.id = s(p, "response_id").into();
                 counts(
@@ -928,7 +928,7 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
                 };
                 // A session may be read before its parent's `subagents/` entry is, so its usage can already be stored.
                 for child in &children {
-                    let session = format!("s-{}", &crate::digest(&format!("grok:{child}"))[..12]);
+                    let session = crate::session_id("grok", child);
                     db.db.execute(
                         "INSERT INTO repairs(hour,harness,model,effort,project,session,sidechain) SELECT at/3600*3600,harness,model,effort,project,session,sidechain FROM responses WHERE harness='grok' AND session=?1",
                         [&session],

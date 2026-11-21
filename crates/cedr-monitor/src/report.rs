@@ -112,11 +112,16 @@ impl Group {
         self.samples += v["wallSamples"].as_i64().unwrap_or(0);
         if let Some((p, _)) = pricing::price(v["model"].as_str().unwrap_or("")) {
             let n = |k: &str| v[k].as_i64().unwrap_or(0) as f64 / 1e6;
-            self.cost += n("input") * p.input
-                + n("cacheWrite5m") * p.cache_write5m
-                + n("cacheWrite1h") * p.cache_write1h
-                + n("cacheRead") * p.cache_read
-                + n("output") * p.output;
+            self.cost += p.token_cost(
+                [
+                    "input",
+                    "cacheWrite5m",
+                    "cacheWrite1h",
+                    "cacheRead",
+                    "output",
+                ]
+                .map(|k| v[k].as_i64().unwrap_or(0)),
+            );
             self.saving += n("cacheRead") * (p.input - p.cache_read)
                 - n("cacheWrite5m") * (p.cache_write5m - p.input)
                 - n("cacheWrite1h") * (p.cache_write1h - p.input);
@@ -236,6 +241,65 @@ pub fn sessions(db: &Store, start: &str, limit: usize) -> Result<Value> {
     });
     out.truncate(limit);
     Ok(json!(out))
+}
+
+/// Totals for a Route pick's session, using the same base prices as the Monitor report.
+pub fn route_usage(
+    db: &Store,
+    harness: &str,
+    model: &str,
+    session: Option<&str>,
+    start: i64,
+    end: i64,
+) -> Result<Option<cedr_route::history::SessionUsage>> {
+    let inferred;
+    let session = if let Some(id) = session {
+        id
+    } else {
+        // Search the time range first, then use the session index to exclude sessions that
+        // already started and sessions that never used the picked model.
+        let mut query = db.db.prepare_cached(
+            "SELECT DISTINCT s.session FROM responses s
+             WHERE s.at BETWEEN ?1 AND ?2 AND s.harness = ?3
+             AND NOT EXISTS (SELECT 1 FROM responses prior
+                 WHERE prior.harness = s.harness AND prior.session = s.session AND prior.at < ?1)
+             AND EXISTS (SELECT 1 FROM responses matched
+                 WHERE matched.harness = s.harness AND matched.session = s.session AND matched.model = ?4)
+             LIMIT 2",
+        )?;
+        let mut rows = query.query((start, end, harness, model))?;
+        let Some(first) = rows.next()? else {
+            return Ok(None);
+        };
+        inferred = first.get::<_, String>(0)?;
+        if rows.next()?.is_some() {
+            return Ok(None);
+        }
+        &inferred
+    };
+    let mut query = db.db.prepare_cached(
+        "SELECT model, coalesce(sum(input),0), coalesce(sum(write5),0), coalesce(sum(write1),0),
+                coalesce(sum(read),0), coalesce(sum(output),0)
+         FROM responses WHERE harness = ? AND session = ? GROUP BY model",
+    )?;
+    let mut rows = query.query((harness, session))?;
+    let mut usage = None;
+    while let Some(row) = rows.next()? {
+        let model: String = row.get(0)?;
+        let tokens = [
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+        ];
+        let total = usage.get_or_insert_with(cedr_route::history::SessionUsage::default);
+        total.tokens += tokens.iter().sum::<i64>();
+        if let Some((price, _)) = pricing::price(&model) {
+            total.cost_usd += price.token_cost(tokens);
+        }
+    }
+    Ok(usage)
 }
 
 #[cfg(test)]

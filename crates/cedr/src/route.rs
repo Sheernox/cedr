@@ -193,8 +193,11 @@ pub enum RouteCommand {
         /// One line, at most 120 characters
         #[arg(long)]
         note: Option<String>,
+        /// Monitor session id (s- plus 12 hex digits) or the harness's native id
+        #[arg(long, value_name = "ID")]
+        session: Option<String>,
     },
-    /// Picks and verdicts per route and model
+    /// Picks, verdicts and matched Monitor usage per route and model
     Stats {
         /// Count picks made on or after this day (YYYY-MM-DD, UTC)
         #[arg(long, value_name = "YYYY-MM-DD")]
@@ -440,6 +443,99 @@ pub(crate) fn record(
     Ok(())
 }
 
+/// CLI and MCP share normalization so neither can write a native session id to history.
+pub(crate) fn record_verdict(
+    id: &str,
+    verdict: &str,
+    task: Option<&str>,
+    note: Option<&str>,
+    session: Option<&str>,
+) -> Result<()> {
+    let path = history::default_path();
+    let verdict = Verdict::parse(verdict)?;
+    let session = session
+        .map(|id_or_native| {
+            let target = history::pick_target(&path, id)?;
+            let (harness, _) = target.split_once('/').ok_or_else(|| {
+                Error::Usage("the recorded pick has no harness for a Monitor session".into())
+            })?;
+            if id_or_native.trim().is_empty() {
+                return Err(Error::Usage("session id must not be empty".into()));
+            }
+            let stored = id_or_native
+                .strip_prefix("s-")
+                .is_some_and(|hex| hex.len() == 12 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
+            Ok(if stored {
+                id_or_native.to_ascii_lowercase()
+            } else {
+                cedr_monitor::session_id(harness, id_or_native)
+            })
+        })
+        .transpose()?;
+    history::record_verdict(
+        &path,
+        id,
+        verdict,
+        history::VerdictDetails {
+            task,
+            note,
+            session,
+        },
+        Utc::now(),
+    )
+}
+
+/// Bridge local Route history and Monitor's read-only usage store for both CLI and MCP.
+pub(crate) fn stats(
+    route: Option<&str>,
+    since: Option<&str>,
+    config: &cedr_route::config::Config,
+) -> Result<Vec<history::StatRow>> {
+    let path = cedr_monitor::store::path();
+    let monitor_error = |error| Error::Parse {
+        path: path.clone(),
+        message: format!("could not read Monitor usage: {error}"),
+    };
+    let db = cedr_monitor::store::Store::open_read_only(&path).map_err(monitor_error)?;
+    history::stats(
+        &history::default_path(),
+        route,
+        since,
+        config,
+        |target, session, start, end| {
+            let (Some(db), Some((harness, model))) = (&db, target.split_once('/')) else {
+                return Ok(None);
+            };
+            cedr_monitor::report::route_usage(db, harness, model, session, start, end)
+                .map_err(monitor_error)
+        },
+    )
+}
+
+fn print_usage(rows: &[history::StatRow]) {
+    println!(
+        "\n{:<16} {:<32} {:>13} {:>12} {:>12} {:>21}",
+        "route", "target", "matched_picks", "tokens", "cost_usd", "cost_per_accepted_usd"
+    );
+    let cost = |value: Option<f64>| value.map_or_else(|| "-".into(), |n| format!("{n:.6}"));
+    for row in rows.iter().filter(|row| row.matched_picks > 0) {
+        let target = format!(
+            "{}{}",
+            row.target,
+            if row.preview { " (preview)" } else { "" }
+        );
+        println!(
+            "{:<16} {:<32} {:>13} {:>12} {:>12} {:>21}",
+            row.route,
+            target,
+            row.matched_picks,
+            row.tokens.map_or_else(|| "-".into(), |n| n.to_string()),
+            cost(row.cost_usd),
+            cost(row.cost_per_accepted_usd),
+        );
+    }
+}
+
 /// Starts a background sync when one is due and the config in use has `[sync]` with `auto` on
 /// (docs/route.md, Sync). The throttle comes first, so a status line render costs one stat until
 /// a sync is due. It never fails the caller: a problem starting it goes to the sync log, which the
@@ -681,15 +777,14 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
             verdict,
             task,
             note,
+            session,
         } => {
-            let v = Verdict::parse(&verdict)?;
-            history::record_verdict(
-                &history::default_path(),
+            record_verdict(
                 &id,
-                v,
+                &verdict,
                 task.as_deref(),
                 note.as_deref(),
-                Utc::now(),
+                session.as_deref(),
             )?;
             println!("recorded {verdict} for {id}");
             auto_sync(config);
@@ -701,12 +796,7 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
             format,
         } => {
             let loaded = Session::config_only(config, &cwd()?)?;
-            let rows = history::stats(
-                &history::default_path(),
-                route.as_deref(),
-                since.as_deref(),
-                &loaded.config,
-            )?;
+            let rows = stats(route.as_deref(), since.as_deref(), &loaded.config)?;
             match format {
                 ListFormat::Json => println!(
                     "{}",
@@ -747,7 +837,7 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
                         "",
                     );
                     let dash = |v: Option<String>| v.unwrap_or_else(|| "-".into());
-                    for r in rows {
+                    for r in &rows {
                         let target =
                             format!("{}{}", r.target, if r.preview { " (preview)" } else { "" });
                         let counts = [r.picks, r.accepted, r.reworked, r.redone, r.rejected]
@@ -763,6 +853,9 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
                             ],
                             if r.provisional { " (provisional)" } else { "" },
                         );
+                    }
+                    if rows.iter().any(|row| row.matched_picks > 0) {
+                        print_usage(&rows);
                     }
                 }
             }

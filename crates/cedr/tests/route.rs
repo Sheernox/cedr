@@ -69,7 +69,16 @@ fn verdicts_on_recorded_picks_show_in_stats() {
             .ends_with(&format!("| pick {id}]"))
     );
     let ok = s.cedr(&[
-        "route", "verdict", &id, "accepted", "--task", "t-1", "--note", "clean",
+        "route",
+        "verdict",
+        &id,
+        "accepted",
+        "--task",
+        "t-1",
+        "--note",
+        "clean",
+        "--session",
+        "native-session",
     ]);
     assert_eq!(
         ok.status.code(),
@@ -83,6 +92,9 @@ fn verdicts_on_recorded_picks_show_in_stats() {
             .code(),
         Some(2)
     );
+    let history: Value =
+        serde_json::from_slice(&s.cedr(&["route", "history", "--format", "json"]).stdout).unwrap();
+    assert_eq!(history[0]["verdict"]["session"], "s-297ee8af53cf",);
     let skipped = s.pick("review.code", &["--no-record"]);
     assert_eq!(skipped.status.code(), Some(0));
     let stats: Value = serde_json::from_slice(
@@ -100,7 +112,8 @@ fn verdicts_on_recorded_picks_show_in_stats() {
     assert_eq!(
         stats,
         json!([{"route": "review.code", "target": "codex/gpt-6.1-sol", "picks": 1, "accepted": 1, "reworked": 0,
-                "redone": 0, "rejected": 0, "verdicts": 1, "accepted_pct": 100.0, "provisional": true, "preview": false, "median_minutes": 0.0, "judged": null, "escalated": null}])
+                "redone": 0, "rejected": 0, "verdicts": 1, "accepted_pct": 100.0, "provisional": true, "preview": false, "median_minutes": 0.0, "judged": null, "escalated": null, "matched_picks": 0,
+                "tokens": null, "cost_usd": null, "cost_per_accepted_usd": null}])
     );
     let text = stdout(&s.cedr(&[
         "route",
@@ -153,6 +166,79 @@ fn the_nearest_repo_config_is_found_from_the_working_directory() {
         "{}",
         stdout(&o)
     );
+}
+
+#[test]
+fn route_stats_use_only_unique_or_explicit_monitor_matches() {
+    use cedr_monitor::store::{Row, Store};
+
+    let s = Scratch::new(10.0, 20.0);
+    let state = s.dir.path().join("state/cedr");
+    let db = Store::open(&state.join("monitor.sqlite")).unwrap();
+    let at = |minute| format!("2026-10-29T00:{minute:02}:00Z");
+    let timestamp = |minute| {
+        chrono::DateTime::parse_from_rfc3339(&at(minute))
+            .unwrap()
+            .timestamp()
+    };
+    let picks = [
+        ("p-auto", 1, 5, "reworked"),
+        ("p-ambiguous", 6, 10, "accepted"),
+        ("p-explicit", 6, 10, "rejected"),
+    ];
+    let mut records = Vec::new();
+    for (id, start, end, verdict) in picks {
+        records.push(
+            json!({"type":"pick","id":id,"at":at(start),"route":"review.code",
+            "target":"codex/gpt-6.1-sol","rules":"fixture","effort":"high",
+            "reason":"primary","state":"ready","size":"medium"}),
+        );
+        let mut record = json!({"type":"verdict","id":id,"at":at(end),"verdict":verdict});
+        if id == "p-explicit" {
+            record["session"] = json!("s-000000000001");
+        }
+        records.push(record);
+    }
+    std::fs::write(
+        state.join("route-history.jsonl"),
+        records.iter().map(|v| format!("{v}\n")).collect::<String>(),
+    )
+    .unwrap();
+    for (id, session, time, input) in [
+        ("old", "s-000000000000", 0, 9000),
+        ("old-next", "s-000000000000", 2, 9000),
+        ("auto", "s-000000000001", 1, 1000),
+        ("ambiguous-a", "s-000000000002", 6, 9000),
+        ("ambiguous-b", "s-000000000003", 10, 9000),
+    ] {
+        db.upsert(&Row {
+            id: id.into(),
+            harness: "codex".into(),
+            model: "gpt-6.1-sol".into(),
+            session: session.into(),
+            at: timestamp(time),
+            input: Some(input),
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    let cfg = config();
+    let args = ["route", "stats", "--config", cfg.to_str().unwrap()];
+    let stats: Value = serde_json::from_slice(
+        &s.cedr(&[args.as_slice(), &["--format", "json"]].concat())
+            .stdout,
+    )
+    .unwrap();
+    let row = &stats[0];
+    assert_eq!(row["matched_picks"], 2);
+    assert_eq!(row["tokens"], 2000);
+    let (price, _) = cedr_monitor::pricing::price("gpt-6.1-sol").unwrap();
+    let expected = price.input * 0.002;
+    assert!((row["cost_usd"].as_f64().unwrap() - expected).abs() < 1e-10);
+    assert_eq!(row["cost_per_accepted_usd"], row["cost_usd"]);
+    assert_eq!(row["accepted"], 1);
+    assert_eq!(row["reworked"], 1);
+    assert!(stdout(&s.cedr(&args)).contains("cost_per_accepted_usd"));
 }
 
 #[test]
@@ -310,6 +396,24 @@ fn mcp_serves_picks_and_returns_errors_as_tool_errors() {
         json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"route_pick","arguments":{"route":"review.code","judges":"missing","escalates":"missing"}}}),
     );
     assert_eq!(recv(10)["result"]["isError"], true);
+    let pick_id = plan["delegates"][0]["id"].as_str().unwrap();
+    send(
+        json!({"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"route_verdict","arguments":{"id":pick_id,"verdict":"accepted","session":"s-0123456789AB"}}}),
+    );
+    assert_ne!(recv(11)["result"]["isError"], true);
+    send(
+        json!({"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"route_history","arguments":{"route":"council","limit":10}}}),
+    );
+    let result = recv(12);
+    let entries: Value =
+        serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let recorded = entries
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["id"] == pick_id)
+        .unwrap();
+    assert_eq!(recorded["verdict"]["session"], "s-0123456789ab");
     drop(stdin);
     child.wait().unwrap();
 }

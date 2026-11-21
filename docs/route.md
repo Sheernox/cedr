@@ -321,8 +321,8 @@ All take `--config PATH`; picks also take `--readings`, `--models`, `--no-record
 | `cedr route add <route> <target> [--effort E] [--tier N] [--sizes S,S] [--at N]` | Add a candidate, or update the one with that target (see Editing) |
 | `cedr route remove <route> <target>` | Remove a candidate |
 | `cedr route enable <route>`, `cedr route disable <route>` | Turn a route on or off |
-| `cedr route verdict <pick-id> accepted\|reworked\|redone\|rejected [--task ID] [--note TEXT]` | Record a verdict |
-| `cedr route stats [--route R] [--since YYYY-MM-DD] [--format text\|json]` | Picks, verdicts, time to verdict and cascade outcomes per route, model and preview status |
+| `cedr route verdict <pick-id> accepted\|reworked\|redone\|rejected [--task ID] [--note TEXT] [--session ID]` | Record a verdict |
+| `cedr route stats [--route R] [--since YYYY-MM-DD] [--format text\|json]` | Picks, verdicts, time to verdict, cascade outcomes and matched Monitor usage per route, model and preview status |
 | `cedr route history [--route R] [--limit N] [--format text\|json]` | The latest records, newest first (default 20, at most 500): picks with their latest verdict, and council results |
 | `cedr route import <routing.toml>` | Print a `routes.toml` converted from a T3 Code delegation `routing.toml` (see Import) |
 | `cedr route statusline [-- <command>...]` | Claude status line: capture `rate_limits` from stdin for the `claude-statusline` reader, then print `claude s23% w41%`, or run `<command>` with the same stdin and print its output instead |
@@ -353,7 +353,7 @@ Append-only JSON lines in `$XDG_STATE_HOME/cedr/route-history.jsonl` (default `~
 
 ```json
 {"type": "pick", "id": "p-...", "at": "2026-10-29T01:40:00Z", "route": "review.code", "rules": "8ff065e", "target": "codex/gpt-6.1-sol", "effort": "high", "reason": "primary", "state": "ready", "size": "medium", "preview": true, "run": "r-...", "judges": "p-...", "escalates": "p-..."}
-{"type": "verdict", "id": "p-...", "at": "...", "verdict": "accepted", "task": "...", "note": "..."}
+{"type": "verdict", "id": "p-...", "at": "...", "verdict": "accepted", "task": "...", "note": "...", "session": "s-1a2b3c4d5e6f"}
 {"type": "council", "id": "c-...", "at": "...", "route": "review.council", "run": "r-...", "round": 1, "rounds": 1, "gate": "block", "next": "revise", "quorum": 2, "block": "P1", "reviewers": ["codex/gpt-6.1-sol", "claude/claude-opus-5-5"], "groups": {"P0": 0, "P1": 1, "P2": 0, "P3": 2}, "findings": {"codex/gpt-6.1-sol": 2, "claude/claude-opus-5-5": 1}}
 ```
 
@@ -361,7 +361,10 @@ Append-only JSON lines in `$XDG_STATE_HOME/cedr/route-history.jsonl` (default `~
 - A run ties picks that belong together: `r-` and 12 lowercase hex characters. Each pick on a cascade route starts a run; its judge and escalation picks carry the draft's run plus `judges` or `escalates` with the draft's id. Every member pick of one `cedr council plan` shares a new run.
 - A `council` record is written by `cedr council merge` (council.md, Record): `id` is `c-` and 12 lowercase hex characters, `run` the plan's run or null, `route` the council route or null, `groups` the merged groups per severity, `findings` the findings each reviewer reported (zero included). It holds counts only, never files, lines or claims.
 - A verdict needs a recorded pick id; the latest verdict for an id counts. Notes are one line of at most 120 characters. History holds no briefs, prompts, code or credentials.
+- `--session` explicitly links the latest verdict to a local Monitor session. Pass a stored `s-` id (12 hex digits) or a native session id. Route hashes native ids using the pick’s harness and [Monitor’s session id format](monitor.md#sources). Only the stored id is written. The session field is omitted when unset and stays local during Route sync.
 - `stats` groups picks by route, target and preview status (a preview version's trial cell is its own row), counting picks made on or after `--since` when given, and reports picks, each verdict count, verdicts recorded, accepted percent (accepted over verdicts recorded), and `median_minutes`: the median time from pick to its latest verdict, rounded to 0.1, null without verdicts. A cell with fewer than 10 verdicts is marked provisional. Rows of a cascade route add `judged` (its picks some judge pick names in `judges`) and `escalated` (its picks some escalation pick names in `escalates`); other rows have both null. JSON rows: `{"route", "target", "preview", "picks", "accepted", "reworked", "redone", "rejected", "verdicts", "accepted_pct", "median_minutes", "provisional", "judged", "escalated"}`; text marks a preview row ` (preview)` after the target.
+- Stats also read the existing local Monitor store. An explicit session matches by harness and id. Otherwise, a verdict matches only when exactly one session for that harness used the pick’s model and has its first recorded response between the pick and the verdict, inclusive. A missing or ambiguous match contributes no usage. Stats use the whole matched session for each matched pick.
+- Each stats JSON row adds `matched_picks`, `tokens`, `cost_usd` and `cost_per_accepted_usd`. Tokens sum recorded input, cache reads and writes, and output. Cost uses [Monitor’s API-equivalent prices](monitor.md#pricing). Tokens and cost are null without a match. Cost per accepted task divides the cost of all matched picks in the row by its matched `accepted` plus matched `reworked` picks, or is null when neither matched. The verdict counts and accepted percent keep their original meanings. Text adds a usage table when at least one pick matched.
 - `history` JSON is a list of `{"type": "pick", ...the pick record..., "verdict": <latest verdict record without type and id, or null>}` and `{"type": "council", ...the council record...}`; text prints one line per record: `<at> <route> -> <target> <effort> <verdict or "-"> <id>` for picks and `<at> <route> council <gate> review <round> of <rounds + 1 or unlimited> <id>` for council results (JSON keeps `round`, the review, and `rounds`, the revisions allowed).
 
 ## Import
@@ -404,7 +407,7 @@ Sync destinations and machine settings come from `--config`, `$CEDR_ROUTES`, or 
 |---|---|---|
 | `route_pick` | `route`, `size?`, `avoid?`, `models?`, `judges?`, `escalates?` | The pick JSON above |
 | `route_manual` | `target`, `effort?` | The pick JSON |
-| `route_verdict` | `id`, `verdict`, `task?`, `note?` | `{"recorded": true}` |
+| `route_verdict` | `id`, `verdict`, `task?`, `note?`, `session?` | `{"recorded": true}` |
 | `route_pools` | none | Pool rows |
 | `route_list` | none | Routes with tiers, and `judge` and `escalate` (null when unset) |
 | `route_show` | `route` | The JSON of `cedr route show` |
