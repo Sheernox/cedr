@@ -74,15 +74,25 @@ enum ReportFormat {
     Github,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, Default, ValueEnum, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[schemars(crate = "rmcp::schemars")]
 enum FailOn {
     High,
     Medium,
     Low,
+    #[default]
     Never,
 }
 
 impl FailOn {
+    fn reached(self, report: &cedr_core::outdated::Report) -> bool {
+        report
+            .updates
+            .iter()
+            .any(|u| u.severity.reaches(self.threshold()))
+    }
+
     fn threshold(self) -> Option<cedr_core::diff::ChangeSeverity> {
         use cedr_core::diff::ChangeSeverity;
         match self {
@@ -131,7 +141,7 @@ enum Command {
         #[command(subcommand)]
         command: compare::CompareCommand,
     },
-    /// Serve the route, council, sync, monitor, compare, bench and doctor tools over MCP on stdio
+    /// Serve the route, council, guard, sync, monitor, compare, bench and doctor tools over MCP on stdio
     Mcp {
         /// routes.toml to use instead of the usual search
         #[arg(long)]
@@ -365,8 +375,7 @@ fn run(command: GuardCommand) -> cedr_core::Result<ExitCode> {
                     ws.servers.len()
                 );
             }
-            let failed = report.has_errors() || (strict && !report.is_empty());
-            Ok(exit(failed))
+            Ok(exit(lint_failed(&report, strict)))
         }
         GuardCommand::Lock {
             path,
@@ -604,20 +613,23 @@ fn print_updates(
     format: ReportFormat,
     fail_on: FailOn,
 ) -> ExitCode {
-    for warning in &report.warnings {
-        eprintln!("cedr: warning: {}", warning.escape_debug());
-    }
+    print_outdated_warnings(&report.warnings);
     match format {
         ReportFormat::Text => print!("{}", report.to_text()),
         ReportFormat::Json => println!("{}", report.to_json()),
         ReportFormat::Github => print!("{}", report.to_github()),
     }
-    exit(
-        report
-            .updates
-            .iter()
-            .any(|u| u.severity.reaches(fail_on.threshold())),
-    )
+    exit(fail_on.reached(report))
+}
+
+fn print_outdated_warnings(warnings: &[String]) {
+    for warning in warnings {
+        eprintln!("cedr: warning: {}", warning.escape_debug());
+    }
+}
+
+fn lint_failed(report: &Report, strict: bool) -> bool {
+    report.has_errors() || (strict && !report.is_empty())
 }
 
 fn print_report(report: &Report, format: ReportFormat) {

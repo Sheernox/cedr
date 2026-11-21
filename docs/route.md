@@ -394,5 +394,8 @@ Sync destinations and machine settings come from `--config`, `$CEDR_ROUTES`, or 
 | `route_models` | none | The JSON of `cedr route models` |
 | `route_stats` | `route?`, `since?` | Stats rows |
 | `route_history` | `route?`, `limit?` | History entries |
+| `guard_lint` | `path?`, `strict?` | [Guard lint report](design.md#local-mcp-tools) |
+| `guard_verify` | `path?` | [Guard verify report](design.md#local-mcp-tools) |
+| `guard_outdated` | `path?`, `fail_on?` | [Guard npm update report](design.md#local-mcp-tools) |
 
 Errors return as tool errors with the same message the CLI prints.

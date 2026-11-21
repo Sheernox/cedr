@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use cedr_core::{discovery, lint, outdated, verify};
 use cedr_route::council::{self, Report};
 use cedr_route::history::{self, Verdict};
 use cedr_route::pick::{self, Size};
@@ -14,6 +15,8 @@ use rmcp::schemars::JsonSchema;
 use rmcp::{ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use serde::Deserialize;
 use serde_json::Value;
+
+use crate::FailOn;
 
 #[derive(Clone)]
 pub struct RouteServer {
@@ -167,6 +170,35 @@ pub struct RepoArgs {
     path: Option<PathBuf>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+struct GuardLintArgs {
+    /// Repository root, default current directory
+    path: Option<PathBuf>,
+    /// Treat lint warnings as findings that fail the gate
+    #[serde(default)]
+    strict: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+struct GuardVerifyArgs {
+    /// Repository root, default current directory
+    path: Option<PathBuf>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+struct GuardOutdatedArgs {
+    /// Repository root containing the Guard lock, default current directory
+    path: Option<PathBuf>,
+    /// Fail the gate at this surface-change severity, default never
+    fail_on: Option<FailOn>,
+}
+
 fn reply(result: cedr_route::Result<Value>) -> CallToolResult {
     match result {
         Ok(v) => {
@@ -186,10 +218,29 @@ fn reply(result: cedr_route::Result<Value>) -> CallToolResult {
 async fn blocking(
     f: impl FnOnce() -> cedr_route::Result<Value> + Send + 'static,
 ) -> CallToolResult {
+    blocking_tool(move || reply(f())).await
+}
+
+async fn blocking_tool(f: impl FnOnce() -> CallToolResult + Send + 'static) -> CallToolResult {
     match tokio::task::spawn_blocking(f).await {
-        Ok(r) => reply(r),
+        Ok(r) => r,
         Err(e) => reply(Err(cedr_route::Error::Usage(format!("tool failed: {e}")))),
     }
+}
+
+/// Keep CLI exit-1 reports readable as JSON and reserve plain text for a failed check.
+async fn guard_check(
+    f: impl FnOnce() -> cedr_core::Result<(Value, bool)> + Send + 'static,
+) -> CallToolResult {
+    blocking_tool(move || match f() {
+        Ok((value, failed)) => {
+            let mut result = reply(Ok(value));
+            result.is_error = Some(failed);
+            result
+        }
+        Err(e) => CallToolResult::error(vec![ContentBlock::text(e.to_string())]),
+    })
+    .await
 }
 
 impl RouteServer {
@@ -301,6 +352,41 @@ impl RouteServer {
         })
         .await
     }
+    #[tool(description = "Lint repo instructions, skills and MCP configuration offline")]
+    async fn guard_lint(&self, Parameters(a): Parameters<GuardLintArgs>) -> CallToolResult {
+        guard_check(move || {
+            let ws = discovery::discover(&a.path.unwrap_or_else(|| PathBuf::from(".")))?;
+            let report = lint::lint_workspace(&ws)?;
+            let failed = crate::lint_failed(&report, a.strict);
+            Ok((json(report), failed))
+        })
+        .await
+    }
+
+    #[tool(description = "Compare repo skills and MCP settings with the Guard lock offline")]
+    async fn guard_verify(&self, Parameters(a): Parameters<GuardVerifyArgs>) -> CallToolResult {
+        guard_check(move || {
+            let verification = verify::verify(&a.path.unwrap_or_else(|| PathBuf::from(".")))?;
+            crate::print_skipped(&verification.skipped);
+            let failed = !verification.report.is_empty();
+            Ok((json(verification.report), failed))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Compare locked npm tool surfaces with newer versions fetched from the npm registry, without running packages"
+    )]
+    async fn guard_outdated(&self, Parameters(a): Parameters<GuardOutdatedArgs>) -> CallToolResult {
+        guard_check(move || {
+            let report = outdated::outdated(&a.path.unwrap_or_else(|| PathBuf::from(".")))?;
+            crate::print_outdated_warnings(&report.warnings);
+            let failed = a.fail_on.unwrap_or_default().reached(&report);
+            Ok((json(report), failed))
+        })
+        .await
+    }
+
     #[tool(description = "Check generated agent files and organization rules offline")]
     async fn sync_check(&self, Parameters(a): Parameters<RepoArgs>) -> CallToolResult {
         blocking(move || {

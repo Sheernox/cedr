@@ -219,7 +219,7 @@ A remote check requires the current server configuration to match the pinned lau
 - **Results.** One entry per remote server in the lock: `{"client", "name", "url", "status", "changes", "error"}`, where `url` is redacted, `changes` holds [Diff](#diff) changes and `error` names a host at most. JSON is `{"version": 1, "at": "<RFC 3339>", "baseline": "<hex>", "servers": [...]}`, where `baseline` is a digest of the lock and its remote surfaces. `status` is `unchanged`, `changed`, `failed`, `auth_required`, `unsupported` or `not_pinned` (locked without a surface; nothing is contacted). An outage is `failed`, never `unchanged`, and results report what differs, not whether a server is safe.
 - **Exit codes.** 1 when any surface changed; otherwise 2 when any read failed or needs credentials, or on a usage or I/O failure; otherwise 0.
 - **Schedule.** `[remote] interval_minutes` in `.cedr/guard.toml` (5-10080, default 60) is the least time between reads. Results are kept per checkout in `$XDG_STATE_HOME/cedr/guard-remote/`, and a run inside the interval prints the last results, with their time on stderr, instead of reading again, unless the lock or a surface changed since, so a timer or cron job can call it as often as it likes. `--force` reads now. One read runs per checkout at a time; a run that finds another in progress prints the last results, or exits 2 when there are none. `--last` prints the last results and contacts nothing (exit 2 when there are none).
-- **Surfaces it does not cover.** The GitHub Action has no remote input, because a pull request can edit the config and would choose which hosts CI contacts. Guard has no MCP tools, and this adds none.
+- **Surfaces it does not cover.** The GitHub Action has no remote input, because a pull request can edit the config and would choose which hosts CI contacts.
 
 ## Updates
 
@@ -232,6 +232,20 @@ A remote check requires the current server configuration to match the pinned lau
 Other sources (`pypi:`, `oci:`, `command:`, `url:`) are listed as `not checked` in text output and left out of JSON. A registry or network failure for one server is a warning naming the server, never a failure of the run. JSON output is `{"version": 1, "updates": [...]}`; `--format github` prints one summary `::warning` per update (`::error` for high), without tool descriptions. Exit 0, or 1 when an update reaches `--fail-on` (default `never`), 2 on usage or I/O failure.
 
 Existing locks with URL credentials verify after normalization but warn to re-lock and rotate those credentials, which may remain in Git history. Older clients may report CV004 on a newly redacted URL source. Skills containing symlinks must be re-locked once to adopt the type tag; regular-file-only skill pins remain valid.
+
+## Local MCP tools
+
+`cedr mcp` serves three read-only Guard tools on stdio:
+
+| Tool | Arguments | JSON result |
+|---|---|---|
+| `guard_lint` | `path?`, `strict?` (boolean, default false) | The lint report |
+| `guard_verify` | `path?` | The verify report |
+| `guard_outdated` | `path?`, `fail_on?` (`high\|medium\|low\|never`, default `never`) | The outdated report |
+
+The optional `path` is a repo root, relative to the server's working directory when it is a relative path. It defaults to that directory. The result has the same JSON as the corresponding CLI command with `--format json`. A finding that would exit 1 returns the JSON with MCP's `isError` set. Usage and I/O failures return an MCP tool error with the failure message. Advisory messages such as registry warnings go to the server's stderr.
+
+Lint and verify are offline. Outdated reads metadata from the npm registry and, when needed, fetches and statically inspects its HTTPS tarballs. These tools never run packages or configured MCP servers, change pins, or run a remote surface check.
 
 ## Push
 

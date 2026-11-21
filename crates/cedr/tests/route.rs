@@ -1054,3 +1054,101 @@ fn pools_list_a_scoped_limit_for_any_version_a_family_target_may_pick() {
     assert_eq!(opus["state"], "out");
     assert_eq!(opus["summary"], "claude s39% w45% opus-4-5:100%");
 }
+
+#[test]
+fn mcp_guard_reports_match_cli_json_and_gates() {
+    let s = Scratch::new(10.0, 20.0);
+    let repo = s.dir.path().join("repo");
+    let lint_repo = s.dir.path().join("lint-repo");
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::create_dir(&lint_repo).unwrap();
+    std::fs::write(lint_repo.join("AGENTS.md"), "[docs](missing.md)\n").unwrap();
+    cedr_core::lock::lock(&repo, cedr_core::lock::LockOptions::default()).unwrap();
+    std::fs::write(
+        repo.join(".mcp.json"),
+        r#"{"mcpServers":{"docs":{"command":"docs-mcp"}}}"#,
+    )
+    .unwrap();
+
+    let mut child = s
+        .command(&["mcp"])
+        .current_dir(&repo)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut send = |v: Value| writeln!(stdin, "{v}").unwrap();
+    let mut recv = |id: usize| loop {
+        let v: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+        if v["id"] == id {
+            break v;
+        }
+    };
+    send(
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+            "protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}
+        }}),
+    );
+    assert_eq!(recv(1)["result"]["serverInfo"]["name"], "cedr");
+    send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+
+    for (i, (subcommand, args, cli_flags, code)) in [
+        (
+            "lint",
+            json!({"path":lint_repo,"strict":true}),
+            vec![lint_repo.to_str().unwrap(), "--strict"],
+            1,
+        ),
+        ("verify", json!({}), vec![], 1),
+        (
+            "outdated",
+            json!({"fail_on":"high"}),
+            vec!["--fail-on", "high"],
+            0,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let cli = s
+            .command(&["guard", subcommand, "--format", "json"])
+            .args(cli_flags)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert_eq!(cli.status.code(), Some(code));
+        let id = i + 2;
+        send(
+            json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{
+                "name":format!("guard_{subcommand}"),"arguments":args
+            }}),
+        );
+        let result = &recv(id)["result"];
+        assert_eq!(result["isError"], code == 1);
+        let report: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            report,
+            serde_json::from_slice::<Value>(&cli.stdout).unwrap()
+        );
+    }
+
+    send(
+        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{
+            "name":"guard_verify","arguments":{"path":lint_repo}
+        }}),
+    );
+    let missing_lock = &recv(5)["result"];
+    assert_eq!(missing_lock["isError"], true);
+    assert!(
+        missing_lock["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("no lock: run cedr guard lock first")
+    );
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
