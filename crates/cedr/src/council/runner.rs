@@ -9,8 +9,7 @@ use std::time::Duration;
 use cedr_compare::exec;
 use cedr_compare::harness::{self, AgentEnd};
 use cedr_compare::suite::{HarnessKind, Variant};
-use cedr_core::finding::{github_data, github_property};
-use cedr_route::council::{self, Merged, Report, Settings};
+use cedr_route::council::{self, Report, Settings};
 use cedr_route::history;
 use cedr_route::pick::Delegate;
 use cedr_route::readings::MAX_BYTES;
@@ -31,15 +30,24 @@ pub struct Args {
     /// Exact revision range (A..B or A...B)
     #[arg(long, value_name = "RANGE")]
     diff: Option<String>,
+    /// Commit to review (default: HEAD)
+    #[arg(long, value_name = "REF")]
+    head: Option<String>,
     /// Run exactly these members, without spare replacements; repeatable
     #[arg(long, value_name = "H/M")]
     member: Vec<String>,
     /// Maximum running time per reviewer, in seconds
     #[arg(long, value_name = "SECS", default_value_t = 900, value_parser = clap::value_parser!(u64).range(1..))]
     timeout: u64,
+    /// Skip reviewers without their vendor API key or CLI on PATH, before seating spares
+    #[arg(long)]
+    require_api_keys: bool,
     /// Directory for reports and the revision brief (default: a new temporary directory)
     #[arg(long, value_name = "DIR")]
     out: Option<PathBuf>,
+    /// Also save merged JSON to a new file, regardless of the stdout format
+    #[arg(long, value_name = "FILE")]
+    report_json: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = Format::Text)]
     format: Format,
 }
@@ -49,6 +57,8 @@ enum Format {
     Text,
     Json,
     Github,
+    Sarif,
+    Gitlab,
 }
 
 pub(super) fn run(args: Args, config: Option<&Path>) -> Result<ExitCode> {
@@ -56,27 +66,26 @@ pub(super) fn run(args: Args, config: Option<&Path>) -> Result<ExitCode> {
         .map_err(|e| Error::Usage(format!("cannot handle reviewer interrupts: {e}")))?;
     let session = route::open(config, None, None)?;
     let ctx = session.context();
-    let unsupported: Vec<_> = ctx
+    let unavailable: std::collections::BTreeMap<_, _> = ctx
         .config
         .harnesses
         .keys()
-        .filter(|h| kind(h).is_none())
-        .cloned()
+        .filter_map(|h| {
+            unavailable_reason(h, args.require_api_keys).map(|reason| (h.as_str(), reason))
+        })
         .collect();
-    // Avoid unsupported harnesses at plan time so the existing vacancy policy seats spares.
-    let plan = council::plan_members(
-        &ctx,
-        &args.route,
-        args.size.into(),
-        &unsupported,
-        &args.member,
-    )?;
+    // Apply preflight before planning so the existing vacancy policy seats spares.
+    let avoid: Vec<_> = unavailable.keys().map(|h| (*h).to_owned()).collect();
+    let plan = council::plan_members(&ctx, &args.route, args.size.into(), &avoid, &args.member)?;
     for warning in plan.pick.warnings.iter().skip(session.warnings.len()) {
         eprintln!("cedr: {warning}");
     }
     for reason in &plan.pick.skipped {
-        match reason.strip_suffix("=avoided") {
-            Some(name) => eprintln!("cedr: skipped {name}: no headless Council adapter"),
+        match reason
+            .strip_suffix("=avoided")
+            .and_then(|name| unavailable.get_key_value(name))
+        {
+            Some((name, reason)) => eprintln!("cedr: skipped {name}: {reason}"),
             None => eprintln!("cedr: skipped {reason}"),
         }
     }
@@ -88,7 +97,7 @@ pub(super) fn run(args: Args, config: Option<&Path>) -> Result<ExitCode> {
 
     let cwd = route::cwd()?;
     let root = exec::git_root(&cwd).map_err(|e| Error::Usage(e.to_string()))?;
-    let head = commit(&root, "HEAD")?;
+    let head = commit(&root, args.head.as_deref().unwrap_or("HEAD"))?;
     let range = diff_range(&root, &head, args.base.as_deref(), args.diff.as_deref())?;
     let diff = git_output(
         exec::git(&root).args([
@@ -156,12 +165,39 @@ pub(super) fn run(args: Args, config: Option<&Path>) -> Result<ExitCode> {
     }
     history::record_council_plan(&history_path, &mut merged, &plan, chrono::Utc::now())?;
     route::auto_sync(config);
-    match args.format {
-        Format::Text => print_merged(&merged, MergeFormat::Text),
-        Format::Json => print_merged(&merged, MergeFormat::Json),
-        Format::Github => print_github(&merged),
+    if let Some(path) = args.report_json {
+        let json = serde_json::to_vec_pretty(&merged).expect("merge serializes");
+        new_file(&path)?.write_all(&json).map_err(io(&path))?;
     }
+    print_merged(
+        &merged,
+        match args.format {
+            Format::Text => MergeFormat::Text,
+            Format::Json => MergeFormat::Json,
+            Format::Github => MergeFormat::Github,
+            Format::Sarif => MergeFormat::Sarif,
+            Format::Gitlab => MergeFormat::Gitlab,
+        },
+    );
     Ok(gate_code(merged.gate))
+}
+
+/// CI uses explicit secrets rather than a sign-in that may exist on a self-hosted runner.
+fn unavailable_reason(name: &str, require_api_keys: bool) -> Option<String> {
+    let key = match kind(name) {
+        Some(HarnessKind::Claude) => "ANTHROPIC_API_KEY",
+        Some(HarnessKind::Codex) => "OPENAI_API_KEY",
+        _ => return Some("no headless Council adapter".into()),
+    };
+    if require_api_keys {
+        if !cedr_route::machine::installed(name) {
+            return Some(format!("{name} is not installed on PATH"));
+        }
+        if std::env::var_os(key).is_none_or(|key| key.is_empty()) {
+            return Some(format!("{key} is missing"));
+        }
+    }
+    None
 }
 
 fn kind(name: &str) -> Option<HarnessKind> {
@@ -174,24 +210,21 @@ fn kind(name: &str) -> Option<HarnessKind> {
 
 /// Pin both diff endpoints before starting reviewers. Pass only resolved commit ids to git diff.
 fn diff_range(root: &Path, head: &str, base: Option<&str>, diff: Option<&str>) -> Result<String> {
-    let resolve = |reference| {
-        if reference == "HEAD" {
-            Ok(head.to_string())
-        } else {
-            commit(root, reference)
-        }
-    };
     if let Some(range) = diff {
         for separator in ["...", ".."] {
             if let Some((a, b)) = range.split_once(separator) {
-                return Ok(format!("{}{separator}{}", resolve(a)?, resolve(b)?));
+                return Ok(format!(
+                    "{}{separator}{}",
+                    commit(root, a)?,
+                    commit(root, b)?
+                ));
             }
         }
         return Err(Error::Usage("--diff needs a range A..B or A...B".into()));
     }
 
     let base = match base {
-        Some(base) => resolve(base)?,
+        Some(base) => commit(root, base)?,
         None => commit(root, "refs/remotes/origin/HEAD")
             .or_else(|_| commit(root, "refs/heads/main"))
             .or_else(|_| commit(root, "refs/remotes/origin/main"))
@@ -427,28 +460,4 @@ fn io(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
         path: path.to_path_buf(),
         source,
     }
-}
-
-/// Never interpolate an unescaped report field into a GitHub workflow command.
-fn print_github(merged: &Merged) {
-    for group in &merged.groups {
-        let level = if group.severity <= merged.block {
-            "error"
-        } else {
-            "warning"
-        };
-        println!(
-            "::{level} file={},line={},title=Council {:?}::{}",
-            github_property(&group.file),
-            group.line,
-            group.severity,
-            github_data(group.headline()),
-        );
-    }
-    println!(
-        "council: {} ({} of quorum {} reviewed)",
-        merged.gate.as_str(),
-        merged.reviewers.len(),
-        merged.quorum,
-    );
 }

@@ -50,15 +50,53 @@ A spare stays out unless a regular member cannot take this review. A vacancy is 
 
 ## Run
 
-`cedr council run <route> [--size small|medium|large] [--base REF | --diff RANGE] [--member H/M]... [--timeout SECS] [--out DIR] [--format text|json|github]`
+`cedr council run <route> [--size small|medium|large] [--base REF | --diff RANGE] [--head REF] [--member H/M]... [--timeout SECS] [--require-api-keys] [--out DIR] [--report-json FILE] [--format text|json|github|sarif|gitlab]`
 
 - Plans and records one run using the same rules as `council plan`. The `claude` and `codex` harnesses are supported. A harness with no headless adapter is skipped and reported on stderr. Spares fill those seats according to the route's policy. With explicit `--member` selections, skipped members are never replaced.
-- Gives every member the same brief with the Council procedure, the diff and the text report format. By default the diff is from the merge base of `HEAD` and the default branch (the local `origin/HEAD` ref, falling back to `main`) to `HEAD`. Use `--base REF` to choose another base, or `--diff A..B` or `--diff A...B` to supply the exact range. Reviewers always inspect committed files from `HEAD` in independent temporary exports that are removed after the run, including on Ctrl-C.
-- Starts the members in parallel with their installed CLIs, using Claude's plan permission mode and Codex's read-only sandbox. Each CLI uses its own sign-in or the vendor's API key from the environment. The per-member timeout is 900 seconds by default. The selected providers receive the review brief and diff. A timed-out or failed reviewer does not count towards quorum.
+- Gives every member the same brief with the Council procedure, the diff and the text report format. By default the diff is from the merge base of `HEAD` and the default branch (the local `origin/HEAD` ref, falling back to `main`) to `HEAD`. Use `--base REF` to choose another base, or `--diff A..B` or `--diff A...B` to supply the exact range. Use `--head REF` to review another commit. This replaces `HEAD` in the default diff and selects the commit exported for reviewers. An explicit `--diff` still takes its exact endpoints. Reviewers inspect committed files in independent temporary exports that are removed after the run, including on Ctrl-C.
+- Starts the members in parallel with their installed CLIs, using Claude's plan permission mode and Codex's read-only sandbox. Each CLI uses its own sign-in or the vendor's API key from the environment. With `--require-api-keys`, a member without its CLI on PATH or a nonempty `ANTHROPIC_API_KEY` (Claude) or `OPENAI_API_KEY` (Codex) is skipped and reported before seating spares. The per-member timeout is 900 seconds by default. The selected providers receive the review brief and diff. A timed-out or failed reviewer does not count towards quorum.
 - Saves replies as `<out>/<harness>-<model>.md`. Characters outside ASCII letters, digits, period, underscore and hyphen are percent-encoded in filenames. Pre-existing report files are refused. If `--out` is omitted, a new temporary report directory is kept and printed on stderr.
-- Always asks for `End of review.` and merges in strict mode, recording the gate against the plan's run id, which is printed on stderr. Text and JSON use the merge output format. GitHub output prints one workflow annotation per finding group (error at or above the blocking severity, warning below it) and a gate summary. A block with revision rounds left saves `revision-brief.md` in the output directory and prints its path on stderr. The runner leaves the change to its author.
+- Always asks for `End of review.` and merges in strict mode, recording the gate against the plan's run id, which is printed on stderr. Text, JSON, GitHub, SARIF and GitLab output match [Merge](#merge). Use `--report-json FILE` to also save the merged JSON alongside any stdout format. The file must not exist. A block with revision rounds left saves `revision-brief.md` in the output directory and prints its path on stderr. The runner leaves the change to its author.
 
 Exit codes follow merge: 0 pass, 1 block, 3 incomplete, 2 error.
+
+## GitHub Action
+
+Set `council` to a Council route from your repository's `.cedr/routes.toml`. The action runs Council on same-repository pull requests, pushes and manual dispatches. Fork pull requests are skipped with a notice. Use a checkout with `fetch-depth: 0` so the review can resolve both commits. On a pull request, the action reviews its head commit against its base branch. Set `council-base` to override the base. On pushes and manual dispatches the CLI uses its usual base unless overridden.
+
+Install the `claude` and/or `codex` CLI in your workflow and pass each one's API key from a workflow secret. cedr reports skipped members and seats eligible spares according to the route. Each run spends at the vendors' API prices. `council-timeout` limits each reviewer to 900 seconds by default.
+
+The same merged report supplies the annotations and the job summary. A blocked or incomplete Council fails the job. With `council-comment: true` (the default), the action uses the workflow's GitHub token to submit one comment review on the pull request. Finding groups whose line appears on the head side of the diff get one inline comment each. Other groups appear in the review body. A new review marks previous cedr Council review bodies superseded. Posting failures warn in the log and the merged result still decides the job. The workflow needs `pull-requests: write` for review posting. The runner needs Bash and jq, plus the GitHub CLI to post reviews.
+
+```yaml
+name: Council
+on: pull_request
+permissions:
+  contents: read
+  pull-requests: write
+concurrency:
+  group: council-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  council:
+    if: github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: npm install --prefix "$RUNNER_TEMP/council-cli" @anthropic-ai/claude-code @openai/codex
+      - run: echo "$RUNNER_TEMP/council-cli/node_modules/.bin" >> "$GITHUB_PATH"
+      - uses: Sheernox/cedr@vX.Y.Z
+        with:
+          council: review.release
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+```
+
+Replace `review.release` with your configured route and `vX.Y.Z` with the [latest release](https://github.com/Sheernox/cedr/releases/latest).
 
 ## Reports
 

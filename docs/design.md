@@ -285,10 +285,16 @@ The public repo's root `action.yml` is a composite action: `uses: Sheernox/cedr@
 | `push-org` | empty | When set with the `CEDR_API_KEY` env, run `cedr guard push --org <it> --updates` after the checks, also when they fail |
 | `outdated` | `true` | Run `cedr guard outdated --format github` after verify, so newer versions of pinned servers show as annotations; it never fails the job |
 | `comment` | `false` | On a `pull_request` event, create or update one sticky pull request comment (below); the workflow needs `pull-requests: write` |
+| `council` | empty | Council route to run on same-repository `pull_request`, `push`, or `workflow_dispatch` |
+| `council-base` | the pull request's base branch, otherwise the CLI default | Base ref for the Council diff |
+| `council-timeout` | `900` | Time limit in seconds per Council reviewer |
+| `council-comment` | `true` | Submit one Council review on the pull request; needs `pull-requests: write` |
 
 With `comment: true`, after the checks the action maintains exactly one comment on the pull request, found by its hidden first line `<!-- cedr-action -->` and updated in place on every push (`scripts/pr-comment.sh`, through `gh api` with the workflow's `GITHUB_TOKEN`). It summarises Guard lint and verify (the finding count and the first ten findings), the server updates from `outdated` with their surface changes, Sync drift and, when Compare ran, its report table. Bodies over GitHub's 65,536-character limit are cut short with a note. It is skipped with a notice on non-`pull_request` events and on pull requests from a fork (the head repository differs from the base), and a failure to comment only warns: the check steps have already decided the job. The workflow must grant `pull-requests: write`, for example a top-level `permissions: {contents: read, pull-requests: write}`.
 
-`version` must be a release tag (`vX.Y.Z`, optionally with a `-suffix`). It downloads `cedr-<os>-<arch>.tar.gz` for the runner (`linux`, `macos` or `windows`; `x86_64` or `arm64`; `.zip` on Windows) and `SHA256SUMS` from the GitHub release over https, refuses an archive whose checksum does not match, then runs lint and verify with `--format github`. The action calls the old top-level names so that a `version` pinned to a release before 0.6.0 keeps working. The job fails when either fails. It runs no package or server and never uses `--introspect`.
+Council uses its own review, separate from the sticky check comment. See the [Council workflow example](council.md#github-action) for checkout, provider CLIs and credentials.
+
+`version` must be a release tag (`vX.Y.Z`, optionally with a `-suffix`). It downloads `cedr-<os>-<arch>.tar.gz` for the runner (`linux`, `macos` or `windows`; `x86_64` or `arm64`; `.zip` on Windows) and `SHA256SUMS` from the GitHub release over https, refuses an archive whose checksum does not match, then runs lint and verify with `--format github`. The action calls the old top-level names so that a `version` pinned to a release before 0.6.0 keeps working. The job fails when either fails. The Guard checks run no package or MCP server and never use `--introspect`.
 
 ## Watcher commands
 

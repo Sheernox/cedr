@@ -1,5 +1,5 @@
 name: cedr
-description: Check Guard inventory and Sync agent configuration, report drift, repair generated files with a pull request, and run Compare suites
+description: Check Guard inventory and Sync agent configuration, run Compare suites, and review changes with Council
 author: Sheernox
 branding:
   icon: shield
@@ -49,6 +49,18 @@ inputs:
   comment:
     description: "On a pull request, create or update one sticky comment with the Guard, Sync and Compare results; the workflow needs pull-requests: write. Skipped on forks and on other events"
     default: "false"
+  council:
+    description: Council route to run on same-repository pull requests, pushes and manual dispatches. Empty skips Council
+    default: ""
+  council-base:
+    description: Base ref for the Council diff. Defaults to the pull request base branch, otherwise the CLI default
+    default: ""
+  council-timeout:
+    description: Time limit in seconds per Council reviewer
+    default: "900"
+  council-comment:
+    description: "Submit one Council review on the pull request; the workflow needs pull-requests: write"
+    default: "true"
 
 runs:
   using: composite
@@ -281,6 +293,24 @@ runs:
         COMPARE_REPORT: ${{ runner.temp }}/cedr-compare-report.txt
         GH_TOKEN: ${{ github.token }}
       run: bash "${{ github.action_path }}/scripts/pr-comment.sh"
+
+    - name: cedr council run
+      if: ${{ !cancelled() && inputs.council != '' }}
+      shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_COUNCIL: ${{ inputs.council }}
+        INPUT_COUNCIL_BASE: ${{ inputs.council-base }}
+        INPUT_COUNCIL_TIMEOUT: ${{ inputs.council-timeout }}
+        INPUT_COUNCIL_COMMENT: ${{ inputs.council-comment }}
+        COUNCIL_EVENT: ${{ github.event_name }}
+        COUNCIL_PR: ${{ github.event.pull_request.number }}
+        COUNCIL_HEAD: ${{ github.event.pull_request.head.sha }}
+        COUNCIL_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        COUNCIL_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+        COUNCIL_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        GH_TOKEN: ${{ github.token }}
+      run: bash "${{ github.action_path }}/scripts/council-action.sh"
 
     - name: Result
       if: ${{ always() }}

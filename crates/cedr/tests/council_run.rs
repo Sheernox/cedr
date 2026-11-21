@@ -42,6 +42,14 @@ candidates = [
   { target = "muse/muse-test" },
   { target = "claude/claude-test", spare = true },
 ]
+
+[routes.ci]
+council = true
+quorum = 1
+candidates = [
+  { target = "codex/gpt-test" },
+  { target = "claude/claude-test", spare = true },
+]
 "#;
 
 struct Run {
@@ -252,25 +260,121 @@ fn two_members_run_in_parallel_and_record_one_strict_gate() {
 }
 
 #[test]
-fn a_blocking_report_produces_annotations_and_a_revision_brief() {
+fn run_and_merge_share_machine_formats_and_keep_the_gate() {
+    for format in ["github", "sarif", "gitlab"] {
+        let run = Run::new();
+        run.agent(
+            "claude",
+            "data,here.txt:1 - P1 - rejects 100% of inputs",
+            "",
+            "",
+        );
+        run.agent("codex", CLEAN, "", "");
+        let json_path = run.scratch.dir.path().join("merged.json");
+        let out = run.run(
+            "council",
+            &[
+                "--format",
+                format,
+                "--diff",
+                "main..HEAD",
+                "--report-json",
+                json_path.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+        let merged = run
+            .scratch
+            .command(&[
+                "council",
+                "merge",
+                "--no-record",
+                "--strict",
+                "--format",
+                format,
+            ])
+            .arg(format!(
+                "claude/claude-test={}",
+                run.out.join("claude-claude-test.md").display()
+            ))
+            .arg(format!(
+                "codex/gpt-test={}",
+                run.out.join("codex-gpt-test.md").display()
+            ))
+            .output()
+            .unwrap();
+        assert_eq!(merged.status.code(), Some(1), "{}", stderr(&merged));
+        assert_eq!(out.stdout, merged.stdout, "{format}");
+        let json: Value = serde_json::from_slice(&fs::read(json_path).unwrap()).unwrap();
+        assert_eq!(json["gate"], "block");
+        assert_eq!(json["groups"][0]["line"], 1);
+        assert!(stderr(&out).contains(run.out.join("revision-brief.md").to_str().unwrap()));
+        assert!(
+            run.read("reports/revision-brief.md")
+                .contains("rejects 100% of inputs")
+        );
+    }
+}
+
+#[test]
+fn ci_reviews_a_pinned_head_and_replaces_a_member_without_a_key() {
     let run = Run::new();
-    run.agent(
-        "claude",
-        "data,here.txt:1 - P1 - rejects 100% of inputs",
-        "",
-        "",
-    );
-    run.agent("codex", CLEAN, "", "");
-    let out = run.run("council", &["--format", "github", "--diff", "main..HEAD"]);
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    run.git(&["branch", "reviewed"]);
+    run.commit("new head");
+    run.agent("claude", CLEAN, "", "");
+    run.agent("codex", CLEAN, "exit 42", "");
+    let out = run
+        .command(
+            "ci",
+            &[
+                "--head",
+                "reviewed",
+                "--require-api-keys",
+                "--format",
+                "json",
+            ],
+        )
+        .env_remove("OPENAI_API_KEY")
+        .arg("--out")
+        .arg(&run.out)
+        .output()
+        .unwrap();
+    let gate = assert_gate(&out, 0, "pass");
+    assert_eq!(gate["reviewers"], json!(["claude/claude-test"]));
+    assert!(stderr(&out).contains("skipped codex: OPENAI_API_KEY is missing"));
     assert_eq!(
-        stdout(&out),
-        "::error file=data%2Chere.txt,line=1,title=Council P1::rejects 100%25 of inputs\ncouncil: block (1 of quorum 2 reviewed)\n"
+        gate["spares"],
+        json!({"claude/claude-test":"codex/gpt-test"})
     );
-    assert!(stderr(&out).contains(run.out.join("revision-brief.md").to_str().unwrap()));
-    assert!(
-        run.read("reports/revision-brief.md")
-            .contains("rejects 100% of inputs")
+    assert!(run.read("claude.prompt").contains("+reviewed version"));
+    assert!(!run.scratch.dir.path().join("codex.prompt").exists());
+}
+
+#[test]
+fn ci_replaces_a_member_whose_cli_is_missing() {
+    let run = Run::new();
+    run.agent("claude", CLEAN, "", "");
+    let path = std::env::var_os("PATH").unwrap();
+    for name in ["git", "cat"] {
+        let binary = std::env::split_paths(&path)
+            .map(|dir| dir.join(name))
+            .find(|candidate| candidate.is_file())
+            .unwrap();
+        std::os::unix::fs::symlink(binary, run.bin.join(name)).unwrap();
+    }
+    let out = run
+        .command("ci", &["--require-api-keys", "--format", "json"])
+        .env("PATH", &run.bin)
+        .env("OPENAI_API_KEY", "fake-openai-key")
+        .arg("--out")
+        .arg(&run.out)
+        .output()
+        .unwrap();
+    let gate = assert_gate(&out, 0, "pass");
+    assert!(stderr(&out).contains("skipped codex: codex is not installed on PATH"));
+    assert_eq!(
+        gate["spares"],
+        json!({"claude/claude-test":"codex/gpt-test"})
     );
 }
 

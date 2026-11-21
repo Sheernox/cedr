@@ -278,6 +278,8 @@ cedr:
 
 Inputs: `version`, `path`, `strict`, `verify` (`auto`, `true` or `false`), `sync`, `sync-fix`, `outdated` (default `true`, annotations never fail the job), `comment` (`true` keeps one sticky pull request comment with every result; it needs `pull-requests: write` and is skipped on forks) and `push-org`, which with a `CEDR_API_KEY` secret also sends each result and npm updates to the app. Repo-level settings, such as extra skill folders and checks to skip, go in `.cedr/guard.toml`. See the [Guard design](docs/design.md) for every field.
 
+To run Council, set `council` to a route id. Use `council-base` to override the pull request's base branch and `council-timeout` to change the 900-second per-reviewer limit. `council-comment` defaults to `true` and posts one pull request review with `pull-requests: write`. Council skips fork pull requests. See the [Council workflow example](docs/council.md#github-action) to install the vendor CLIs and set their API keys.
+
 ## 🔌 Use it from your agent
 
 `cedr mcp` offers the Route, Council, Sync, Monitor, Compare, Bench and Doctor tools to any agent that speaks MCP:
