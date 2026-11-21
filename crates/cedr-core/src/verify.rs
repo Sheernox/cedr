@@ -1,6 +1,6 @@
 //! `cedr guard verify`: compares the repo with its lock without touching the network.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::discovery::{self, Client};
@@ -62,12 +62,34 @@ pub fn verify(root: &Path) -> Result<Verification> {
         }
     }
 
-    let current_servers: BTreeMap<(Client, &str), &discovery::Server> = ws
-        .servers
+    findings.extend(mcp_findings(&lock, lock_file, &ws.servers, |_, _| true));
+    Ok(Verification {
+        report: Report::new(findings),
+        skipped: ws.skipped,
+    })
+}
+
+/// Compare the chosen server keys so Sync can reuse the pin rules for just the entries it wrote.
+pub fn mcp_findings(
+    lock: &lock::Lock,
+    lock_file: &str,
+    servers: &[discovery::Server],
+    selected: impl Fn(Client, &str) -> bool,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let error = |rule, path: &str, line, message: String| {
+        Finding::new(rule, Severity::Error, path, line, message)
+    };
+    let current_servers: BTreeMap<(Client, &str), &discovery::Server> = servers
         .iter()
         .map(|s| ((s.client, s.name.as_str()), s))
         .collect();
-    for entry in &lock.mcp {
+    let pinned: BTreeSet<_> = lock
+        .mcp
+        .iter()
+        .map(|e| (e.client, e.name.as_str()))
+        .collect();
+    for entry in lock.mcp.iter().filter(|e| selected(e.client, &e.name)) {
         let label = format!("MCP server \"{}\" ({})", entry.name, entry.client.as_str());
         let Some(server) = current_servers.get(&(entry.client, entry.name.as_str())) else {
             findings.push(error(
@@ -110,12 +132,8 @@ pub fn verify(root: &Path) -> Result<Verification> {
             ));
         }
     }
-    for server in &ws.servers {
-        let known = lock
-            .mcp
-            .iter()
-            .any(|e| e.client == server.client && e.name == server.name);
-        if !known {
+    for server in servers.iter().filter(|s| selected(s.client, &s.name)) {
+        if !pinned.contains(&(server.client, server.name.as_str())) {
             findings.push(error(
                 Rule::Cv002,
                 &server.config_path,
@@ -128,8 +146,5 @@ pub fn verify(root: &Path) -> Result<Verification> {
             ));
         }
     }
-    Ok(Verification {
-        report: Report::new(findings),
-        skipped: ws.skipped,
-    })
+    findings
 }

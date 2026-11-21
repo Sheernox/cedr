@@ -1,6 +1,7 @@
 //! Offline agent configuration compilation, planning and drift checks.
 pub mod config;
 pub mod emit;
+mod guard;
 pub mod import;
 pub mod io;
 mod merge;
@@ -323,6 +324,16 @@ pub fn check(root: &Path) -> Report {
         )]),
     }
 }
+/// Guard findings are added after the calling command decides the existing Sync gate.
+pub fn with_guard_warnings(root: &Path, report: Report) -> Report {
+    let Some(lock_file) = guard::lock_file(root) else {
+        return report;
+    };
+    let mut findings = report.findings;
+    findings.extend(guard::warnings(root, lock_file, |_, _| true));
+    Report::new(findings)
+}
+
 /// Where a generated file's content comes from, for telling a person where hand edits belong.
 pub fn source_of(path: &str) -> &'static str {
     if path == "AGENTS.md" {
@@ -382,6 +393,16 @@ pub fn refusals(root: &Path, p: &Plan) -> Result<Vec<(String, Refusal)>> {
 }
 
 pub fn apply(root: &Path, p: &Plan, force: bool) -> Result<bool> {
+    apply_with_warnings(root, p, force, |_| {})
+}
+
+/// Report advisory Guard findings for completed writes, even if a later write fails.
+pub fn apply_with_warnings(
+    root: &Path,
+    p: &Plan,
+    force: bool,
+    warn: impl FnOnce(Report),
+) -> Result<bool> {
     read_lock(root)?;
     if !force && !refusals(root, p)?.is_empty() {
         return Ok(false);
@@ -390,21 +411,47 @@ pub fn apply(root: &Path, p: &Plan, force: bool) -> Result<bool> {
     for f in &p.files {
         io::path(root, &f.path)?;
     }
-    for f in &p.files {
-        if io::read(root, &f.path)? != f.bytes {
-            match &f.bytes {
-                Some(b) => io::write(root, &f.path, b)?,
-                None => std::fs::remove_file(io::path(root, &f.path)?)
-                    .map_err(|_| format!("sync: cannot remove {}", f.path))?,
+    let lock_file = guard::lock_file(root);
+    let mut changed = BTreeMap::new();
+    let mut warnings = Vec::new();
+    let written = (|| {
+        for f in &p.files {
+            let current = io::read(root, &f.path)?;
+            if current != f.bytes {
+                match &f.bytes {
+                    Some(b) => io::write(root, &f.path, b)?,
+                    None => std::fs::remove_file(io::path(root, &f.path)?)
+                        .map_err(|_| format!("sync: cannot remove {}", f.path))?,
+                }
+                if lock_file.is_some()
+                    && let Err(error) = guard::written_servers(
+                        &f.path,
+                        current.as_deref(),
+                        f.bytes.as_deref(),
+                        &mut changed,
+                    )
+                {
+                    warnings.push(guard::skipped(&f.path, &error));
+                }
             }
         }
+        io::write(
+            root,
+            ".cedr/sync.lock",
+            format!("{}\n", serde_json::to_string_pretty(&p.lock).expect("lock")).as_bytes(),
+        )
+    })();
+    if let Some(lock_file) = lock_file
+        && !changed.is_empty()
+    {
+        warnings.extend(guard::warnings(root, lock_file, |client, name| {
+            changed
+                .get(&client)
+                .is_some_and(|names| names.contains(name))
+        }));
     }
-    io::write(
-        root,
-        ".cedr/sync.lock",
-        format!("{}\n", serde_json::to_string_pretty(&p.lock).expect("lock")).as_bytes(),
-    )?;
-    Ok(true)
+    warn(Report::new(warnings));
+    written.map(|()| true)
 }
 
 fn imported(root: &Path, path: &str, targets: &[String]) -> Result<bool> {

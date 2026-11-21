@@ -114,6 +114,7 @@ JSON and TOML files are merged, not replaced: `cedr sync` owns only the keys in 
 - `.cedr/sync.lock` records each generated path, its target and the SHA-256 of what was written (of the owned keys only, for merged JSON and TOML). A path in the old lock that the new run no longer generates is removed (a merged file only loses its owned keys).
 - `cedr sync` refuses to overwrite a Markdown file it did not generate (no generated header line, even when listed in the lock) unless `--force`: before the first sync, `cedr sync init` imports its content; after that, move the content into its source. It refuses to overwrite a generated file someone edited by hand (its hash differs from the lock, CS002) unless `--force`. Each refused file gets a line on stderr naming its source (`AGENTS.md` comes from `.cedr/rules/10-agents.md`, other instructions and rules from `.cedr/rules/`, skills from `.cedr/skills/`, settings from `.cedr/sync.toml`) and saying that `--force` discards the hand edits.
 - A `CLAUDE.md` or `GEMINI.md` link straight to this repo's own regular `AGENTS.md` (link text `AGENTS.md` or `./AGENTS.md`) is left as it is by `cedr sync` and `cedr sync check` while no rule is scoped to that agent, including when a previously generated instruction file was replaced by that link (its lock entry is removed). Once one is, the agent needs a file of its own, so Sync stops with an error (exit 2; a CS004 finding in `check`) saying to remove the link and run `cedr sync` again; it never writes through or replaces the link. Every other symlink on a path Sync reads or writes is refused, with the same advice to replace it with a regular file.
+- With a Guard lock, Sync checks the MCP entries it added, changed or removed against their pins offline. It warns on stderr when those entries no longer match and shows how to refresh the pins with `cedr guard lock`.
 - `--dry-run` writes nothing and prints what would change as a unified diff.
 - Exit 0 written (or nothing to change), 1 refused (with the files named), 2 usage or I/O failure (including invalid sources).
 
@@ -132,7 +133,7 @@ It refuses to run when `.cedr/sync.toml` exists. It writes sources only; run `ce
 
 ## Check: `cedr sync check`
 
-`cedr sync check [PATH] [--format text|json|github]` never touches the network and never writes. It fails (exit 1) on any finding; findings use Guard's lint JSON shape and `--format github` annotations ([design.md](design.md), Lint rules):
+`cedr sync check [PATH] [--format text|json|github]` never touches the network and never writes. Findings from compilation or organization rules fail the check (exit 1). Guard pin warnings are advisory. Findings use Guard's lint JSON shape and `--format github` annotations ([design.md](design.md), Lint rules):
 
 | ID | Severity | Finds |
 |---|---|---|
@@ -145,6 +146,10 @@ It refuses to run when `.cedr/sync.toml` exists. It writes sources only; run `ce
 | CS103 | error | An unpinned MCP server (Guard's Source resolution) while the organization requires pinned servers |
 | CS104 | error | A required organization skill is missing or was changed |
 | CS105 | warning | A target the organization requires is not in `targets` |
+| CV002, CV003, CV004, CV005 | warning | With a Guard lock, a current MCP server was added or removed, or its source or launch differs from its pin |
+| CS005 | warning | Sync could not read or compare the Guard lock or the MCP config for verification |
+
+Guard pin warnings describe the current native configuration. They also appear in the findings returned by `sync_check` over MCP.
 
 ## Organization rules
 

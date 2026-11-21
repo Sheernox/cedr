@@ -167,7 +167,7 @@ pub fn discover(root: &Path) -> Result<Workspace> {
         root: root.to_path_buf(),
         instructions: instruction_files(root)?,
         skills,
-        servers: servers(root)?,
+        servers: discover_servers(root)?,
         skipped,
         config,
     })
@@ -277,34 +277,35 @@ fn skills(root: &Path, extra: &[String]) -> Result<(Vec<SkillDir>, Vec<String>)>
     Ok((found, skipped))
 }
 
-fn servers(root: &Path) -> Result<Vec<Server>> {
+/// Native files and top-level keys that own MCP server entries.
+pub const MCP_CONFIGS: [(Client, &str, &str); 9] = [
+    (Client::Claude, ".mcp.json", "mcpServers"),
+    (Client::Cursor, ".cursor/mcp.json", "mcpServers"),
+    (Client::Gemini, ".gemini/settings.json", "mcpServers"),
+    (Client::Copilot, ".vscode/mcp.json", "servers"),
+    (Client::Copilot, ".github/mcp.json", "mcpServers"),
+    (Client::Opencode, "opencode.json", "mcp"),
+    (Client::Antigravity, ".agents/mcp_config.json", "mcpServers"),
+    (Client::Codex, ".codex/config.toml", "mcp_servers"),
+    (Client::Grok, ".grok/config.toml", "mcp_servers"),
+];
+
+/// Read only native MCP configurations, without walking skills or instructions.
+pub fn discover_servers(root: &Path) -> Result<Vec<Server>> {
     let canonical_root = fs::canonicalize(root).map_err(io_err(root))?;
     let mut found = Vec::new();
-    for (client, rel) in [
-        (Client::Claude, ".mcp.json"),
-        (Client::Cursor, ".cursor/mcp.json"),
-        (Client::Gemini, ".gemini/settings.json"),
-        (Client::Copilot, ".vscode/mcp.json"),
-        (Client::Copilot, ".github/mcp.json"),
-        (Client::Opencode, "opencode.json"),
-        (Client::Antigravity, ".agents/mcp_config.json"),
-    ] {
-        if root.join(rel).exists() {
-            ensure_inside(&canonical_root, &root.join(rel))?;
+    for (client, rel, key) in MCP_CONFIGS {
+        let path = root.join(rel);
+        if path.exists() {
+            ensure_inside(&canonical_root, &path)?;
         }
-        if let Some(text) = read_optional(&root.join(rel))? {
-            found.extend(json_servers(client, rel, &text, &root.join(rel))?);
-        }
-    }
-    for (client, rel) in [
-        (Client::Codex, ".codex/config.toml"),
-        (Client::Grok, ".grok/config.toml"),
-    ] {
-        if root.join(rel).exists() {
-            ensure_inside(&canonical_root, &root.join(rel))?;
-        }
-        if let Some(text) = read_optional(&root.join(rel))? {
-            found.extend(toml_servers(client, rel, &text, &root.join(rel))?);
+        if let Some(text) = read_optional(&path)? {
+            let servers = if rel.ends_with(".toml") {
+                toml_servers(client, rel, &text, &path)?
+            } else {
+                json_servers(client, rel, key, &text, &path)?
+            };
+            found.extend(servers);
         }
     }
     found.sort_by(|a, b| (a.client, &a.name).cmp(&(b.client, &b.name)));
@@ -386,13 +387,14 @@ pub(crate) fn json_object(path: &Path, text: &str) -> Result<serde_json::Value> 
     Ok(value)
 }
 
-fn json_servers(client: Client, rel: &str, text: &str, path: &Path) -> Result<Vec<Server>> {
+fn json_servers(
+    client: Client,
+    rel: &str,
+    section_name: &str,
+    text: &str,
+    path: &Path,
+) -> Result<Vec<Server>> {
     let value = json_object(path, text)?;
-    let section_name = match rel {
-        ".vscode/mcp.json" => "servers",
-        "opencode.json" => "mcp",
-        _ => "mcpServers",
-    };
     let Some(map) = value.get(section_name) else {
         return Ok(Vec::new());
     };

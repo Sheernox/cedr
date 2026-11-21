@@ -28,7 +28,7 @@ enum Command {
         #[arg(long, value_delimiter = ',')]
         targets: Option<Vec<String>>,
     },
-    /// Check drift and organization rules offline
+    /// Check drift and organization rules offline, and warn about stale Guard MCP pins
     Check {
         /// Repository root
         #[arg(default_value = ".")]
@@ -67,8 +67,9 @@ pub fn run(args: Args) -> Result<ExitCode, String> {
         }
         Some(Command::Check { path, format }) => {
             let r = cedr_sync::check(&path);
-            crate::print_report(&r, format);
-            return Ok(crate::exit(!r.is_empty()));
+            let failed = !r.is_empty();
+            crate::print_report(&cedr_sync::with_guard_warnings(&path, r), format);
+            return Ok(crate::exit(failed));
         }
         Some(Command::Pull(a)) => pull(a)?,
         Some(Command::Push(a)) => push(a)?,
@@ -79,12 +80,19 @@ pub fn run(args: Args) -> Result<ExitCode, String> {
                 for f in &p.files {
                     print!("{}", f.diff);
                 }
-            } else if !cedr_sync::apply(&args.path, &p, args.force)? {
-                for (path, refusal) in cedr_sync::refusals(&args.path, &p)? {
-                    eprintln!("{}", refusal.message(&path));
-                }
-                return Ok(ExitCode::from(1));
             } else {
+                let applied =
+                    cedr_sync::apply_with_warnings(&args.path, &p, args.force, |report| {
+                        for warning in report.findings {
+                            eprintln!("cedr: warning: {}", warning.message);
+                        }
+                    })?;
+                if !applied {
+                    for (path, refusal) in cedr_sync::refusals(&args.path, &p)? {
+                        eprintln!("{}", refusal.message(&path));
+                    }
+                    return Ok(ExitCode::from(1));
+                }
                 for f in &p.files {
                     println!(
                         "{} {}",
@@ -147,10 +155,14 @@ fn pull(a: Online) -> Result<(), String> {
 pub fn check_value(path: &std::path::Path) -> Result<Value, String> {
     let p = match cedr_sync::plan(path) {
         Ok(p) => p,
-        Err(_) => return Ok(json!({"findings":cedr_sync::check(path).findings,"files":[]})),
+        Err(_) => {
+            let report = cedr_sync::with_guard_warnings(path, cedr_sync::check(path));
+            return Ok(json!({"findings":report.findings,"files":[]}));
+        }
     };
+    let report = cedr_sync::with_guard_warnings(path, p.report);
     Ok(
-        json!({"findings":p.report.findings,"files":p.files.iter().map(|f|json!({"path":f.path,"target":f.target,"state":f.state})).collect::<Vec<_>>()}),
+        json!({"findings":report.findings,"files":p.files.iter().map(|f|json!({"path":f.path,"target":f.target,"state":f.state})).collect::<Vec<_>>()}),
     )
 }
 fn push(a: Online) -> Result<(), String> {

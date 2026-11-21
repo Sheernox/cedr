@@ -59,6 +59,128 @@ fn every_target_matches_golden_and_is_deterministic() {
     assert_eq!(first, fs::read(d.path().join(".cedr/sync.lock")).unwrap());
 }
 #[test]
+fn sync_warns_only_for_written_mcp_entries_and_check_keeps_pin_drift_advisory() {
+    let d = fixture();
+    let root = d.path();
+    let source = root.join(".cedr/sync.toml");
+    let config = fs::read_to_string(&source).unwrap();
+    // Antigravity omits servers with interpolated env or headers.
+    fs::write(
+        &source,
+        config
+            .lines()
+            .filter(|line| !line.starts_with("env = ") && !line.starts_with("headers = "))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+    let first = run(root, &["sync"]);
+    assert!(first.status.success());
+    assert!(
+        first.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let lock = run(root, &["guard", "lock", "--offline"]);
+    assert!(
+        lock.status.success(),
+        "{}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+    let lock_path = root.join(".cedr/guard.lock");
+    let pins = fs::read(&lock_path).unwrap();
+
+    // This server is outside Sync's outputs. Check sees it, but a compile should not blame it on its writes.
+    fs::write(
+        root.join(".github/mcp.json"),
+        r#"{"mcpServers":{"unmanaged":{"command":"test-mcp"}}}"#,
+    )
+    .unwrap();
+    let config = fs::read_to_string(&source).unwrap();
+    fs::write(&source, config.replace("shell:npm", "shell:pnpm")).unwrap();
+    let permissions = run(root, &["sync"]);
+    assert!(permissions.status.success());
+    assert!(String::from_utf8_lossy(&permissions.stdout).contains("wrote .grok/config.toml"));
+    assert!(
+        permissions.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&permissions.stderr)
+    );
+
+    let config = fs::read_to_string(&source).unwrap();
+    let (start, rest) = config.split_once("[mcp.docs]\n").unwrap();
+    let (_, end) = rest.split_once("[permissions]").unwrap();
+    fs::write(
+        &source,
+        format!("{start}[mcp.added]\ncommand = \"added-mcp\"\n[permissions]{end}")
+            .replace("example-mcp@1.2.3", "example-mcp@1.2.4"),
+    )
+    .unwrap();
+    let preview = run(root, &["sync", "--dry-run"]);
+    assert!(preview.status.success() && preview.stderr.is_empty());
+
+    let applied = run(root, &["sync"]);
+    assert!(applied.status.success());
+    let warnings = String::from_utf8_lossy(&applied.stderr);
+    for client in [
+        "antigravity",
+        "claude",
+        "codex",
+        "copilot",
+        "cursor",
+        "gemini",
+        "opencode",
+        "grok",
+    ] {
+        assert!(
+            warnings.contains(&format!("MCP server \"local\" ({client}) launch changed")),
+            "{warnings}"
+        );
+        assert!(
+            warnings.contains(&format!("MCP server \"docs\" ({client}) was removed")),
+            "{warnings}"
+        );
+        assert!(
+            warnings.contains(&format!("MCP server \"added\" ({client}) was added")),
+            "{warnings}"
+        );
+    }
+    assert!(warnings.contains("Run cedr guard lock"));
+    assert!(!warnings.contains("unmanaged"));
+    assert_eq!(fs::read(&lock_path).unwrap(), pins);
+    let repeat = run(root, &["sync"]);
+    assert!(repeat.status.success() && repeat.stderr.is_empty());
+
+    for format in ["text", "json", "github"] {
+        let check = run(root, &["sync", "check", "--format", format]);
+        assert_eq!(check.status.code(), Some(0));
+        let stdout = String::from_utf8_lossy(&check.stdout);
+        assert!(
+            stdout.contains("Run cedr guard lock") && stdout.contains("unmanaged"),
+            "{stdout}"
+        );
+        if format == "json" {
+            let report: Value = serde_json::from_str(&stdout).unwrap();
+            let findings = report["findings"].as_array().unwrap();
+            assert!(findings.iter().all(|f| f["severity"] == "warning"));
+            assert!(findings.iter().any(|f| f["rule"] == "CV003"));
+        } else if format == "github" {
+            assert!(stdout.contains("::warning "));
+            assert!(!stdout.contains("::error "));
+        }
+    }
+
+    let relock = run(root, &["guard", "lock", "--offline"]);
+    assert!(relock.status.success());
+    let current = run(root, &["sync", "check", "--format", "json"]);
+    assert_eq!(current.status.code(), Some(0));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&current.stdout).unwrap()["findings"],
+        json!([])
+    );
+}
+
+#[test]
 fn reports_source_drift_edits_missing_and_invalid_config() {
     let d = fixture();
     let p = cedr_sync::plan(d.path()).unwrap();
