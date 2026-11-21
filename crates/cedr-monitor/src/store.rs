@@ -75,7 +75,7 @@ impl Store {
         }
         let db = Connection::open(path)?;
         db.busy_timeout(Duration::from_secs(30))?;
-        db.execute_batch("PRAGMA journal_mode=DELETE; CREATE TABLE IF NOT EXISTS responses(harness TEXT,id TEXT,at INTEGER,session TEXT,project TEXT,model TEXT,effort TEXT,sidechain INTEGER,input INTEGER,write5 INTEGER,write1 INTEGER,read INTEGER,output INTEGER,reasoning INTEGER,searches INTEGER,fetches INTEGER,wall INTEGER,context INTEGER,cost REAL,PRIMARY KEY(harness,id)); CREATE INDEX IF NOT EXISTS response_time ON responses(at); CREATE INDEX IF NOT EXISTS response_session ON responses(harness,session,at); CREATE TABLE IF NOT EXISTS events(harness TEXT,id TEXT,at INTEGER,session TEXT,project TEXT,model TEXT,effort TEXT,sidechain INTEGER,kind TEXT,PRIMARY KEY(harness,id,kind)); CREATE INDEX IF NOT EXISTS event_time ON events(at); CREATE TABLE IF NOT EXISTS cursors(path TEXT PRIMARY KEY,data TEXT); CREATE TABLE IF NOT EXISTS readings(harness TEXT,window TEXT,at TEXT,data TEXT,PRIMARY KEY(harness,window,at)); CREATE TABLE IF NOT EXISTS sources(harness TEXT PRIMARY KEY,data TEXT); CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value INTEGER); CREATE TABLE IF NOT EXISTS repairs(id INTEGER PRIMARY KEY,hour INTEGER,harness TEXT,model TEXT,effort TEXT,project TEXT,session TEXT,sidechain INTEGER); CREATE TABLE IF NOT EXISTS repairs_sent(org TEXT,id INTEGER,PRIMARY KEY(org,id)); CREATE TRIGGER IF NOT EXISTS response_moved AFTER UPDATE OF session ON responses WHEN old.session IS NOT new.session BEGIN INSERT INTO repairs(hour,harness,model,effort,project,session,sidechain) VALUES(old.at/3600*3600,old.harness,old.model,old.effort,old.project,old.session,old.sidechain); END;")?;
+        db.execute_batch("PRAGMA journal_mode=DELETE; CREATE TABLE IF NOT EXISTS responses(harness TEXT,id TEXT,at INTEGER,session TEXT,project TEXT,model TEXT,effort TEXT,sidechain INTEGER,input INTEGER,write5 INTEGER,write1 INTEGER,read INTEGER,output INTEGER,reasoning INTEGER,searches INTEGER,fetches INTEGER,wall INTEGER,context INTEGER,cost REAL,PRIMARY KEY(harness,id)); CREATE INDEX IF NOT EXISTS response_time ON responses(at); CREATE INDEX IF NOT EXISTS response_session ON responses(harness,session,at); CREATE TABLE IF NOT EXISTS events(harness TEXT,id TEXT,at INTEGER,session TEXT,project TEXT,model TEXT,effort TEXT,sidechain INTEGER,kind TEXT,PRIMARY KEY(harness,id,kind)); CREATE INDEX IF NOT EXISTS event_time ON events(at); CREATE TABLE IF NOT EXISTS cursors(path TEXT PRIMARY KEY,data TEXT); CREATE TABLE IF NOT EXISTS readings(harness TEXT,window TEXT,at TEXT,data TEXT,PRIMARY KEY(harness,window,at)); CREATE TABLE IF NOT EXISTS sources(harness TEXT PRIMARY KEY,data TEXT); CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value INTEGER); CREATE TABLE IF NOT EXISTS repairs(id INTEGER PRIMARY KEY,hour INTEGER,harness TEXT,model TEXT,effort TEXT,project TEXT,session TEXT,sidechain INTEGER); CREATE TABLE IF NOT EXISTS repairs_sent(org TEXT,id INTEGER,PRIMARY KEY(org,id)); CREATE TABLE IF NOT EXISTS unfinished(harness TEXT,session TEXT,at INTEGER,project TEXT,PRIMARY KEY(harness,session)); CREATE TABLE IF NOT EXISTS malformed(harness TEXT,file TEXT,at INTEGER,count INTEGER,PRIMARY KEY(harness,file)); CREATE TRIGGER IF NOT EXISTS response_moved AFTER UPDATE OF session ON responses WHEN old.session IS NOT new.session BEGIN INSERT INTO repairs(hour,harness,model,effort,project,session,sidechain) VALUES(old.at/3600*3600,old.harness,old.model,old.effort,old.project,old.session,old.sidechain); END;")?;
         Ok(Self { db })
     }
     /// Stores a response; one with no known time (still 0) cannot be placed in an hour and is left out.
@@ -104,6 +104,35 @@ impl Store {
                 r.sidechain,
                 kind
             ])?;
+        Ok(())
+    }
+    /// Records a session seen without final usage, at its latest activity; `finished` removes it once usage is final.
+    pub fn unfinished(&self, r: &Row) -> Result<()> {
+        if r.at <= 0 {
+            return Ok(());
+        }
+        self.db
+            .prepare_cached("INSERT INTO unfinished VALUES(?,?,?,?) ON CONFLICT(harness,session) DO UPDATE SET at=max(at,excluded.at),project=excluded.project")?
+            .execute(params![r.harness, r.session, r.at, r.project])?;
+        Ok(())
+    }
+    pub fn finished(&self, harness: &str, session: &str) -> Result<()> {
+        self.db
+            .prepare_cached("DELETE FROM unfinished WHERE harness=? AND session=?")?
+            .execute(params![harness, session])?;
+        Ok(())
+    }
+    /// The malformed records a source file holds, dated by the file's last change.
+    pub fn malformed(&self, harness: &str, file: &str, at: i64, count: u64) -> Result<()> {
+        if count == 0 {
+            self.db
+                .prepare_cached("DELETE FROM malformed WHERE harness=? AND file=?")?
+                .execute(params![harness, file])?;
+        } else {
+            self.db
+                .prepare_cached("INSERT OR REPLACE INTO malformed VALUES(?,?,?,?)")?
+                .execute(params![harness, file, at, count as i64])?;
+        }
         Ok(())
     }
     pub fn readings(&self, doc: &serde_json::Value) -> Result<()> {

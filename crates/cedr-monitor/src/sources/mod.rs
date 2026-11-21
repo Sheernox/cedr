@@ -472,9 +472,12 @@ fn parse(
                     db.event(&r, s(d, "toolCallId"), "toolErrors")?;
                 }
             }
+            // Usage is final only at a shutdown; activity after one (a resumed session) is unmeasured until the next.
             if typ != "session.shutdown" {
+                db.unfinished(&r)?;
                 return Ok(true);
             }
+            db.finished("copilot", &r.session)?;
             if let Some(models) = d["modelMetrics"].as_object() {
                 for (model, m) in models {
                     let mut r = r.clone();
@@ -897,7 +900,8 @@ fn files_in(h: &str, c: &Config, home: &str) -> Result<Vec<PathBuf>> {
 /// rereads every file of that harness once from the start, so stored rows move to the corrected identity (rows are
 /// keyed by response, so nothing is counted twice). Codex 2: responses take their own `thread_id` as session.
 /// Antigravity 2: interrupted generations no longer count as malformed.
-const REREADS: &[(&str, i64)] = &[("codex", 2), ("antigravity", 2)];
+/// Copilot 2: sessions that never shut down are recorded for coverage.
+const REREADS: &[(&str, i64)] = &[("codex", 2), ("antigravity", 2), ("copilot", 2)];
 
 pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
     for &h in crate::HARNESSES {
@@ -984,12 +988,17 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
                         #[cfg(not(unix))]
                         let (device, inode) = (0, 0);
                         let document = path.extension().is_some_and(|x| x == "json" || x == "db");
+                        let changed = i64::try_from(mtime / 1_000_000_000)?;
                         if document
                             && cursor.mtime == mtime
                             && cursor.size == stat.len()
                             && cursor.device == device
                             && cursor.inode == inode
                         {
+                            // A store from before malformed records were dated has only the cursor's count.
+                            if cursor.malformed > 0 {
+                                db.malformed(h, &key, changed, cursor.malformed)?;
+                            }
                             return Ok(cursor.malformed);
                         }
                         if document {
@@ -1059,6 +1068,7 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
                             "INSERT OR REPLACE INTO cursors VALUES(?,?)",
                             params![key.as_ref(), serde_json::to_string(&cursor)?],
                         )?;
+                        db.malformed(h, &key, changed, cursor.malformed)?;
                         db.db.execute_batch("COMMIT")?;
                         Ok(cursor.malformed)
                     })();
@@ -1066,7 +1076,11 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
                         Ok(m) => malformed += m,
                         Err(e) => {
                             let _ = db.db.execute_batch("ROLLBACK");
-                            error = Some(if e.to_string().contains("mid-write") {
+                            let mid_write = e.to_string().contains("mid-write");
+                            if mid_write && h == "antigravity" {
+                                protobuf::in_progress(&path, c, db)?;
+                            }
+                            error = Some(if mid_write {
                                 "conversation mid-write; retry next collection"
                             } else {
                                 "cannot read usage metadata; check local source format and permissions"
@@ -1724,6 +1738,130 @@ mod tests {
                 ("msg_d".into(), "compactions".into(), root, at),
             ]
         );
+    }
+    fn coverage(db: &Store, harness: &str, project: Option<&str>) -> Value {
+        let report = crate::report::report(
+            db,
+            crate::report::Options {
+                since: Some("2026-10-01"),
+                project,
+                utc: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        report["coverage"][harness].clone()
+    }
+    #[test]
+    fn copilot_coverage_counts_sessions_that_never_shut_down_and_malformed_lines() {
+        let d = tempfile::tempdir().unwrap();
+        let line = |typ: &str, data: Value| {
+            json!({"type": typ, "timestamp": "2026-10-30T10:00:00Z", "data": data}).to_string()
+                + "\n"
+        };
+        let start = |session: &str| {
+            line(
+                "session.start",
+                json!({"sessionId": session, "context": {"cwd": "/work/project"}}),
+            )
+        };
+        let tool = line(
+            "tool.execution_complete",
+            json!({"toolCallId": "t1", "success": true}),
+        );
+        let shutdown = line(
+            "session.shutdown",
+            json!({"modelMetrics": {"gpt-6.1-sol": {"usage": {"inputTokens": 100, "outputTokens": 10}}}}),
+        );
+        for (name, body) in [
+            ("done", start("done") + &tool + &shutdown),
+            ("open", start("open") + &tool + "not json\n"),
+        ] {
+            let dir = d.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("events.jsonl"), body).unwrap();
+        }
+        let mut db = Store::open(&d.path().join("monitor.sqlite")).unwrap();
+        let mut c = Config {
+            harnesses: vec!["copilot".into()],
+            ..Config::default()
+        };
+        c.paths.insert(
+            "copilot".into(),
+            format!("{}/*/events.jsonl", d.path().display()),
+        );
+        collect(&c, &mut db).unwrap();
+        collect(&c, &mut db).unwrap();
+        assert_eq!(
+            coverage(&db, "copilot", None),
+            json!({"complete": false, "sessions": 1, "unfinished": 1, "malformed": 1, "unknown": [], "reason": null})
+        );
+        assert_eq!(
+            coverage(&db, "copilot", Some("project")),
+            json!({"complete": false, "sessions": 1, "unfinished": 1, "malformed": null,
+                   "unknown": ["malformed records: they have no project"], "reason": null})
+        );
+        assert_eq!(coverage(&db, "copilot", Some("other"))["unfinished"], 0);
+        // The open session shuts down: its usage is final, and the store keeps the malformed line it skipped.
+        let open = d.path().join("open/events.jsonl");
+        let body = std::fs::read_to_string(&open).unwrap() + &shutdown;
+        std::fs::write(&open, body).unwrap();
+        collect(&c, &mut db).unwrap();
+        let after = coverage(&db, "copilot", None);
+        assert_eq!(
+            (
+                after["sessions"].clone(),
+                after["unfinished"].clone(),
+                after["malformed"].clone()
+            ),
+            (json!(2), json!(0), json!(1))
+        );
+    }
+    #[test]
+    fn antigravity_coverage_counts_a_conversation_skipped_mid_write_until_it_is_read() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("conversation.db");
+        protobuf::tests::conversation(&path);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let data: Vec<u8> = conn
+            .query_row("SELECT data FROM gen_metadata", [], |r| r.get(0))
+            .unwrap();
+        conn.execute("INSERT INTO gen_metadata VALUES(1,?)", [&data])
+            .unwrap();
+        let mut db = Store::open(&d.path().join("monitor.sqlite")).unwrap();
+        let mut c = Config {
+            harnesses: vec!["antigravity".into()],
+            ..Config::default()
+        };
+        c.paths
+            .insert("antigravity".into(), path.display().to_string());
+        collect(&c, &mut db).unwrap();
+        let during = coverage(&db, "antigravity", None);
+        assert_eq!(during["unfinished"], 1);
+        assert_eq!(during["complete"], false);
+        assert!(during["reason"].as_str().unwrap().contains("mid-write"));
+        let step: Vec<u8> = conn
+            .query_row("SELECT metadata FROM steps", [], |r| r.get(0))
+            .unwrap();
+        conn.execute("INSERT INTO steps VALUES(1,15,?)", [&step])
+            .unwrap();
+        drop(conn);
+        collect(&c, &mut db).unwrap();
+        assert_eq!(
+            coverage(&db, "antigravity", None),
+            json!({"complete": true, "sessions": 1, "unfinished": 0, "malformed": 0, "unknown": [], "reason": null})
+        );
+    }
+    #[test]
+    fn coverage_of_a_source_logging_usage_per_response_has_no_unfinished_count() {
+        let (_d, db) = fixture("claude", "claude.jsonl");
+        let c = coverage(&db, "claude", None);
+        assert_eq!(c["unfinished"], Value::Null);
+        assert_eq!(
+            c["unknown"],
+            json!(["sessions without final usage: usage is logged per response"])
+        );
+        assert_eq!(c["complete"], true);
     }
     #[test]
     fn opencode_disjoint_counts() {

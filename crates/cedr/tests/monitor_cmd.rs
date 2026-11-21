@@ -40,6 +40,57 @@ fn empty_sources_and_json_report() {
     }
 }
 #[test]
+fn text_reports_name_only_harnesses_whose_coverage_is_incomplete() {
+    let d = tempfile::tempdir().unwrap();
+    let copilot = d.path().join("copilot/session-state/open");
+    std::fs::create_dir_all(&copilot).unwrap();
+    std::fs::write(
+        copilot.join("events.jsonl"),
+        r#"{"type": "session.start", "timestamp": "2026-10-30T10:00:00Z", "data": {"sessionId": "open", "context": {"cwd": "/work/project"}}}
+"#,
+    )
+    .unwrap();
+    let claude = d.path().join("claude/projects/p");
+    std::fs::create_dir_all(&claude).unwrap();
+    std::fs::copy(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/monitor/claude.jsonl"
+        ),
+        claude.join("s.jsonl"),
+    )
+    .unwrap();
+    let report = |format: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_cedr"))
+            .args(["monitor", "--since", "2026-10-01", "--format", format])
+            .env("HOME", d.path())
+            .env("XDG_STATE_HOME", d.path().join("state"))
+            .env("XDG_CONFIG_HOME", d.path().join("config"))
+            .env("XDG_DATA_HOME", d.path().join("data"))
+            .env("CLAUDE_CONFIG_DIR", d.path().join("claude"))
+            .env("CODEX_HOME", d.path().join("codex"))
+            .env("COPILOT_HOME", d.path().join("copilot"))
+            .env("OPENCODE_DB", d.path().join("missing.db"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let text = report("text");
+    assert!(
+        text.contains("Coverage copilot: 0 sessions with usage, 1 without final usage\n"),
+        "{text}"
+    );
+    assert!(!text.contains("Coverage claude"), "{text}");
+    let json: serde_json::Value = serde_json::from_str(&report("json")).unwrap();
+    assert_eq!(json["coverage"]["copilot"]["unfinished"], 1);
+    assert_eq!(json["coverage"]["claude"]["complete"], true);
+}
+#[test]
 fn a_push_with_nowhere_to_send_fails_before_reading_any_log() {
     let d = tempfile::tempdir().unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_cedr"))

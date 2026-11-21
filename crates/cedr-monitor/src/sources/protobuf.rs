@@ -73,6 +73,33 @@ fn timestamp(m: &BTreeMap<u64, Field<'_>>, k: u64) -> Option<i64> {
         .checked_mul(1000)?
         .checked_add(num(&fields, 2).unwrap_or(0) / 1_000_000)
 }
+/// A conversation's session id and project (None when its working directory is excluded).
+fn conversation(path: &Path, c: &Config) -> (String, Option<Option<String>>) {
+    let cwd = std::fs::read(path.with_extension("meta"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["cwd"].as_str().map(String::from))
+        .unwrap_or_default();
+    let native = path.file_stem().unwrap_or_default().to_string_lossy();
+    (crate::session_id("antigravity", &native), c.project(&cwd))
+}
+/// Records a conversation skipped as mid-write, at its last change, until a later run reads it.
+pub fn in_progress(path: &Path, c: &Config, db: &Store) -> Result<()> {
+    let (session, Some(project)) = conversation(path, c) else {
+        return Ok(());
+    };
+    let at = std::fs::metadata(path)?
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    db.unfinished(&Row {
+        harness: "antigravity".into(),
+        session,
+        project,
+        at: i64::try_from(at)?,
+        ..Row::default()
+    })
+}
 pub fn collect(path: &Path, c: &Config, db: &Store) -> Result<u64> {
     let conn =
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -95,14 +122,11 @@ pub fn collect(path: &Path, c: &Config, db: &Store) -> Result<u64> {
     if generations != steps && !settled {
         return Err("mid-write".into());
     }
-    let cwd = std::fs::read(path.with_extension("meta"))
-        .ok()
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .and_then(|v| v["cwd"].as_str().map(String::from))
-        .unwrap_or_default();
-    let Some(project) = c.project(&cwd) else {
+    let (session, project) = conversation(path, c);
+    let Some(project) = project else {
         return Ok(0);
     };
+    db.finished("antigravity", &session)?;
     let mut g = conn.prepare("SELECT idx,data FROM gen_metadata ORDER BY idx")?;
     let mut s = conn.prepare(
         "SELECT metadata FROM steps WHERE step_type=15 AND metadata IS NOT NULL ORDER BY idx",
@@ -124,10 +148,7 @@ pub fn collect(path: &Path, c: &Config, db: &Store) -> Result<u64> {
             let r = Row {
                 harness: "antigravity".into(),
                 id: format!("{native}:{idx}"),
-                session: format!(
-                    "s-{}",
-                    &crate::digest(&format!("antigravity:{native}"))[..12]
-                ),
+                session: session.clone(),
                 at: at / 1000,
                 project: project.clone(),
                 model: super::bounded(std::str::from_utf8(bytes(&one, 19)?)?),

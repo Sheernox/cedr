@@ -42,7 +42,7 @@ pub struct ReportArgs {
 }
 #[derive(Subcommand)]
 enum MonitorCommand {
-    /// Collect and report usage and API-equivalent cost (the default)
+    /// Collect and report usage, API-equivalent cost and what each agent's logs could not measure (the default)
     Report(ReportArgs),
     /// The costliest sessions
     Sessions {
@@ -483,6 +483,22 @@ fn print_report(v: &Value, format: &str) {
             display(&t[k])
         };
         println!("{k:<24} {value}");
+    }
+    for (harness, c) in v["coverage"].as_object().into_iter().flatten() {
+        if c["complete"] != false {
+            continue;
+        }
+        let mut line = format!("Coverage {harness}: {} sessions with usage", c["sessions"]);
+        if let Some(n) = c["unfinished"].as_i64().filter(|n| *n > 0) {
+            line.push_str(&format!(", {n} without final usage"));
+        }
+        if let Some(n) = c["malformed"].as_i64().filter(|n| *n > 0) {
+            line.push_str(&format!(", {n} malformed records skipped"));
+        }
+        if let Some(reason) = c["reason"].as_str() {
+            line.push_str(&format!("; not read: {reason}"));
+        }
+        println!("{line}");
     }
     if v["unpriced"].as_array().is_some_and(|a| !a.is_empty()) {
         println!("Unpriced: {}", v["unpriced"]);

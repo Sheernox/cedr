@@ -222,8 +222,59 @@ pub fn report(db: &Store, o: Options<'_>) -> Result<Value> {
         groups.entry(key).or_default().add(&v);
     }
     Ok(
-        json!({"since":stamp(start),"until":stamp(end),"totals":totals.json("total"),"groups":groups.into_iter().map(|(k,g)|g.json(&k)).collect::<Vec<_>>(),"unpriced":unpriced,"familyPriced":family_priced}),
+        json!({"since":stamp(start),"until":stamp(end),"totals":totals.json("total"),"groups":groups.into_iter().map(|(k,g)|g.json(&k)).collect::<Vec<_>>(),"unpriced":unpriced,"familyPriced":family_priced,"coverage":coverage(db,start,end,&o)?}),
     )
+}
+/// Harnesses whose logs show a session before its usage is final: Copilot until it shuts down, Antigravity while a
+/// conversation is being written. The others log usage with each response, so there is nothing to wait for.
+const UNFINISHED: [&str; 2] = ["copilot", "antigravity"];
+/// Per harness found on the machine: what the window measured, what it saw but could not measure, and what it cannot
+/// know. Malformed records are dated by their file's last change and carry no project.
+fn coverage(db: &Store, start: i64, end: i64, o: &Options<'_>) -> Result<Value> {
+    let mut out = serde_json::Map::new();
+    for source in db.source_values()? {
+        let h = source["harness"].as_str().unwrap_or("");
+        let state = source["state"].as_str().unwrap_or("");
+        if state == "absent"
+            || (state == "unsupported" && source["files"].as_i64().unwrap_or(0) == 0)
+            || o.harness.is_some_and(|x| x != h)
+        {
+            continue;
+        }
+        let window = rusqlite::params![h, start, end, o.project];
+        let sessions: i64 = db.db.query_row(
+            "SELECT count(DISTINCT session) FROM responses WHERE harness=?1 AND at>=?2 AND at<?3 AND (?4 IS NULL OR project=?4)",
+            window,
+            |r| r.get(0),
+        )?;
+        let mut unknown = vec![];
+        let unfinished: Option<i64> = if UNFINISHED.contains(&h) {
+            Some(db.db.query_row(
+                "SELECT count(*) FROM unfinished WHERE harness=?1 AND at>=?2 AND at<?3 AND (?4 IS NULL OR project=?4)",
+                window,
+                |r| r.get(0),
+            )?)
+        } else {
+            unknown.push("sessions without final usage: usage is logged per response");
+            None
+        };
+        let malformed: Option<i64> = if o.project.is_some() {
+            unknown.push("malformed records: they have no project");
+            None
+        } else {
+            Some(db.db.query_row(
+                "SELECT coalesce(sum(count),0) FROM malformed WHERE harness=?1 AND at>=?2 AND at<?3",
+                rusqlite::params![h, start, end],
+                |r| r.get(0),
+            )?)
+        };
+        let reason = (state != "ok").then(|| source["message"].clone());
+        out.insert(
+            h.into(),
+            json!({"complete":reason.is_none() && unfinished.unwrap_or(0)==0 && malformed.unwrap_or(0)==0,"sessions":sessions,"unfinished":unfinished,"malformed":malformed,"unknown":unknown,"reason":reason}),
+        );
+    }
+    Ok(Value::Object(out))
 }
 pub fn sessions(db: &Store, start: &str, limit: usize) -> Result<Value> {
     let mut q=db.db.prepare("SELECT session,harness,project,group_concat(DISTINCT model),min(at),max(at),count(*),sum(input+coalesce(read,0)+coalesce(write5,0)+coalesce(write1,0)+coalesce(output,0)) FROM responses WHERE at>=? GROUP BY harness,session")?;
