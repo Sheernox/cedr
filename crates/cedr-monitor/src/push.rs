@@ -129,15 +129,10 @@ pub fn parse_start(s: &str) -> Result<i64> {
 /// What a push to one org and URL would send, and the state it would save, worked out without changing anything.
 struct Prepared {
     watermarks: BTreeMap<String, i64>,
-    starts: BTreeMap<String, i64>,
     identity: String,
-    /// The start chosen with `--start`, and the one saved by an earlier push.
     chosen: Option<i64>,
     saved: Option<i64>,
-    /// The start in force: nothing before it is sent.
     cutoff: i64,
-    /// A start moved earlier forgets the push time, so every later attempt sends from it until one succeeds.
-    forget: bool,
     /// The push time saved once every batch is accepted; taken before reading the store, so nothing recorded during
     /// the push falls behind it.
     at: i64,
@@ -154,15 +149,25 @@ fn read_map(path: &Path) -> Result<BTreeMap<String, i64>> {
     }
 }
 
-/// Reads the push time and start for `sync` from `path` and its sibling `monitor-start.json`, then the rows, repairs
-/// and readings a push would send. Writes nothing, so a dry run and a real push see the same thing.
-fn prepare(
-    db: &Store,
-    sync: &Sync,
-    full: bool,
+/// The saved push time and start for `sync`, and the start a push with `chosen` puts in force. Cheap and read-only,
+/// so a real push can save the start before the slow row queries that an interruption could cut short.
+struct Boundary {
+    watermarks: BTreeMap<String, i64>,
+    starts: BTreeMap<String, i64>,
+    identity: String,
+    /// The start chosen with `--start`, and the one saved by an earlier push.
     chosen: Option<i64>,
-    path: &Path,
-) -> Result<Prepared> {
+    saved: Option<i64>,
+    /// The start in force: nothing before it is sent.
+    cutoff: i64,
+    /// A start moved earlier forgets the push time, so every later attempt sends from it until one succeeds.
+    forget: bool,
+    /// The push time rows are resent from, 0 when forgotten.
+    previous: i64,
+}
+
+/// Reads the push time and start for `sync` from `path` and its sibling `monitor-start.json`.
+fn boundary(sync: &Sync, chosen: Option<i64>, path: &Path) -> Result<Boundary> {
     let watermarks = read_map(path)?;
     let starts = read_map(&path.with_file_name("monitor-start.json"))?;
     let identity = crate::digest(&format!("{}:{}", sync.org, sync.url()));
@@ -182,6 +187,30 @@ fn prepare(
     } else {
         watermarks.get(&identity).copied().unwrap_or(0)
     };
+    Ok(Boundary {
+        watermarks,
+        starts,
+        identity,
+        chosen,
+        saved,
+        cutoff,
+        forget,
+        previous,
+    })
+}
+
+/// The rows, repairs and readings a push from boundary `b` would send. Writes nothing, so a dry run and a real push
+/// see the same thing.
+fn prepare(db: &Store, b: Boundary, full: bool) -> Result<Prepared> {
+    let Boundary {
+        watermarks,
+        identity,
+        chosen,
+        saved,
+        cutoff,
+        previous,
+        ..
+    } = b;
     let at = chrono::Utc::now().timestamp();
     let mut rows = crate::report::hourly(
         db,
@@ -273,12 +302,10 @@ fn prepare(
         .collect::<Result<Vec<_>>>()?;
     Ok(Prepared {
         watermarks,
-        starts,
         identity,
         chosen,
         saved,
         cutoff,
-        forget,
         at,
         rows,
         readings,
@@ -295,7 +322,7 @@ pub fn dry_run(
     chosen: Option<i64>,
     path: &Path,
 ) -> Result<Value> {
-    let p = prepare(db, sync, full, chosen, path)?;
+    let p = prepare(db, boundary(sync, chosen, path)?, full)?;
     let mut harnesses: BTreeMap<String, u64> = BTreeMap::new();
     let mut projects = std::collections::BTreeSet::new();
     for row in &p.rows {
@@ -342,28 +369,27 @@ pub fn send_with(
     name: &str,
     mut post: impl FnMut(&Value) -> Result<Value>,
 ) -> Result<Value> {
+    let mut b = boundary(sync, chosen, path)?;
+    // The start is saved before the rows are read or sent, so an interrupted push cannot fall back to everything.
+    if b.forget {
+        b.watermarks.remove(&b.identity);
+        write_atomic(path, &b.watermarks)?;
+    }
+    if b.saved != Some(b.cutoff) {
+        b.starts.insert(b.identity.clone(), b.cutoff);
+        write_atomic(&path.with_file_name("monitor-start.json"), &b.starts)?;
+    }
     let Prepared {
         mut watermarks,
-        mut starts,
         identity,
         saved,
         cutoff,
-        forget,
         at,
         rows,
         readings,
         last_repair,
         ..
-    } = prepare(db, sync, full, chosen, path)?;
-    // The start is saved before anything is sent, so an interrupted push cannot fall back to everything.
-    if forget {
-        watermarks.remove(&identity);
-        write_atomic(path, &watermarks)?;
-    }
-    if saved != Some(cutoff) {
-        starts.insert(identity.clone(), cutoff);
-        write_atomic(&path.with_file_name("monitor-start.json"), &starts)?;
-    }
+    } = prepare(db, b, full)?;
     let mut accepted = 0u64;
     let mut skipped = 0u64;
     let sources = db
@@ -947,6 +973,29 @@ mod tests {
         );
         assert!(failed.is_err());
         assert_eq!(sent(&db, &path, None), []);
+    }
+    #[test]
+    fn the_start_is_saved_before_reading_rows_that_can_fail() {
+        let d = tempfile::tempdir().unwrap();
+        let db = Store::open(&d.path().join("db")).unwrap();
+        response(&db, "old", "s-1", 1793354400);
+        db.db.execute_batch("DROP TABLE repairs").unwrap();
+        let path = d.path().join("push.json");
+        let failed = send_with(
+            &db,
+            &sync(),
+            false,
+            Some(1793358000),
+            &path,
+            "m-fixture",
+            "fixture",
+            |_| panic!("nothing is sent when reading fails"),
+        );
+        assert!(failed.is_err());
+        let starts: BTreeMap<String, i64> =
+            serde_json::from_slice(&std::fs::read(d.path().join("monitor-start.json")).unwrap())
+                .unwrap();
+        assert_eq!(starts.values().copied().collect::<Vec<_>>(), [1793358000]);
     }
     #[test]
     fn a_later_start_after_pushing_never_cuts_into_an_hour_the_app_has() {
