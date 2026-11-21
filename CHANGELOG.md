@@ -2,6 +2,51 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/compare.md](docs/compare.md) (Compare), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.15.0 (2026-11-21)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.15.0.png" alt="cedr v0.15.0: first run" width="770">
+
+**v0.15.0** · 13 changes from 1 contributor
+
+### Highlights
+**Set up cedr in one command, with no account and no config to write.** `cedr init` shows what it will do, then creates starter routes for the agents on your machine, registers `cedr mcp` with Claude, Codex and Grok, and offers the hourly Monitor timer, one confirmation at a time. `cedr route init` creates the starter routes on their own. Nothing that exists is ever replaced.
+
+**See your day on one screen.** `cedr status` shows each plan's closest limit, what today and the last seven days cost at API prices, the latest picks still waiting for a verdict, and this repo's Sync and Guard state. It reads local data only, and agents get the same report as the `status` MCP tool.
+
+**Review a changed tool description with both texts.** When an MCP server rewrites a tool's description, `cedr guard diff`, `outdated` and `remote` now print the old text above the new one, so you can judge the change without digging out the old surface.
+
+### Features
+- **Starter routes:** `cedr route init [--harness H]... [--orchestrator H/MODEL] [--dry-run]` writes `review.code`, `code.impl`, `research.gather` and, with two or more vendors, `review.council`, using model families that resolve at pick time. It refuses to overwrite an existing file. See [Starter routes](docs/route.md#starter-routes).
+- **First-run setup:** `cedr init [--yes] [--dry-run] [--format json]` asks before each step, continues past a failed one, and ends with the doctor summary. Without a terminal or `--yes` it only previews. See [docs/onboarding.md](docs/onboarding.md).
+- **Guard over MCP:** `cedr mcp` adds read-only `guard_lint`, `guard_verify` and `guard_outdated`, returning the CLI's JSON.
+- **Stale pins after Sync:** `cedr sync` warns when MCP entries it wrote no longer match their Guard pins and names `cedr guard lock`; `cedr sync check` reports the same as a warning.
+- **Preview a Monitor push:** `cedr monitor push --dry-run` prints the destination, the start in force, the first and last hour, rows by agent, project labels and anything missing, such as the API key. It sends and saves nothing. `monitor push` also takes `--format json`, and MCP gets `monitor_push_plan`.
+- **Council strict mode:** `cedr council merge --strict`, or `strict = true` on a council route, requires each text report to end with `End of review.`. A report without it may have been cut off: its findings still merge, but it does not count towards the quorum, and the output names the member to ask again.
+
+### Fixes
+- **Compare budget:** `compare plan` and `compare run` now say for each variant whether its spend is `enforced` (Claude stops itself at what is left), checked `between_trials` (one trial can go over) or `unpriced`. A run that ends over budget records the excess and the trial that crossed it in `overrun`.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* fix(guard): show both descriptions in review order
+* docs(guard): align status with the discovery and diff contracts
+* feat(guard): expose read-only checks over mcp
+* feat(sync): warn when mcp changes leave guard pins stale
+* feat(route): generate starter routes for installed agents
+* feat(init): guide first-run setup without an account
+* feat(status): summarize local usage and repository drift
+* fix(route): name starter families that resolve for grok and muse
+* fix(compare): state what the budget guarantees for each variant
+* feat(monitor): show what a push would send with --dry-run
+* feat(council): add a strict mode that refuses to pass on cut-off reports
+* fix(monitor): save the push start before reading rows
+* chore(release): set up cedr in one command and see the day with cedr status as cedr 0.15.0
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.14.1...v0.15.0
+</details>
+
 ## v0.14.1 (2026-11-19)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.14.1.png" alt="cedr v0.14.1: clear failures" width="770">
