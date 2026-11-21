@@ -14,6 +14,7 @@ pub mod pool;
 pub mod readers;
 pub mod readings;
 pub mod session;
+pub mod starter;
 pub mod sync;
 pub mod t3;
 

@@ -100,44 +100,14 @@ cedr keeps itself up to date: once a day it checks for a release in the backgrou
 
 ## 🚀 Quick start with Route
 
-**1. Describe your plans and routes** in `~/.config/cedr/routes.toml`. The [Route page](https://cedr.dev/docs/route/) in the cedr.dev app can generate this file for you.
+**1. Generate routes** for the agents installed on your machine.
 
-```toml
-version = 1
-
-[orchestrator]                  # the agent you work in; it keeps work no one else should take
-harness = "claude"
-model = "opus"
-
-[harnesses.claude]
-expect = ["five_hour", "seven_day"]
-effort_option = "effort"
-models = ["claude-opus-5-5", "claude-sonnet-5-5"]   # what targets resolve to; T3 Code lists them itself
-
-[harnesses.codex]
-expect = ["primary"]
-effort_option = "reasoningEffort"
-
-[[readings]]                    # where plan usage comes from, first source first
-kind = "t3"                     # T3 Code's own readings of the plans it runs
-
-[[readings]]
-kind = "claude-statusline"
-harness = "claude"
-
-[[readings]]
-kind = "codex"
-harness = "codex"
-
-[routes."review.code"]
-work = "Independent review"
-role = "review"
-candidates = [
-  { target = "codex/sol", effort = "high", tier = 1 },
-  { target = "claude/sonnet", effort = "high", tier = 1 },
-  { target = "self" },
-]
+```sh
+cedr route init
+cedr route show review.code
 ```
+
+Use [starter routes](docs/route.md#starter-routes) to preview the file or choose the agents yourself. The [Route page](https://cedr.dev/docs/route/) in the app can generate a file for an organization.
 
 **2. Let cedr see your Claude plan usage.** Under T3 Code the `t3` source already has it. Otherwise cedr reads what Claude Code caches on its own, and an interactive Claude Code status line keeps it fresher between refreshes: make cedr your status line in `~/.claude/settings.json`, adding `-- <your command>` to keep an existing one.
 
@@ -166,6 +136,7 @@ Sync and Monitor need no config to try: run `cedr sync init` in a repo, or `cedr
 
 | Command | What it does |
 | --- | --- |
+| `cedr route init` | Generate a starter routes file for the agents on this machine |
 | `cedr route pick <route>` | Choose the agent, model and effort for a kind of work |
 | `cedr route pools` | Show how much room each plan has left, and which ones cedr will use |
 | `cedr route list` | List your routes and the models each one tries |

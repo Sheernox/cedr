@@ -254,6 +254,22 @@ A family's newest offered version is in preview when `[evaluation] models` is no
 
 `manual(<harness>/<model>, effort)` tags a model the user named: a known id is kept, a family resolves to its newest version, an unknown name with no model list is kept as named, and an unknown name with a model list is an error. Reason `user-named`.
 
+## Starter routes
+
+`cedr route init [--harness H]... [--orchestrator H/MODEL] [--config PATH] [--dry-run] [--format text|json]` prepares a version 1 file offline. It uses the machine checks above to find agents unless you supply one or more `--harness` flags. The first selected harness in the table is the default orchestrator. An explicit orchestrator must name a selected harness and a model family or id.
+
+| Harness | Strong family | Lower-cost family |
+| --- | --- | --- |
+| `claude` | `opus` | `sonnet` |
+| `codex` | `astra` | `sol` |
+| `antigravity` | `neon` | `flash` |
+| `grok` | `build` | `grok` |
+| `muse` | `wonder` | `spark` |
+
+The starter includes local readers where available, T3 Code readings, and fallback model ids for family resolution when a reader does not supply models. `review.code` tries strong models from the other vendors. `code.impl` tries lower-cost models on small and medium work before trying strong models. `research.gather` tries lower-cost models. All three fall back to `self`. With at least two harnesses, `review.council` includes one strong model from each vendor.
+
+The destination is `--config PATH` or the user file, regardless of repository config or `CEDR_ROUTES`. A write creates the parent directory if needed and refuses any existing entry at the destination. Use `cedr route add` or edit that file to change existing routes. Dry run renders the file without writing it, even if the destination exists. In text mode the preview goes to stdout. In JSON mode it goes to stderr and stdout contains `{"path","written","harnesses","orchestrator","routes"}`: the destination, a boolean, a list of harness ids, an object with `harness` and `model`, and a list of route ids. Exit 0 means the file was written or previewed. Exit 2 means invalid input, no detected harnesses, an existing destination during a write, or an I/O error.
+
 ## Editing
 
 `thresholds`, `add`, `remove`, `enable` and `disable` edit the `routes.toml` in use, keeping its comments, layout and file mode, and print `<path>: <change> (rules <old> -> <new>)`. The result must validate before anything is written, so a refused edit leaves the file as it was; a refused edit exits 2, and so does any unknown route, harness, key or candidate.
@@ -294,6 +310,7 @@ All take `--config PATH`; picks also take `--readings`, `--models`, `--no-record
 
 | Command | Does |
 |---|---|
+| `cedr route init` | Generate a starter routes file for the agents on this machine |
 | `cedr route pick <route> [--size small\|medium\|large] [--avoid H]... [--judges P \| --escalates P] [--format text\|json\|t3]` | Pick and record; `--judges`/`--escalates` link a cascade's judge or escalation to its draft pick `P` |
 | `cedr route manual <harness>/<model> [--effort E] [--format ...]` | Tag a named model and record |
 | `cedr route pools [--format text\|json]` | Each harness's state, plus one row per model window family a route's target uses, by its name or any offered version it stands for (an evaluation may hold a pick to an older one) |

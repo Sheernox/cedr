@@ -975,7 +975,7 @@ pub struct Located {
     pub origin: Origin,
 }
 
-fn user_path() -> PathBuf {
+pub fn user_path() -> PathBuf {
     xdg_dir("XDG_CONFIG_HOME", ".config").join("cedr/routes.toml")
 }
 

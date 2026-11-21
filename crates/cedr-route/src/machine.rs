@@ -143,7 +143,7 @@ fn t3_profile(providers: &Path, instance: &str) -> bool {
 }
 
 /// Whether `command` is an executable file: an absolute path as given, a name on `PATH`.
-fn installed(command: &str) -> bool {
+pub fn installed(command: &str) -> bool {
     let path = Path::new(command);
     if path.is_absolute() {
         return executable(path) || windows_variants(path);

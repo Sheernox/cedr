@@ -51,6 +51,7 @@ pub(crate) fn count(key: &'static str, n: usize) {
 pub(crate) fn silent(command: &str, background: bool) -> bool {
     background
         || command == "route statusline"
+        || command == "route init"
         || command == "completions"
         || command.split(' ').next() == Some("telemetry")
 }

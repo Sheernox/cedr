@@ -12,6 +12,7 @@ mod monitor;
 mod net;
 mod push;
 mod route;
+mod route_init;
 mod settings;
 mod sync;
 mod telemetry;

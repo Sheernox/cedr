@@ -75,6 +75,8 @@ pub struct SourceArgs {
 
 #[derive(Subcommand)]
 pub enum RouteCommand {
+    /// Generate starter routes for the agents on this machine
+    Init(crate::route_init::Args),
     /// Choose the harness and model for a route
     Pick {
         route: String,
@@ -485,6 +487,7 @@ fn write_sync_log(message: &str) {
 pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
     let config = config.config.as_deref();
     match command {
+        RouteCommand::Init(args) => crate::route_init::run(args, config),
         RouteCommand::Pick {
             route,
             size,
