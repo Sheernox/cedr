@@ -999,10 +999,15 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
                         if path.extension().is_some_and(|x| x == "db") {
                             if h == "antigravity" {
                                 cursor.malformed = protobuf::collect(&path, c, db)?;
-                            } else if let Some(reason) = opencode_sqlite(&path, c, db)? {
-                                unsupported = Some(reason);
-                                db.db.execute_batch("ROLLBACK")?;
-                                return Ok(0);
+                            } else {
+                                match opencode_sqlite(&path, c, db)? {
+                                    Opencode::Read(n) => cursor.malformed = n,
+                                    Opencode::Unsupported(reason) => {
+                                        unsupported = Some(reason);
+                                        db.db.execute_batch("ROLLBACK")?;
+                                        return Ok(0);
+                                    }
+                                }
                             }
                         } else if path.extension().is_some_and(|x| x == "json") {
                             if std::fs::metadata(&path)?.len() > cursors::MAX_LINE as u64 {
@@ -1104,27 +1109,45 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
     }
     Ok(())
 }
-/// Compatibility adapter for the documented legacy SQLite message layout.
-fn opencode_sqlite(path: &Path, c: &Config, db: &Store) -> Result<Option<&'static str>> {
+/// What one opencode database gave: the malformed records it skipped, or why it cannot be read.
+enum Opencode {
+    Read(u64),
+    Unsupported(&'static str),
+}
+/// Reads the legacy `message` table and the `session_v2` / `session_message` tables, whichever exist. A database
+/// opencode migrated keeps its legacy rows beside their copies, under the same message ids, so the newer copy simply
+/// replaces the stored response.
+fn opencode_sqlite(path: &Path, c: &Config, db: &Store) -> Result<Opencode> {
     let conn =
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let legacy: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='message')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !legacy {
-        let v2: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name IN ('session_message','session_v2'))",
-            [],
-            |r| r.get(0),
-        )?;
-        return Ok(Some(if v2 {
-            "unsupported opencode session_v2/session_message schema; usage is not read"
-        } else {
-            "unsupported opencode schema: missing legacy message table"
-        }));
+    let tables = conn
+        .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('message','session_v2','session_message','session_part')")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?;
+    let v2 = tables.contains("session_v2") && tables.contains("session_message");
+    if !tables.contains("message") && !v2 {
+        return Ok(Opencode::Unsupported(
+            if tables.contains("session_message") {
+                "unsupported opencode schema: session_message without session_v2"
+            } else {
+                "unsupported opencode schema: no message or session_message table"
+            },
+        ));
     }
+    if tables.contains("message") {
+        opencode_legacy(&conn, c, db)?;
+    }
+    if !v2 {
+        return Ok(Opencode::Read(0));
+    }
+    Ok(Opencode::Read(opencode_v2(
+        &conn,
+        tables.contains("session_part"),
+        c,
+        db,
+    )?))
+}
+fn opencode_legacy(conn: &rusqlite::Connection, c: &Config, db: &Store) -> Result<()> {
     let mut q = conn.prepare("SELECT id,session_id,data FROM message")?;
     for item in q.query_map([], |r| {
         Ok((
@@ -1139,7 +1162,136 @@ fn opencode_sqlite(path: &Path, c: &Config, db: &Store) -> Result<Option<&'stati
         let mut state = json!({"session":session});
         parse("opencode", &v, 0, &mut state, c, db)?;
     }
-    Ok(None)
+    Ok(())
+}
+/// A JSON counter SQLite extracted: absent is unknown, and anything but a whole number is malformed.
+fn sql_count(v: rusqlite::types::Value) -> std::result::Result<Option<i64>, ()> {
+    match v {
+        rusqlite::types::Value::Null => Ok(None),
+        rusqlite::types::Value::Integer(n) => Ok(Some(n)),
+        _ => Err(()),
+    }
+}
+/// opencode's current schema (`session_v2`, `session_message`, `session_part`). SQLite extracts the counters from
+/// each message's JSON, so no message text, tool input or output is ever read. Assistant content is in
+/// `session_part` rows, or inline in `data.content` for messages written before that table existed (an older build
+/// can leave both; tool calls are keyed by call id, so neither counts twice).
+fn opencode_v2(conn: &rusqlite::Connection, parts: bool, c: &Config, db: &Store) -> Result<u64> {
+    let mut malformed = 0;
+    let mut bases: std::collections::HashMap<String, Row> = std::collections::HashMap::new();
+    let mut q = conn.prepare(
+        "WITH m AS (SELECT id,session_id,type,time_created,CASE WHEN json_valid(data) THEN data END data
+                    FROM session_message WHERE type IN ('assistant','compaction')),
+              s AS (SELECT id,directory,parent_id,CASE WHEN json_valid(model) THEN model END model FROM session_v2)
+         SELECT m.id,m.session_id,m.type,m.data IS NULL,coalesce(json_extract(m.data,'$.time.created'),m.time_created),
+                coalesce(json_extract(m.data,'$.model.id'),json_extract(s.model,'$.id')),coalesce(s.directory,''),
+                s.parent_id IS NOT NULL,json_type(m.data,'$.tokens'),json_extract(m.data,'$.tokens.input'),
+                json_extract(m.data,'$.tokens.cache.read'),json_extract(m.data,'$.tokens.cache.write'),
+                json_extract(m.data,'$.tokens.output'),json_extract(m.data,'$.tokens.reasoning'),
+                json_extract(m.data,'$.cost'),coalesce(json_type(m.data,'$.error'),'null')!='null',
+                json_extract(m.data,'$.status')
+         FROM m LEFT JOIN s ON s.id=m.session_id",
+    )?;
+    let mut rows = q.query([])?;
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
+        if row.get::<_, bool>(3)? {
+            malformed += 1;
+            continue;
+        }
+        let Some(project) = c.project(&row.get::<_, String>(6)?) else {
+            continue;
+        };
+        let typ: String = row.get(2)?;
+        let model = row.get::<_, Option<String>>(5).ok().flatten();
+        let mut r = Row {
+            harness: "opencode".into(),
+            id: id.clone(),
+            at: sql_count(row.get(4)?).ok().flatten().unwrap_or(0) / 1000,
+            session: crate::session_id("opencode", &row.get::<_, String>(1)?),
+            project,
+            model: model.as_deref().map_or("unknown".into(), bounded),
+            sidechain: row.get(7)?,
+            ..Row::default()
+        };
+        if row.get::<_, bool>(15)? {
+            db.event(&r, &id, "apiErrors")?;
+        }
+        if typ == "compaction"
+            && row.get::<_, Option<String>>(16).ok().flatten().as_deref() == Some("completed")
+        {
+            db.event(&r, &id, "compactions")?;
+        }
+        if typ == "assistant" {
+            bases.insert(id.clone(), r.clone());
+        }
+        // A message without tokens has not finished its response yet; the next read after it does counts it.
+        match row.get::<_, Option<String>>(8)?.as_deref() {
+            None => continue,
+            Some("object") => {}
+            Some(_) => {
+                malformed += 1;
+                continue;
+            }
+        }
+        let counted = (|| -> std::result::Result<(), ()> {
+            r.input = sql_count(row.get(9).map_err(|_| ())?)?;
+            r.cache_read = sql_count(row.get(10).map_err(|_| ())?)?;
+            r.cache_write5m = sql_count(row.get(11).map_err(|_| ())?)?;
+            r.cache_write1h = Some(0);
+            r.reasoning = sql_count(row.get(13).map_err(|_| ())?)?;
+            r.output = add(sql_count(row.get(12).map_err(|_| ())?)?, r.reasoning);
+            r.context = add(add(r.input, r.cache_read), r.cache_write5m);
+            r.reported_cost_usd = match row.get(14).map_err(|_| ())? {
+                rusqlite::types::Value::Null => None,
+                rusqlite::types::Value::Integer(n) => Some(n as f64),
+                rusqlite::types::Value::Real(x) => Some(x),
+                _ => return Err(()),
+            };
+            Ok(())
+        })();
+        if counted.is_ok() && valid(&r) {
+            db.upsert(&r)?;
+        } else {
+            malformed += 1;
+        }
+    }
+    // Each tool row: message id, call id, status, and its completion (else start) time in milliseconds.
+    let inline = "SELECT m.id,json_extract(t.value,'$.id'),json_extract(t.value,'$.state.status'),
+                         coalesce(json_extract(t.value,'$.time.completed'),json_extract(t.value,'$.time.created')),t.key
+                  FROM (SELECT id,CASE WHEN json_valid(data) THEN data END data FROM session_message WHERE type='assistant') m,
+                       json_each(m.data,'$.content') t
+                  WHERE json_extract(CASE WHEN t.type='object' THEN t.value END,'$.type')='tool'";
+    let split = "SELECT message_id,call_id,json_extract(data,'$.state.status'),
+                        coalesce(json_extract(data,'$.time.completed'),json_extract(data,'$.time.created'),time_created),ordinal
+                 FROM (SELECT message_id,call_id,ordinal,time_created,CASE WHEN json_valid(data) THEN data END data
+                       FROM session_part WHERE type='tool')
+                 WHERE data IS NOT NULL";
+    for sql in std::iter::once(inline).chain(parts.then_some(split)) {
+        let mut q = conn.prepare(sql)?;
+        let mut rows = q.query([])?;
+        while let Some(row) = rows.next()? {
+            let message: String = row.get(0)?;
+            let Some(base) = bases.get(&message) else {
+                continue;
+            };
+            let mut r = base.clone();
+            if let Ok(Some(at)) = sql_count(row.get(3)?) {
+                r.at = at / 1000;
+            }
+            let call = row
+                .get::<_, Option<String>>(1)
+                .ok()
+                .flatten()
+                .filter(|x| !x.is_empty())
+                .unwrap_or_else(|| format!("{message}:{}", row.get::<_, i64>(4).unwrap_or(0)));
+            db.event(&r, &call, "toolCalls")?;
+            if row.get::<_, Option<String>>(2).ok().flatten().as_deref() == Some("error") {
+                db.event(&r, &call, "toolErrors")?;
+            }
+        }
+    }
+    Ok(malformed)
 }
 
 #[cfg(test)]
@@ -1370,43 +1522,208 @@ mod tests {
         let (_d, db) = fixture("copilot", "copilot.jsonl");
         assert_eq!(usage(&db), (1, 80, 30));
     }
-    #[test]
-    fn opencode_missing_message_table_is_unsupported() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("opencode.db");
-        let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE session_message(id TEXT, data TEXT); CREATE TABLE session_v2(id TEXT);",
-        )
-        .unwrap();
-        drop(conn);
-        let mut db = Store::open(&dir.path().join("monitor.sqlite")).unwrap();
+    fn opencode_source(db: &Store) -> Value {
+        let source: String = db
+            .db
+            .query_row(
+                "SELECT data FROM sources WHERE harness='opencode'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&source).unwrap()
+    }
+    fn opencode_db(dir: &Path, schema: &str) -> (Config, Store) {
+        let path = dir.join("opencode.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(schema)
+            .unwrap();
         let mut c = Config {
             harnesses: vec!["opencode".into()],
             ..Config::default()
         };
         c.paths
             .insert("opencode".into(), path.display().to_string());
+        (c, Store::open(&dir.join("monitor.sqlite")).unwrap())
+    }
+    #[test]
+    fn opencode_without_a_known_message_table_is_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let (c, mut db) = opencode_db(
+            dir.path(),
+            "CREATE TABLE session_message(id TEXT, data TEXT);",
+        );
         for _ in 0..2 {
             collect(&c, &mut db).unwrap();
-            let source: String = db
-                .db
-                .query_row(
-                    "SELECT data FROM sources WHERE harness='opencode'",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            let source: Value = serde_json::from_str(&source).unwrap();
+            let source = opencode_source(&db);
             assert_eq!(source["state"], "unsupported");
             assert!(
                 source["message"]
                     .as_str()
                     .unwrap()
-                    .contains("session_message")
+                    .contains("session_message without session_v2")
             );
             assert_eq!(source["malformed"], 0);
         }
+    }
+    /// The tables as opencode's migrations create them (`packages/core/src/session/sql.ts`), cut to the columns
+    /// Monitor reads plus their keys; `message` is the legacy table a migrated database keeps.
+    const OPENCODE_V2: &str = "
+        CREATE TABLE session_v2(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT, directory TEXT NOT NULL,
+            model TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+        CREATE TABLE session_message(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, seq INTEGER NOT NULL,
+            time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+        CREATE TABLE session_part(message_id TEXT NOT NULL, session_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+            type TEXT NOT NULL, call_id TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL,
+            data TEXT NOT NULL, PRIMARY KEY(message_id, ordinal));
+        CREATE TABLE message(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL, data TEXT NOT NULL);";
+    #[test]
+    fn opencode_session_v2_reads_usage_tools_and_errors_beside_legacy_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("web");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let (c, mut db) = opencode_db(dir.path(), OPENCODE_V2);
+        let t = 1_793_354_400_000_i64;
+        let conn = rusqlite::Connection::open(dir.path().join("opencode.db")).unwrap();
+        let session = |id: &str, parent: Option<&str>| {
+            conn.execute(
+                "INSERT INTO session_v2 VALUES(?,'p',?,?,'{\"id\":\"claude-fable-5-2\",\"providerID\":\"anthropic\"}',?,?)",
+                params![id, parent, repo.join("src").display().to_string(), t, t],
+            )
+            .unwrap();
+        };
+        session("ses_root", None);
+        session("ses_child", Some("ses_root"));
+        let message = |id: &str, session: &str, typ: &str, seq: i64, data: Value| {
+            conn.execute(
+                "INSERT INTO session_message VALUES(?,?,?,?,?,?,?)",
+                params![id, session, typ, seq, t, t, data.to_string()],
+            )
+            .unwrap();
+        };
+        let tokens = |input: i64| json!({"input": input, "output": 20, "reasoning": 5, "cache": {"read": 50, "write": 10}});
+        message(
+            "msg_user",
+            "ses_root",
+            "user",
+            0,
+            json!({"text": "hello", "time": {"created": t}}),
+        );
+        // Inline content, from before session_part: one finished tool and one failed one.
+        message(
+            "msg_a",
+            "ses_root",
+            "assistant",
+            1,
+            json!({"agent": "build", "model": {"id": "gpt-6.1-sol", "providerID": "openai"},
+            "content": [{"type": "text", "text": "x"}, {"type": "tool", "id": "call_1", "name": "read", "state": {"status": "completed"}, "time": {"created": t}},
+                        {"type": "tool", "id": "call_2", "name": "shell", "state": {"status": "error"}, "time": {"created": t, "completed": t + 60_000}}],
+            "cost": 0.25, "tokens": tokens(100), "time": {"created": t}}),
+        );
+        // Split content: its tool lives in session_part; an API error and no reported cost.
+        message(
+            "msg_b",
+            "ses_child",
+            "assistant",
+            0,
+            json!({"agent": "general", "model": {"id": "gpt-6.1-sol", "providerID": "openai"},
+            "content": [], "tokens": tokens(200), "error": {"type": "provider", "message": "x"}, "time": {"created": t + 3_600_000}}),
+        );
+        // Still streaming: no tokens yet, so no response.
+        message(
+            "msg_c",
+            "ses_root",
+            "assistant",
+            2,
+            json!({"agent": "build", "model": {"id": "gpt-6.1-sol", "providerID": "openai"},
+            "content": [], "time": {"created": t}}),
+        );
+        // A compaction's own request, with no model of its own: the session's model.
+        message(
+            "msg_d",
+            "ses_root",
+            "compaction",
+            3,
+            json!({"status": "completed", "reason": "auto", "summary": "s",
+            "tokens": tokens(300), "cost": 0, "time": {"created": t}}),
+        );
+        message(
+            "msg_e",
+            "ses_root",
+            "assistant",
+            4,
+            json!({"agent": "build", "model": {"id": "gpt-6.1-sol", "providerID": "openai"},
+            "content": [], "tokens": tokens(-1), "time": {"created": t}}),
+        );
+        conn.execute(
+            "INSERT INTO session_message VALUES('msg_f','ses_root','assistant',5,?,?,'{not json')",
+            params![t, t],
+        )
+        .unwrap();
+        for (ordinal, call, status) in [(0, "call_3", "error"), (1, "call_3", "error")] {
+            conn.execute(
+                "INSERT INTO session_part VALUES('msg_b','ses_child',?,'tool',?,?,?,?)",
+                params![ordinal, call, t, t, json!({"type": "tool", "id": call, "name": "edit", "state": {"status": status}, "time": {"created": t}}).to_string()],
+            )
+            .unwrap();
+        }
+        // The legacy copy of msg_a (replaced by its newer copy) and a legacy-only message.
+        for (id, input) in [("msg_a", 1), ("msg_old", 7)] {
+            conn.execute(
+                "INSERT INTO message VALUES(?,'ses_root',?,?,?)",
+                params![id, t, t, json!({"role": "assistant", "modelID": "gpt-6.1-sol", "time": {"created": t},
+                    "tokens": {"input": input, "output": 1, "reasoning": 0, "cache": {"read": 0, "write": 0}}}).to_string()],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        collect(&c, &mut db).unwrap();
+        collect(&c, &mut db).unwrap();
+        let source = opencode_source(&db);
+        assert_eq!(source["state"], "ok");
+        assert_eq!(source["malformed"], 2);
+        let rows: Vec<Value> = db
+            .db
+            .prepare("SELECT json_array(id,input,read,write5,output,cost,sidechain,project,model) FROM responses ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok(serde_json::from_str(&r.get::<_, String>(0)?).unwrap()))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            [
+                json!(["msg_a", 100, 50, 10, 25, 0.25, 0, "web", "gpt-6.1-sol"]),
+                json!(["msg_b", 200, 50, 10, 25, null, 1, "web", "gpt-6.1-sol"]),
+                json!(["msg_d", 300, 50, 10, 25, 0.0, 0, "web", "claude-fable-5-2"]),
+                json!(["msg_old", 7, 0, 0, 1, null, 0, null, "gpt-6.1-sol"]),
+            ]
+        );
+        let events: Vec<(String, String, String, i64)> = db
+            .db
+            .prepare("SELECT id,kind,session,at FROM events ORDER BY id,kind")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let root = crate::session_id("opencode", "ses_root");
+        let child = crate::session_id("opencode", "ses_child");
+        let at = t / 1000;
+        assert_eq!(
+            events,
+            [
+                ("call_1".into(), "toolCalls".into(), root.clone(), at),
+                ("call_2".into(), "toolCalls".into(), root.clone(), at + 60),
+                ("call_2".into(), "toolErrors".into(), root.clone(), at + 60),
+                ("call_3".into(), "toolCalls".into(), child.clone(), at),
+                ("call_3".into(), "toolErrors".into(), child.clone(), at),
+                ("msg_b".into(), "apiErrors".into(), child, at + 3600),
+                ("msg_d".into(), "compactions".into(), root, at),
+            ]
+        );
     }
     #[test]
     fn opencode_disjoint_counts() {
