@@ -121,7 +121,9 @@ When the merge is not strict, the marker changes nothing about the gate.
 
 ## Merge
 
-`cedr council merge [--route R] [--run RUN] [--quorum N] [--block P0|P1|P2|P3] [--rounds N] [--round N] [--previous FILE] [--strict] [--no-record] [--format text|json|brief|github|sarif|gitlab] <report>...`, where each report is `<path>` (JSON) or `<member>=<path>` (text, or JSON whose own `member` is then overridden). `-` reads one report from stdin. The quorum, blocking severity and rounds come from the flags, else the route's `quorum`, `block` and `rounds`, else 2, P1 and 1. `--round` is the review being merged: 1 (the default) for the first, 2 after one revision, and so on, up to `rounds + 1`. With numbered rounds, a later `--round` is a usage error (exit 2) and nothing is recorded, because the gate already stood; a new review of the change starts a new run.
+`cedr council merge [--route R] [--run RUN] [--author-pick ID] [--quorum N] [--block P0|P1|P2|P3] [--rounds N] [--round N] [--previous FILE] [--strict] [--no-record] [--format text|json|brief|github|sarif|gitlab] <report>...`, where each report is `<path>` (JSON) or `<member>=<path>` (text, or JSON whose own `member` is then overridden). `-` reads one report from stdin. The quorum, blocking severity and rounds come from the flags, else the route's `quorum`, `block` and `rounds`, else 2, P1 and 1. `--round` is the review being merged: 1 (the default) for the first, 2 after one revision, and so on, up to `rounds + 1`. With numbered rounds, a later `--round` is a usage error (exit 2) and nothing is recorded, because the gate already stood; a new review of the change starts a new run.
+
+`--author-pick ID` names a recorded Route pick whose work this council reviewed. A pass records `accepted` on review 1 and `reworked` on a later review. A block at the end of the allowed rounds records `rejected`. An incomplete merge, a block with rounds left, or a stalled merge before the round limit leaves the pick unjudged. Existing verdicts are preserved. The note is `council <run id>`, using `--run` when set and the recorded merge id otherwise. An unknown pick or combining `--author-pick` with `--no-record` is a usage error (exit 2).
 
 1. Findings are grouped by file. Within a file, sorted by line, a finding joins the previous group when its line is at most 3 after that group's last line; otherwise it starts a new group.
 2. A group's severity is the most severe of its findings, its line the lowest, and its members the distinct members that reported in it. Every finding is kept with its member, severity, line, claim and scenario: dissent is shown, never voted away.
@@ -188,7 +190,7 @@ Groups are in the merge's order (most severe first, then file and line); every f
 | Tool | Arguments | Returns |
 |---|---|---|
 | `council_plan` | `route`, `size?`, `avoid?`, `models?`, `members?` | The plan JSON |
-| `council_merge` | `reports` (array of report JSON objects), `route?`, `run?`, `quorum?`, `block?`, `rounds?`, `round?`, `previous?` | The merge JSON (recorded) |
+| `council_merge` | `reports` (array of report JSON objects), `route?`, `run?`, `author_pick?`, `quorum?`, `block?`, `rounds?`, `round?`, `previous?` | The merge JSON (recorded) |
 | `council_stats` | `route?`, `since?` | Council stats rows |
 
 A gate of `block` or `incomplete` is a normal result, not a tool error. `council_merge` takes report objects, which are structurally complete, so it has no `strict` argument; a strict route still shows `"strict": true`.

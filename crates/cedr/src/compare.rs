@@ -10,6 +10,7 @@ use std::process::ExitCode;
 use cedr_compare::report::{self, Ci, CiProvider, CompareResult, FailOn, Source};
 use cedr_compare::run::{self, RunOptions, Selection};
 use cedr_compare::suite;
+use cedr_route::history::{self, Verdict};
 use cedr_route::{config, machine};
 use clap::{Subcommand, ValueEnum};
 use serde_json::{Value, json};
@@ -87,6 +88,9 @@ pub enum CompareCommand {
         /// Repository name recorded with the run
         #[arg(long, value_name = "NAME")]
         repo: Option<String>,
+        /// Route pick whose unjudged work the candidate validates
+        #[arg(long, value_name = "ID", conflicts_with = "no_record")]
+        pick: Option<String>,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
@@ -151,6 +155,21 @@ pub enum CompareCommand {
     },
 }
 
+/// A complete trial can support the pick or distinguish a worse candidate.
+fn route_verdict(result: &CompareResult) -> Option<Verdict> {
+    if !result.complete
+        || result.summary.baseline.scored == 0
+        || result.summary.candidate.scored == 0
+    {
+        return None;
+    }
+    if result.exit_code(FailOn::Lower) == 0 {
+        Some(Verdict::Accepted)
+    } else {
+        result.separated.then_some(Verdict::Rejected)
+    }
+}
+
 pub fn run(command: CompareCommand) -> Result<ExitCode, String> {
     match command {
         CompareCommand::Init { name } => init(&name),
@@ -177,11 +196,16 @@ pub fn run(command: CompareCommand) -> Result<ExitCode, String> {
             no_record,
             no_push,
             repo,
+            pick,
             format,
         } => {
             settings::Settings::load().check_compare_budget_rename()?;
             if let Some(name) = repo.as_deref() {
                 common::repo_name(Some(name), Path::new(""))?;
+            }
+            let history_path = history::default_path();
+            if let Some(id) = pick.as_deref() {
+                history::pick_target(&history_path, id).map_err(|e| e.to_string())?;
             }
             let loaded = load(suite.as_deref())?;
             let source = source(repo.as_deref(), Some(&loaded.root));
@@ -207,6 +231,19 @@ pub fn run(command: CompareCommand) -> Result<ExitCode, String> {
             print_result(&result, format);
             // The measurement is on stdout by now, and it cost money: report the failure, keep the output.
             saved?;
+            if let (Some(id), Some(verdict)) = (pick, route_verdict(&result)) {
+                let recorded = history::record_verdict_if_unjudged(
+                    &history_path,
+                    &id,
+                    verdict,
+                    &format!("compare {}", result.id),
+                    chrono::Utc::now(),
+                )
+                .map_err(|e| e.to_string())?;
+                if recorded && !no_push {
+                    crate::route::auto_sync(None);
+                }
+            }
             if !no_record && !no_push {
                 auto_push(&result);
             }

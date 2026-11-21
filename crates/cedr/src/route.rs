@@ -213,6 +213,9 @@ pub enum RouteCommand {
         /// Only this route
         #[arg(long)]
         route: Option<String>,
+        /// Only picks without a verdict
+        #[arg(long)]
+        unjudged: bool,
         /// Records to show, newest first (at most 500)
         #[arg(long, default_value_t = 20)]
         limit: usize,
@@ -872,9 +875,11 @@ pub fn run(command: RouteCommand, config: &ConfigArg) -> Result<ExitCode> {
         RouteCommand::History {
             route,
             limit,
+            unjudged,
             format,
         } => {
-            let rows = history::history(&history::default_path(), route.as_deref(), limit)?;
+            let rows =
+                history::history(&history::default_path(), route.as_deref(), limit, unjudged)?;
             match format {
                 ListFormat::Json => println!(
                     "{}",

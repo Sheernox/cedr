@@ -194,6 +194,46 @@ pub fn pick_target(path: &Path, id: &str) -> Result<String> {
     find_pick(&read(path)?, path, id).map(str::to_owned)
 }
 
+/// Serializes verdict writers without blocking history readers or unrelated pick writes.
+fn lock_verdicts(path: &Path) -> Result<std::fs::File> {
+    let lock = path.with_extension("lock");
+    if let Some(dir) = lock.parent() {
+        std::fs::create_dir_all(dir).map_err(io_err(dir))?;
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock)
+        .map_err(io_err(&lock))?;
+    file.lock().map_err(io_err(&lock))?;
+    Ok(file)
+}
+
+fn verdict_record(
+    id: &str,
+    verdict: Verdict,
+    details: VerdictDetails<'_>,
+    now: DateTime<Utc>,
+) -> Result<Record> {
+    if let Some(n) = details.note
+        && (n.chars().count() > MAX_NOTE || n.contains(['\n', '\r']))
+    {
+        return Err(Error::Usage(format!(
+            "a note is one line of at most {MAX_NOTE} characters"
+        )));
+    }
+    Ok(Record::Verdict {
+        id: id.to_string(),
+        at: stamp(now),
+        verdict,
+        task: details.task.map(str::to_string),
+        note: details.note.map(str::to_string),
+        session: details.session,
+    })
+}
+
 /// Records a verdict on a recorded pick; a later verdict for the same pick replaces the earlier one.
 pub fn record_verdict(
     path: &Path,
@@ -202,25 +242,38 @@ pub fn record_verdict(
     details: VerdictDetails<'_>,
     now: DateTime<Utc>,
 ) -> Result<()> {
-    if let Some(n) = details.note
-        && (n.chars().count() > MAX_NOTE || n.contains(['\n', '\r']))
-    {
-        return Err(Error::Usage(format!(
-            "a note is one line of at most {MAX_NOTE} characters"
-        )));
-    }
+    let record = verdict_record(id, verdict, details, now)?;
+    let _lock = lock_verdicts(path)?;
     find_pick(&read(path)?, path, id)?;
-    append(
-        path,
-        &[Record::Verdict {
-            id: id.to_string(),
-            at: stamp(now),
-            verdict,
-            task: details.task.map(str::to_string),
-            note: details.note.map(str::to_string),
-            session: details.session,
-        }],
-    )
+    append(path, &[record])
+}
+
+fn has_verdict(records: &[Record], id: &str) -> bool {
+    records
+        .iter()
+        .any(|record| matches!(record, Record::Verdict { id: pick, .. } if pick == id))
+}
+
+/// Records a measured verdict only if another writer has not already judged the pick.
+pub fn record_verdict_if_unjudged(
+    path: &Path,
+    id: &str,
+    verdict: Verdict,
+    note: &str,
+    now: DateTime<Utc>,
+) -> Result<bool> {
+    let _lock = lock_verdicts(path)?;
+    let records = read(path)?;
+    find_pick(&records, path, id)?;
+    if has_verdict(&records, id) {
+        return Ok(false);
+    }
+    let details = VerdictDetails {
+        note: Some(note),
+        ..Default::default()
+    };
+    append(path, &[verdict_record(id, verdict, details, now)?])?;
+    Ok(true)
 }
 
 /// Validates a cascade link against the current config and inherits the draft's run.
@@ -313,8 +366,20 @@ pub fn record_council(
     run: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<()> {
+    record_council_with_author(path, merged, route, run, None, now)
+}
+
+/// Records the merge and any first verdict on its author pick in the same append.
+pub fn record_council_with_author(
+    path: &Path,
+    merged: &mut Merged,
+    route: Option<&str>,
+    run: Option<&str>,
+    author_pick: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<()> {
     merge_spares(path, merged, run)?;
-    append_council(path, merged, route, run, now)
+    append_council(path, merged, route, run, author_pick, now)
 }
 
 /// A freshly generated plan can have no eligible picks. In that case its initial gate creates
@@ -328,7 +393,7 @@ pub fn record_council_plan(
     let route = Some(plan.pick.route.as_str());
     let run = plan.pick.run.as_deref();
     if plan.pick.delegates.is_empty() {
-        append_council(path, merged, route, run, now)
+        append_council(path, merged, route, run, None, now)
     } else {
         record_council(path, merged, route, run, now)
     }
@@ -339,6 +404,7 @@ fn append_council(
     merged: &mut Merged,
     route: Option<&str>,
     run: Option<&str>,
+    author_pick: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<()> {
     let id = crate::pick::new_id().replacen("p-", "c-", 1);
@@ -356,33 +422,58 @@ fn append_council(
             *findings.entry(f.member.clone()).or_default() += 1;
         }
     }
-    append(
-        path,
-        &[Record::Council {
-            id: id.clone(),
-            at: stamp(now),
-            route: route.map(str::to_string),
-            run: run.map(str::to_string),
-            round: merged.round,
-            rounds: merged.rounds,
-            scores: merged
-                .scores
-                .iter()
-                .filter_map(|(m, s)| s.map(|s| (m.clone(), s)))
-                .collect(),
-            spares: merged.spares.clone(),
-            stalled: merged.stalled,
-            gate: merged.gate,
-            next: merged.next,
-            quorum: merged.quorum,
-            block: merged.block,
-            reviewers: merged.reviewers.clone(),
-            groups,
-            findings,
-        }],
-    )?;
+    let mut new = vec![Record::Council {
+        id: id.clone(),
+        at: stamp(now),
+        route: route.map(str::to_string),
+        run: run.map(str::to_string),
+        round: merged.round,
+        rounds: merged.rounds,
+        scores: merged
+            .scores
+            .iter()
+            .filter_map(|(m, s)| s.map(|s| (m.clone(), s)))
+            .collect(),
+        spares: merged.spares.clone(),
+        stalled: merged.stalled,
+        gate: merged.gate,
+        next: merged.next,
+        quorum: merged.quorum,
+        block: merged.block,
+        reviewers: merged.reviewers.clone(),
+        groups,
+        findings,
+    }];
+    let _lock = author_pick.map(|_| lock_verdicts(path)).transpose()?;
+    if let Some(author) = author_pick {
+        let records = read(path)?;
+        find_pick(&records, path, author)?;
+        if !has_verdict(&records, author)
+            && let Some(verdict) = council_verdict(merged)
+        {
+            let note = format!("council {}", run.unwrap_or(&id));
+            let details = VerdictDetails {
+                note: Some(&note),
+                ..Default::default()
+            };
+            new.push(verdict_record(author, verdict, details, now)?);
+        }
+    }
+    append(path, &new)?;
+
     merged.id = Some(id);
     Ok(())
+}
+
+fn council_verdict(merged: &Merged) -> Option<Verdict> {
+    match merged.gate {
+        Gate::Pass if merged.round > 1 => Some(Verdict::Reworked),
+        Gate::Pass => Some(Verdict::Accepted),
+        Gate::Block if merged.rounds.is_some_and(|rounds| merged.round > rounds) => {
+            Some(Verdict::Rejected)
+        }
+        _ => None,
+    }
 }
 
 /// Parses the inclusive UTC date boundary used by both stats commands.
@@ -570,7 +661,12 @@ pub fn stats(
 }
 
 /// Latest pick and council records, with verdicts folded into their picks.
-pub fn history(path: &Path, route: Option<&str>, limit: usize) -> Result<Vec<serde_json::Value>> {
+pub fn history(
+    path: &Path,
+    route: Option<&str>,
+    limit: usize,
+    unjudged: bool,
+) -> Result<Vec<serde_json::Value>> {
     if limit > 500 {
         return Err(Error::Usage("history limit must be at most 500".into()));
     }
@@ -579,8 +675,12 @@ pub fn history(path: &Path, route: Option<&str>, limit: usize) -> Result<Vec<ser
     let mut entries = Vec::new();
     for r in &records {
         let (at, rid) = match r {
-            Record::Pick { at, route, .. } => (at, Some(route.as_str())),
-            Record::Council { at, route, .. } => (at, route.as_deref()),
+            Record::Pick { id, at, route, .. }
+                if !unjudged || !latest.contains_key(id.as_str()) =>
+            {
+                (at, Some(route.as_str()))
+            }
+            Record::Council { at, route, .. } if !unjudged => (at, route.as_deref()),
             _ => continue,
         };
         if route.is_some() && route != rid {
@@ -937,12 +1037,17 @@ mod tests {
             record["groups"],
             serde_json::json!({"P0":0,"P1":1,"P2":0,"P3":1})
         );
-        let h = history(&path, None, 2).unwrap();
+        let h = history(&path, None, 2, false).unwrap();
         assert_eq!(h[0]["id"], second.id.unwrap());
         assert_eq!(h[1]["id"], first.id.unwrap());
-        assert_eq!(history(&path, Some("review.code"), 20).unwrap().len(), 1);
-        assert!(history(&path, None, 501).is_err());
-        assert!(history(&path, None, 0).unwrap().is_empty());
+        assert_eq!(
+            history(&path, Some("review.code"), 20, false)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(history(&path, None, 501, false).is_err());
+        assert!(history(&path, None, 0, false).unwrap().is_empty());
     }
 
     #[test]
@@ -968,7 +1073,7 @@ mod tests {
             now() + chrono::Duration::days(2),
         )
         .unwrap();
-        let h = history(&path, None, 20).unwrap();
+        let h = history(&path, None, 20, false).unwrap();
         assert_eq!(h.len(), 2);
         assert_eq!(h[0]["id"], "new");
         assert!(h[0]["verdict"].is_null());
@@ -976,7 +1081,33 @@ mod tests {
         assert_eq!(h[1]["verdict"]["task"], "task");
         assert!(h[1]["verdict"].get("id").is_none());
         assert!(h[1]["verdict"].get("type").is_none());
-        assert_eq!(history(&path, None, 1).unwrap().len(), 1);
+        assert_eq!(history(&path, None, 1, false).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn competing_automatic_verdicts_preserve_the_first_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history");
+        record_pick(&path, &pick(&["p-1"], "codex/sol"), Size::Small, now()).unwrap();
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                record_verdict_if_unjudged(&path, "p-1", Verdict::Accepted, "compare c-a", now())
+                    .unwrap()
+            });
+            let second = scope.spawn(|| {
+                record_verdict_if_unjudged(&path, "p-1", Verdict::Rejected, "compare c-b", now())
+                    .unwrap()
+            });
+            assert_ne!(first.join().unwrap(), second.join().unwrap());
+        });
+        assert_eq!(
+            read(&path)
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r, Record::Verdict { .. }))
+                .count(),
+            1
+        );
     }
 
     #[test]

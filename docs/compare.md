@@ -137,7 +137,7 @@ Writes a commented starter suite to `.cedr/compare/<name>.toml` (default `suite`
 
 Validates the suite, resolves the refs and prints what a run would do, starting nothing. JSON: `{"suite", "sha256", "trials_each", "total_trials", "budget_usd", "budget_source", "variants": {"baseline": <variant>, "candidate": <variant>}, "tasks": [{"id", "setup", "test", "test_files"}], "warnings": []}`, where each variant has the Result's variant fields, including `budget_enforcement` ([Budget](#budget)), where a warning covers a harness that is not installed, `full` permissions, an unpriced variant and a `codex` model priced by its family's older version ([monitor.md](monitor.md), Pricing). Exit 0, or 2 on any error.
 
-### `cedr compare run [SUITE] [--budget-usd N] [--task ID]... [--trials N] [--fail-on never|lower|separated] [--allow-unpriced] [--no-record] [--no-push] [--repo NAME] [--format text|json]`
+### `cedr compare run [SUITE] [--budget-usd N] [--task ID]... [--trials N] [--fail-on never|lower|separated] [--allow-unpriced] [--no-record] [--no-push] [--repo NAME] [--pick ID] [--format text|json]`
 
 Runs the suite. Progress goes to stderr, the report to stdout. Exit codes:
 
@@ -147,6 +147,8 @@ Runs the suite. Progress goes to stderr, the report to stdout. Exit codes:
 - `2`: usage, config or I/O failure, including a refs problem found before any trial.
 
 Unless `--no-record`, the result is saved to `$XDG_STATE_HOME/cedr/compare/<id>.json`, including when incomplete. `--repo` sets the recorded repo name; an invalid explicit name is a usage error before any trial. `--no-push` skips automatic sending for that run; a later `cedr compare push` can still send it. `--no-record` keeps a run from being saved or sent.
+
+`--pick ID` names a recorded Route pick for the candidate. A complete run with both variants scored records `accepted` when the candidate's pass rate is at least the baseline's, compared by counts. It records `rejected` when the candidate's rate is lower and the intervals do not overlap. Other results leave the pick unjudged. The note is `compare <result id>`. The verdict preserves any already recorded and is independent of `--fail-on`. An unknown pick or combining `--pick` with `--no-record` is a usage error before the trials (exit 2). With `--no-push`, any verdict is recorded locally and can be sent with a later Route sync.
 
 ### `cedr compare history [--limit N] [--format text|json]`
 

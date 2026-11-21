@@ -359,8 +359,10 @@ fn mcp_serves_picks_and_returns_errors_as_tool_errors() {
     let plan: Value =
         serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     let run = plan["run"].as_str().unwrap();
+    let author_pick = plan["delegates"][0]["id"].as_str().unwrap();
+    let other_pick = plan["delegates"][1]["id"].as_str().unwrap();
     send(
-        json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"council_merge","arguments":{"route":"council","run":run,"previous":{"gate":"block","block":"P1","groups":[]},"reports":[{"member":"a","score":8,"spare_for":"c","findings":[]},{"member":"b","findings":[]}]}}}),
+        json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"council_merge","arguments":{"route":"council","run":run,"author_pick":author_pick,"previous":{"gate":"block","block":"P1","groups":[]},"reports":[{"member":"a","score":8,"spare_for":"c","findings":[]},{"member":"b","findings":[]}]}}}),
     );
     let result = recv(6);
     let merge: Value =
@@ -396,24 +398,28 @@ fn mcp_serves_picks_and_returns_errors_as_tool_errors() {
         json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"route_pick","arguments":{"route":"review.code","judges":"missing","escalates":"missing"}}}),
     );
     assert_eq!(recv(10)["result"]["isError"], true);
-    let pick_id = plan["delegates"][0]["id"].as_str().unwrap();
     send(
-        json!({"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"route_verdict","arguments":{"id":pick_id,"verdict":"accepted","session":"s-0123456789AB"}}}),
+        json!({"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"route_history","arguments":{"route":"council","unjudged":true}}}),
     );
-    assert_ne!(recv(11)["result"]["isError"], true);
+    let result = recv(11);
+    let pending: Vec<Value> =
+        serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0]["id"], other_pick);
+    send(
+        json!({"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"route_verdict","arguments":{"id":other_pick,"verdict":"accepted","session":"s-0123456789AB"}}}),
+    );
+    assert_ne!(recv(13)["result"]["isError"], true);
     send(
         json!({"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"route_history","arguments":{"route":"council","limit":10}}}),
     );
     let result = recv(12);
-    let entries: Value =
+    let entries: Vec<Value> =
         serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-    let recorded = entries
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|v| v["id"] == pick_id)
-        .unwrap();
-    assert_eq!(recorded["verdict"]["session"], "s-0123456789ab");
+    let verdict = |id: &str| &entries.iter().find(|v| v["id"] == id).unwrap()["verdict"];
+    assert_eq!(verdict(other_pick)["session"], "s-0123456789ab");
+    assert_eq!(verdict(author_pick)["verdict"], "accepted");
+    assert_eq!(verdict(author_pick)["note"], format!("council {run}"));
     drop(stdin);
     child.wait().unwrap();
 }

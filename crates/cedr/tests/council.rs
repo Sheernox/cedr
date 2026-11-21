@@ -513,6 +513,104 @@ fn a_blocked_merge_prints_the_revision_brief_until_the_rounds_run_out() {
 }
 
 #[test]
+fn author_picks_receive_only_final_council_verdicts() {
+    let s = Scratch::new(10.0, 20.0);
+    let pass = s.dir.path().join("pass.json");
+    let block = s.dir.path().join("block.json");
+    std::fs::write(&pass, r#"{"member":"reviewer","findings":[]}"#).unwrap();
+    std::fs::write(&block, r#"{"member":"reviewer","findings":[{"file":"src/a.rs","line":1,"severity":"P1","claim":"broken"}]}"#).unwrap();
+    let record_pick = || {
+        let pick: Value =
+            serde_json::from_slice(&s.pick("review.code", &["--format", "json"]).stdout).unwrap();
+        pick["delegates"][0]["id"].as_str().unwrap().to_string()
+    };
+    let accepted = record_pick();
+    let reworked = record_pick();
+    let rejected = record_pick();
+    let revise = record_pick();
+    let incomplete = record_pick();
+    let manual = record_pick();
+    assert!(
+        s.cedr(&["route", "verdict", &manual, "redone"])
+            .status
+            .success()
+    );
+
+    let mut expected = Vec::new();
+    for (pick, report, round, quorum, code, verdict) in [
+        (&accepted, &pass, "1", "1", 0, Some("accepted")),
+        (&reworked, &block, "1", "1", 1, None),
+        (&reworked, &pass, "2", "1", 0, Some("reworked")),
+        (&rejected, &block, "2", "1", 1, Some("rejected")),
+        (&revise, &block, "1", "1", 1, None),
+        (&incomplete, &pass, "1", "2", 3, None),
+        (&manual, &pass, "1", "1", 0, None),
+    ] {
+        let out = s.cedr(&[
+            "council",
+            "merge",
+            report.to_str().unwrap(),
+            "--author-pick",
+            pick,
+            "--round",
+            round,
+            "--quorum",
+            quorum,
+            "--format",
+            "json",
+        ]);
+        assert_eq!(
+            out.status.code(),
+            Some(code),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if let Some(verdict) = verdict {
+            let body: Value = serde_json::from_slice(&out.stdout).unwrap();
+            expected.push((
+                pick,
+                verdict,
+                format!("council {}", body["id"].as_str().unwrap()),
+            ));
+        }
+    }
+    let history: Vec<Value> =
+        serde_json::from_slice(&s.cedr(&["route", "history", "--format", "json"]).stdout).unwrap();
+    let verdict = |id: &str| &history.iter().find(|r| r["id"] == id).unwrap()["verdict"];
+    for (pick, outcome, note) in expected {
+        assert_eq!(verdict(pick)["verdict"], outcome);
+        assert_eq!(verdict(pick)["note"], note);
+    }
+    assert_eq!(verdict(&manual)["verdict"], "redone");
+    assert!(verdict(&manual)["note"].is_null());
+
+    let pending: Vec<Value> = serde_json::from_slice(
+        &s.cedr(&[
+            "route",
+            "history",
+            "--unjudged",
+            "--route",
+            "review.code",
+            "--format",
+            "json",
+        ])
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(
+        pending
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [incomplete.as_str(), revise.as_str()]
+    );
+    assert!(pending.iter().all(|r| r["verdict"].is_null()));
+    let limited = stdout(&s.cedr(&["route", "history", "--unjudged", "--limit", "1"]));
+    assert_eq!(limited.lines().count(), 1);
+    assert!(limited.trim_end().ends_with(&incomplete));
+}
+
+#[test]
 fn plan_shares_run_and_merge_records_counts_or_opts_out() {
     let s = Scratch::new(10.0, 20.0);
     let cfg = config().display().to_string();

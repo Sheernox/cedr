@@ -323,7 +323,7 @@ All take `--config PATH`; picks also take `--readings`, `--models`, `--no-record
 | `cedr route enable <route>`, `cedr route disable <route>` | Turn a route on or off |
 | `cedr route verdict <pick-id> accepted\|reworked\|redone\|rejected [--task ID] [--note TEXT] [--session ID]` | Record a verdict |
 | `cedr route stats [--route R] [--since YYYY-MM-DD] [--format text\|json]` | Picks, verdicts, time to verdict, cascade outcomes and matched Monitor usage per route, model and preview status |
-| `cedr route history [--route R] [--limit N] [--format text\|json]` | The latest records, newest first (default 20, at most 500): picks with their latest verdict, and council results |
+| `cedr route history [--route R] [--unjudged] [--limit N] [--format text\|json]` | The latest records, newest first (default 20, at most 500): picks with their latest verdict, and council results. `--unjudged` shows only picks without a verdict |
 | `cedr route import <routing.toml>` | Print a `routes.toml` converted from a T3 Code delegation `routing.toml` (see Import) |
 | `cedr route statusline [-- <command>...]` | Claude status line: capture `rate_limits` from stdin for the `claude-statusline` reader, then print `claude s23% w41%`, or run `<command>` with the same stdin and print its output instead |
 | `cedr route sync [--push-only\|--pull-only] [--quiet]` | Push history, pull the org's shared routes and send the machine snapshot (see Sync); `--quiet` prints only errors |
@@ -365,6 +365,7 @@ Append-only JSON lines in `$XDG_STATE_HOME/cedr/route-history.jsonl` (default `~
 - `stats` groups picks by route, target and preview status (a preview version's trial cell is its own row), counting picks made on or after `--since` when given, and reports picks, each verdict count, verdicts recorded, accepted percent (accepted over verdicts recorded), and `median_minutes`: the median time from pick to its latest verdict, rounded to 0.1, null without verdicts. A cell with fewer than 10 verdicts is marked provisional. Rows of a cascade route add `judged` (its picks some judge pick names in `judges`) and `escalated` (its picks some escalation pick names in `escalates`); other rows have both null. JSON rows: `{"route", "target", "preview", "picks", "accepted", "reworked", "redone", "rejected", "verdicts", "accepted_pct", "median_minutes", "provisional", "judged", "escalated"}`; text marks a preview row ` (preview)` after the target.
 - Stats also read the existing local Monitor store. An explicit session matches by harness and id. Otherwise, a verdict matches only when exactly one session for that harness used the pick’s model and has its first recorded response between the pick and the verdict, inclusive. A missing or ambiguous match contributes no usage. Stats use the whole matched session for each matched pick.
 - Each stats JSON row adds `matched_picks`, `tokens`, `cost_usd` and `cost_per_accepted_usd`. Tokens sum recorded input, cache reads and writes, and output. Cost uses [Monitor’s API-equivalent prices](monitor.md#pricing). Tokens and cost are null without a match. Cost per accepted task divides the cost of all matched picks in the row by its matched `accepted` plus matched `reworked` picks, or is null when neither matched. The verdict counts and accepted percent keep their original meanings. Text adds a usage table when at least one pick matched.
+- `history --unjudged` applies the route and limit to picks without a verdict, newest first. Council and Compare can record the first verdict through [Council merge](council.md#merge) or [Compare run](compare.md#commands).
 - `history` JSON is a list of `{"type": "pick", ...the pick record..., "verdict": <latest verdict record without type and id, or null>}` and `{"type": "council", ...the council record...}`; text prints one line per record: `<at> <route> -> <target> <effort> <verdict or "-"> <id>` for picks and `<at> <route> council <gate> review <round> of <rounds + 1 or unlimited> <id>` for council results (JSON keeps `round`, the review, and `rounds`, the revisions allowed).
 
 ## Import
@@ -413,7 +414,7 @@ Sync destinations and machine settings come from `--config`, `$CEDR_ROUTES`, or 
 | `route_show` | `route` | The JSON of `cedr route show` |
 | `route_models` | none | The JSON of `cedr route models` |
 | `route_stats` | `route?`, `since?` | Stats rows |
-| `route_history` | `route?`, `limit?` | History entries |
+| `route_history` | `route?`, `limit?`, `unjudged?` | History entries |
 | `guard_lint` | `path?`, `strict?` | [Guard lint report](design.md#local-mcp-tools) |
 | `guard_verify` | `path?` | [Guard verify report](design.md#local-mcp-tools) |
 | `guard_outdated` | `path?`, `fail_on?` | [Guard npm update report](design.md#local-mcp-tools) |

@@ -233,6 +233,76 @@ fn fail_on_decides_the_exit_code_of_a_complete_run() {
 }
 
 #[test]
+fn compare_records_supported_pick_outcomes_independently_of_fail_on() {
+    let repo = Repo::new();
+    repo.program("agent", AGENT);
+    let route_config =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/route/routes.toml");
+    let record_pick = || {
+        let out = repo.run(&[
+            "route",
+            "manual",
+            "codex/gpt-6.1-sol",
+            "--config",
+            route_config.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        stdout_json(&out)["delegates"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let verdict = |id: &str| {
+        let h = stdout_json(&repo.run(&["route", "history", "--format", "json"]));
+        h.as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap()["verdict"]
+            .clone()
+    };
+    let worse = |trials| {
+        command_suite(trials)
+            .replace("model = \"bad\"", "model = \"x\"")
+            .replace("model = \"good\"", "model = \"bad\"")
+            .replace("model = \"x\"", "model = \"good\"")
+    };
+    for (suite, budget, exit, outcome) in [
+        (
+            command_suite(1).replace("model = \"good\"", "model = \"another-bad\""),
+            "2",
+            0,
+            Some("accepted"),
+        ),
+        (worse(8), "2", 0, Some("rejected")),
+        (worse(1), "2", 0, None),
+        (command_suite(8), "0.25", 3, None),
+    ] {
+        let pick = record_pick();
+        let suite = repo.suite(&suite);
+        let mut args = run_args(&suite);
+        args.extend(["--pick", &pick, "--budget-usd", budget, "--no-push"]);
+        let out = repo.run(&args);
+        assert_eq!(code(&out), exit, "{}", String::from_utf8_lossy(&out.stderr));
+        let recorded = verdict(&pick);
+        if let Some(outcome) = outcome {
+            let result = stdout_json(&out);
+            assert_eq!(recorded["verdict"], outcome);
+            assert_eq!(
+                recorded["note"],
+                format!("compare {}", result["id"].as_str().unwrap())
+            );
+        } else {
+            assert!(recorded.is_null(), "{recorded}");
+        }
+    }
+    let out = repo.run(&["compare", "run", "--pick", "p-missing"]);
+    assert_eq!(code(&out), 2);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no recorded pick"));
+}
+
+#[test]
 fn the_budget_stops_the_run_evenly_and_an_incomplete_run_never_passes() {
     let repo = Repo::new();
     repo.program("agent", AGENT);

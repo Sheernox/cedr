@@ -110,6 +110,8 @@ pub struct MergeArgs {
     /// Council route whose quorum and blocking severity apply
     route: Option<String>,
     run: Option<String>,
+    /// Route pick whose unjudged work gets a verdict from the final gate
+    author_pick: Option<String>,
     /// Quorum to use instead of the route's (default 2)
     quorum: Option<usize>,
     /// Least severe finding that blocks: P0, P1 (default), P2 or P3
@@ -154,6 +156,8 @@ pub struct StatsArgs {
 pub struct HistoryArgs {
     route: Option<String>,
     limit: Option<usize>,
+    /// Only picks without a verdict
+    unjudged: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -624,11 +628,12 @@ impl RouteServer {
                 .collect::<cedr_route::Result<Vec<_>>>()?;
             let mut merged = council::merge(&reports, settings);
             council::apply_previous(&mut merged, a.previous)?;
-            history::record_council(
+            history::record_council_with_author(
                 &history::default_path(),
                 &mut merged,
                 a.route.as_deref(),
                 a.run.as_deref(),
+                a.author_pick.as_deref(),
                 Utc::now(),
             )?;
             crate::route::auto_sync(me.config.as_deref());
@@ -663,6 +668,7 @@ impl RouteServer {
                 &history::default_path(),
                 a.route.as_deref(),
                 a.limit.unwrap_or(20),
+                a.unjudged.unwrap_or_default(),
             )?))
         })
         .await

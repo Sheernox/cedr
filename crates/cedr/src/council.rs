@@ -62,6 +62,9 @@ pub enum CouncilCommand {
         /// The run id `council plan` printed, so the result joins that plan in history
         #[arg(long)]
         run: Option<String>,
+        /// Route pick whose unjudged work gets a verdict from the final gate
+        #[arg(long, value_name = "ID", conflicts_with = "no_record")]
+        author_pick: Option<String>,
         /// Do not record the result in the local history (merges record by default)
         #[arg(long)]
         no_record: bool,
@@ -395,6 +398,7 @@ pub fn run(command: CouncilCommand, config: &route::ConfigArg) -> Result<ExitCod
             reports,
             route,
             run,
+            author_pick,
             no_record,
             quorum,
             block,
@@ -423,17 +427,16 @@ pub fn run(command: CouncilCommand, config: &route::ConfigArg) -> Result<ExitCod
                 &mut merged,
                 previous.as_deref().map(read_previous).transpose()?,
             )?;
-            cedr_route::history::merge_spares(
-                &cedr_route::history::default_path(),
-                &mut merged,
-                run.as_deref(),
-            )?;
-            if !no_record {
-                cedr_route::history::record_council(
-                    &cedr_route::history::default_path(),
+            let path = cedr_route::history::default_path();
+            if no_record {
+                cedr_route::history::merge_spares(&path, &mut merged, run.as_deref())?;
+            } else {
+                cedr_route::history::record_council_with_author(
+                    &path,
                     &mut merged,
                     route.as_deref(),
                     run.as_deref(),
+                    author_pick.as_deref(),
                     chrono::Utc::now(),
                 )?;
                 route::auto_sync(config);
