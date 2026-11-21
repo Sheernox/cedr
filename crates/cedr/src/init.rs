@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use cedr_route::{config, starter};
 use serde::Serialize;
 
-use crate::doctor::{self, McpRegistration};
+use crate::doctor::{self, McpAgent, McpRegistration, McpRepair};
 use crate::{Format, monitor};
 
 #[derive(clap::Args)]
@@ -56,7 +56,7 @@ struct Step {
 
 enum Action {
     Routes(Box<starter::Starter>),
-    Register(&'static str),
+    Register(McpAgent, &'static [&'static str]),
     Schedule,
     None,
 }
@@ -114,30 +114,33 @@ fn routes_step(selected: Option<PathBuf>, harnesses: &[String]) -> Step {
     step
 }
 
-fn mcp_step(agent: &'static str, registration: McpRegistration) -> Step {
+fn mcp_step(client: McpAgent, root: &Path) -> Step {
+    let agent = client.name();
     let mut step = Step::new(
         format!("mcp.{agent}"),
         format!("Register cedr MCP with {agent}"),
         Status::Planned,
     );
-    match registration {
+    match client.registration(root) {
         McpRegistration::Absent => {
-            step.description = format!("{agent} CLI is unavailable");
+            step.description = format!("{agent} is unavailable");
             step.status = Status::Skipped;
         }
         McpRegistration::Registered => {
             step.description = format!("Keep existing cedr MCP registration with {agent}");
             step.status = Status::Already;
         }
-        McpRegistration::Missing => {
-            step.command = Some(doctor::mcp_fix(agent).to_vec());
-            step.action = Action::Register(agent);
-        }
-        McpRegistration::Unreadable => {
-            step.fail(format!(
-                "{agent} mcp list failed; check the existing registration"
-            ));
-        }
+        McpRegistration::Missing => match client.repair() {
+            McpRepair::Command(command) => {
+                step.command = Some(command.to_vec());
+                step.action = Action::Register(client, command);
+            }
+            McpRepair::Manual(instructions) => {
+                step.description = instructions;
+                step.status = Status::Skipped;
+            }
+        },
+        McpRegistration::Unreadable(message) => step.fail(message),
     }
     step
 }
@@ -166,24 +169,21 @@ fn schedule_step(existing: Result<bool, impl ToString>) -> Step {
     }
 }
 
-fn apply(step: &mut Step) -> Result<Status, String> {
+fn apply(step: &mut Step, root: &Path) -> Result<Status, String> {
     match &step.action {
         Action::Routes(starter) => {
             starter.write().map_err(|e| e.to_string())?;
         }
-        Action::Register(agent) => {
-            let command = doctor::mcp_fix(agent);
-            match doctor::mcp_registration(agent) {
+        Action::Register(client, command) => {
+            let agent = client.name();
+            match client.registration(root) {
                 McpRegistration::Registered => return Ok(Status::Already),
                 McpRegistration::Missing => {}
-                _ => {
-                    return Err(format!(
-                        "{agent} mcp list failed; check the existing registration"
-                    ));
-                }
+                McpRegistration::Unreadable(message) => return Err(message),
+                McpRegistration::Absent => return Err(format!("{agent} is unavailable")),
             }
-            let result =
-                doctor::run_mcp(agent, &command[1..]).map_err(|e| format!("{agent}: {e}"))?;
+            let result = doctor::run_mcp(agent, &command[1..], Some(root))
+                .map_err(|e| format!("{agent}: {e}"))?;
             if !result.succeeded() {
                 return Err(format!(
                     "{} failed; run it directly for details",
@@ -259,7 +259,7 @@ fn setup(
     let selected = config::locate(None, root).ok().map(|located| located.path);
     let mut steps = vec![routes_step(selected, &harnesses)];
     for &agent in doctor::MCP_AGENTS {
-        steps.push(mcp_step(agent, doctor::mcp_registration(agent)));
+        steps.push(mcp_step(agent, root));
     }
     steps.push(schedule_step(monitor::schedule_exists()));
     for step in &steps {
@@ -269,7 +269,7 @@ fn setup(
     if !preview {
         for step in steps.iter_mut().filter(|s| s.status == Status::Planned) {
             if yes || confirm(out, &step.description)? {
-                match apply(step) {
+                match apply(step, root) {
                     Ok(status) => step.status = status,
                     Err(e) => step.fail(e),
                 }

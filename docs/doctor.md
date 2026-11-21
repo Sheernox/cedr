@@ -1,8 +1,8 @@
 # cedr doctor: design contract
 
-`cedr doctor [PATH] [--format text|json]` checks everything cedr needs on this machine and in the repo at `PATH` (default `.`), so a person or their agent can see what is missing and how to fix it. It reads and never writes. It calls the network only once the key checks out: the key check itself, the latest release and the org rule version.
+`cedr doctor [PATH] [--format text|json]` checks everything cedr needs on this machine and in the repo at `PATH` (default `.`), so a person or their agent can see what is missing and how to fix it. It leaves configuration unchanged. Vendor CLI checks may write their own diagnostic logs. Cedr calls the network only once the key checks out: the key check itself, the latest release and the org rule version.
 
-Each check is `{"id", "area", "state": "ok" | "warn" | "fail" | "skip", "message", "fix"}`, where `fix` is the command or step that resolves it (null when `ok`, or when a skipped optional account, push or timer check needs no action). Text output prints one line per check with its fix indented below, then `cedr: <n> ok, <m> warnings, <k> failures`.
+Each check is `{"id", "area", "state": "ok" | "warn" | "fail" | "skip", "message", "fix"}`, where `fix` is the command or step that resolves it (null when `ok`, or when a skipped check needs no action). Text output prints one line per check with its fix indented below, then `cedr: <n> ok, <m> warnings, <k> failures`.
 
 | ID | Area | Checks |
 |---|---|---|
@@ -16,7 +16,7 @@ Each check is `{"id", "area", "state": "ok" | "warn" | "fail" | "skip", "message
 | `route.targets` | route | For enabled routes, on present harnesses: warn naming the harnesses with no model list (from any source, or the config's `models`; a harness a `codex` readings source reads lists its models at pick time and is not named), since none of their targets resolve, and the targets whose model resolves to nothing in the harness's list (docs/route.md, Model resolution). It also warns naming each enabled candidate on a present harness with a resolved model (`<route> <target>=<effort>`) whose effort is off the ladder (docs/route.md, Model options) and not among the efforts the readings list for its resolved model, since such an effort is passed on as written. `self`, absent harnesses and unresolved models are excluded; when a Codex reader supplies model options only at pick time, efforts are not judged without those options. The fix is `models = [...]` on the harness or a readings source that lists models, and an effort on the ladder unless the model offers your own |
 | `route.statusline` | route | Claude's plan reading: ok when a `t3` source gives Claude a current reading; otherwise `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json` when set) has a status line running `cedr route statusline`, or Claude Code has cached its plan usage (docs/route.md, Built-in readers); warn when Claude is present (on `PATH` or run by T3 Code) and neither holds, or there is no status line and the cache cannot be read or the routes do not have exactly one `claude-statusline` source |
 | `route.sync` | route | The last background sync error, if any |
-| `mcp.claude`, `mcp.codex`, `mcp.grok` | mcp | `cedr` is registered as an MCP server for that agent (`claude mcp list`, `codex mcp list`, `grok mcp list`; skip when the agent is absent) |
+| `mcp.<client>` | mcp | One registration check per client below. A missing or unreadable registration warns, and an absent client skips |
 | `monitor.config` | monitor | The monitor config parses |
 | `monitor.sources` | monitor | One check per harness from `cedr monitor sources`: skip when no source directories exist and neither `harnesses` nor `[paths]` configures it; warn when a present or configured source has no files. Saved absent or unsupported sources also skip when not present or configured |
 | `monitor.push` | monitor | The last push time (warn after 24 hours with an org set), and the last background push error |
@@ -31,3 +31,39 @@ Each check is `{"id", "area", "state": "ok" | "warn" | "fail" | "skip", "message
 | `compare.suite` | compare | One check per suite in `.cedr/compare/`: it plans, with `compare plan`'s warnings (skip when there is none) |
 
 Exit 0 when nothing fails (warnings allowed), 1 when any check fails, 2 on usage failure. `cedr mcp` offers it as the `doctor` tool.
+
+## MCP registration
+
+These checks look for a server named `cedr`. A registration can exist even when the client disables the server. Config checks inspect the indicated workspace and user files up to 4 MiB. This lets Doctor inspect Gemini CLI, OpenCode and Cursor registrations without starting servers or opening a menu.
+
+| Client | Registration check | Add a missing registration |
+| --- | --- | --- |
+| Claude Code | `claude mcp list` | `claude mcp add cedr -- cedr mcp` |
+| Codex | `codex mcp list` | `codex mcp add cedr -- cedr mcp` |
+| Grok Build | `grok mcp list` | `grok mcp add cedr -- cedr mcp` |
+| Gemini CLI | `.gemini/settings.json` in the workspace and under `$GEMINI_CLI_HOME` (default home), key `mcpServers` | `gemini mcp add --scope user cedr cedr mcp` |
+| Cursor | workspace `.cursor/mcp.json` and `~/.cursor/mcp.json`, key `mcpServers` | Merge the snippet below into `~/.cursor/mcp.json` |
+| Copilot in VS Code | `$COPILOT_HOME/mcp-config.json` (default `~/.copilot/mcp-config.json`) and workspace `.mcp.json`, key `mcpServers`. Also checks workspace `.vscode/mcp.json` and the default VS Code and Insiders user profile files, key `servers` | Merge the Copilot snippet below into the Copilot user file |
+| OpenCode | `opencode.json` and `opencode.jsonc` in the workspace root and `.opencode/`, and under `$XDG_CONFIG_HOME/opencode` (default `~/.config/opencode`), plus `$OPENCODE_CONFIG` when set. Checks the `mcp.servers` map (v2) or the `mcp` map (v1) | Detects the CLI version. OpenCode v2 uses `opencode mcp add cedr --global -- cedr mcp`. For v1 use the snippet below |
+| Muse Code | `muse mcp list` | `muse mcp add cedr --user -- cedr mcp` |
+| Antigravity | workspace `.agents/mcp_config.json` and `~/.gemini/config/mcp_config.json`, key `mcpServers` | Merge the snippet below into `~/.gemini/config/mcp_config.json` |
+
+Doctor detects clients on `PATH` (`cursor` or `cursor-agent` for Cursor, `code`, `code-insiders` or `copilot` for Copilot, `agy` or `antigravity` for Antigravity). For these three desktop clients, an existing user configuration directory also counts as presence.
+
+For Cursor and Antigravity:
+
+```json
+{"mcpServers":{"cedr":{"command":"cedr","args":["mcp"]}}}
+```
+
+For Copilot, add the server to the native Copilot configuration. The VS Code `code --add-mcp` command writes editor-managed configuration for the legacy Local harness.
+
+```json
+{"mcpServers":{"cedr":{"type":"stdio","command":"cedr","args":["mcp"],"tools":["*"]}}}
+```
+
+For OpenCode v1, merge this into `opencode.json`:
+
+```json
+{"mcp":{"cedr":{"type":"local","command":["cedr","mcp"]}}}
+```

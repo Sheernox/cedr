@@ -39,6 +39,12 @@ fn doctor_json_is_read_only_and_has_stable_checks() {
             "mcp.claude",
             "mcp.codex",
             "mcp.grok",
+            "mcp.gemini",
+            "mcp.cursor",
+            "mcp.copilot",
+            "mcp.opencode",
+            "mcp.muse",
+            "mcp.antigravity",
             "monitor.config",
             "monitor.sources",
             "monitor.push",
@@ -59,19 +65,112 @@ fn doctor_json_is_read_only_and_has_stable_checks() {
         assert!(c["message"].is_string());
         assert!(["ok", "warn", "fail", "skip"].contains(&c["state"].as_str().unwrap()));
         let optional = c["state"] == "skip"
-            && [
-                "key.present",
-                "key.valid",
-                "org.member",
-                "monitor.push",
-                "monitor.schedule",
-            ]
-            .iter()
-            .any(|id| c["id"] == *id);
+            && (c["area"] == "mcp"
+                || [
+                    "key.present",
+                    "key.valid",
+                    "org.member",
+                    "monitor.push",
+                    "monitor.schedule",
+                ]
+                .iter()
+                .any(|id| c["id"] == *id));
         assert_eq!(c["fix"].is_null(), c["state"] == "ok" || optional);
     }
     assert_eq!(fs::read_dir(home.path()).unwrap().count(), 0);
 }
+#[cfg(unix)]
+#[test]
+fn doctor_checks_vendor_config_without_launching_servers() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let bin = home.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    for name in ["cursor", "code", "gemini", "opencode", "agy", "muse"] {
+        let path = bin.join(name);
+        let script = if name == "muse" {
+            r#"test "$*" = 'mcp list --json' || exit 1
+test "$MUSE_NO_AUTO_UPDATE" = 1 || exit 1
+printf '%s' '{"servers":[{"name":"cedr","source":"user"}]}'"#
+        } else {
+            r#"echo invoked > "$HOME/unexpected-mcp-command"; exit 1"#
+        };
+        fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    for (base, path, text) in [
+        (
+            home.path(),
+            "gemini-home/.gemini/settings.json",
+            r#"{"mcpServers":{"cedr":{"command":"cedr","args":["mcp"]}}}"#,
+        ),
+        (
+            root.path(),
+            ".vscode/mcp.json",
+            r#"{"servers":{"cedr":{"type":"stdio","command":"cedr","args":["mcp"],},},}"#,
+        ),
+        (
+            root.path(),
+            "opencode.jsonc",
+            r#"{/* comment */"mcp":{"servers":{"cedr":{"type":"remote","url":"https://example.com/mcp",}}}}"#,
+        ),
+        (home.path(), ".gemini/config/mcp_config.json", "{ broken"),
+        (
+            root.path(),
+            ".cursor/mcp.json",
+            r#"{"mcpServers":{"cedr-other":{"command":"cedr","args":["mcp"]}}}"#,
+        ),
+    ] {
+        let file = base.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, text).unwrap();
+    }
+    let run = || {
+        let output = Command::new(env!("CARGO_BIN_EXE_cedr"))
+            .args(["doctor", "--format", "json"])
+            .arg(root.path())
+            .env_clear()
+            .env("HOME", home.path())
+            .env("PATH", &bin)
+            .env("GEMINI_CLI_HOME", home.path().join("gemini-home"))
+            .env("CEDR_TELEMETRY", "0")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        value["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["area"] == "mcp")
+            .map(|c| (c["id"].as_str().unwrap().to_owned(), c.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let checks = run();
+    for id in ["mcp.copilot", "mcp.gemini", "mcp.opencode", "mcp.muse"] {
+        assert_eq!(checks[id]["state"], "ok", "{id}");
+    }
+    assert_eq!(checks["mcp.cursor"]["state"], "warn");
+    let fix = checks["mcp.cursor"]["fix"].as_str().unwrap();
+    assert!(fix.contains(r#"{"mcpServers":{"cedr":{"command":"cedr","args":["mcp"]}}}"#));
+    assert!(fix.contains("~/.cursor/mcp.json"));
+    assert_eq!(checks["mcp.antigravity"]["state"], "warn");
+    assert!(
+        checks["mcp.antigravity"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("mcp_config.json")
+    );
+    fs::remove_file(home.path().join("gemini-home/.gemini/settings.json")).unwrap();
+    assert_eq!(
+        run()["mcp.gemini"]["fix"],
+        "gemini mcp add --scope user cedr cedr mcp"
+    );
+    assert!(!home.path().join("unexpected-mcp-command").exists());
+}
+
 #[test]
 fn doctor_uses_public_org_id_from_me() {
     use std::{

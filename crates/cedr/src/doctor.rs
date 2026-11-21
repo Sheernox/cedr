@@ -4,10 +4,12 @@ use cedr_route::machine::installed;
 use clap::Args as ClapArgs;
 use serde::Serialize;
 use serde_json::{Value, json};
+mod mcp;
+pub use mcp::{MCP_AGENTS, McpAgent, McpRegistration, McpRepair, run_mcp};
+
 use std::{
     path::{Path, PathBuf},
-    process::{Command, ExitCode},
-    time::Duration,
+    process::ExitCode,
 };
 #[derive(ClapArgs)]
 pub struct Args {
@@ -43,50 +45,6 @@ fn add(out: &mut Vec<Check>, id: &str, state: &str, message: impl Into<String>, 
         },
     });
 }
-pub const MCP_AGENTS: &[&str] = &["claude", "codex", "grok"];
-
-pub enum McpRegistration {
-    Absent,
-    Registered,
-    Missing,
-    Unreadable,
-}
-
-/// Keep the printed repair and the setup command in sync.
-pub fn mcp_fix(agent: &'static str) -> [&'static str; 7] {
-    [agent, "mcp", "add", "cedr", "--", "cedr", "mcp"]
-}
-
-pub fn run_mcp(agent: &str, args: &[&str]) -> std::io::Result<cedr_compare::exec::StepOutput> {
-    let mut cmd = Command::new(agent);
-    cmd.args(args).env("GROK_DISABLE_AUTOUPDATER", "1");
-    cedr_compare::exec::run_cleanup(cmd, Duration::from_secs(10))
-}
-
-pub fn mcp_registration(agent: &str) -> McpRegistration {
-    if !installed(agent) {
-        return McpRegistration::Absent;
-    }
-    let Ok(output) = run_mcp(agent, &["mcp", "list"]) else {
-        return McpRegistration::Unreadable;
-    };
-    if !output.succeeded() {
-        return McpRegistration::Unreadable;
-    }
-    let Ok(text) = std::str::from_utf8(&output.stdout) else {
-        return McpRegistration::Unreadable;
-    };
-    if text.lines().any(|line| {
-        line.split_whitespace()
-            .next()
-            .is_some_and(|word| word.trim_end_matches(':') == "cedr")
-    }) {
-        McpRegistration::Registered
-    } else {
-        McpRegistration::Missing
-    }
-}
-
 pub fn checks(root: &Path) -> Vec<Check> {
     let mut out = vec![];
     add(
@@ -628,19 +586,28 @@ pub fn checks(root: &Path) -> Vec<Check> {
         "Run cedr route sync",
     );
     for &agent in MCP_AGENTS {
-        let (state, message) = match mcp_registration(agent) {
-            McpRegistration::Absent => ("skip", "harness absent"),
-            McpRegistration::Registered => ("ok", "cedr MCP registration found"),
-            McpRegistration::Missing | McpRegistration::Unreadable => {
-                ("warn", "cedr MCP registration missing or unreadable")
+        let (state, message, fix) = match agent.registration(root) {
+            McpRegistration::Absent => ("skip", "harness absent".into(), String::new()),
+            McpRegistration::Registered => {
+                ("ok", "cedr MCP registration found".into(), String::new())
             }
+            McpRegistration::Missing => (
+                "warn",
+                "cedr MCP registration missing".into(),
+                agent.repair().instructions(),
+            ),
+            McpRegistration::Unreadable(message) => (
+                "warn",
+                message,
+                "Check the existing MCP configuration".into(),
+            ),
         };
         add(
             &mut out,
-            &format!("mcp.{agent}"),
+            &format!("mcp.{}", agent.name()),
             state,
             message,
-            &mcp_fix(agent).join(" "),
+            &fix,
         );
     }
     add(
@@ -932,9 +899,7 @@ pub fn checks(root: &Path) -> Vec<Check> {
         "route.targets",
         "route.statusline",
         "route.sync",
-        "mcp.claude",
-        "mcp.codex",
-        "mcp.grok",
+        "mcp",
         "monitor.config",
         "monitor.sources",
         "monitor.push",
@@ -951,7 +916,7 @@ pub fn checks(root: &Path) -> Vec<Check> {
     out.sort_by_key(|c| {
         order
             .iter()
-            .position(|id| *id == c.id)
+            .position(|id| *id == c.id || *id == c.area)
             .unwrap_or(order.len())
     });
     out

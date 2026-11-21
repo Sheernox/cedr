@@ -151,6 +151,12 @@ fn init_without_a_terminal_previews_detected_agents_without_writing() {
         "claude",
         r#"if [ "$2" = list ]; then echo 'cedr-tools: running'; else echo unexpected > "$HOME/add"; fi"#,
     );
+    fake_agent(
+        &s,
+        "opencode",
+        r#"test "$*" = --version || exit 1
+echo 1.17.10"#,
+    );
     let out = run_init(&s, &[]);
     assert!(out.status.success(), "{:?}", out);
     assert!(String::from_utf8_lossy(&out.stderr).contains("No terminal and no --yes"));
@@ -160,6 +166,15 @@ fn init_without_a_terminal_previews_detected_agents_without_writing() {
     assert_eq!(
         step(&payload, "mcp.claude")["command"],
         serde_json::json!(["claude", "mcp", "add", "cedr", "--", "cedr", "mcp"])
+    );
+    let opencode = step(&payload, "mcp.opencode");
+    assert_eq!(opencode["status"], "skipped");
+    assert!(opencode["command"].is_null());
+    assert!(
+        opencode["description"]
+            .as_str()
+            .unwrap()
+            .contains(r#""command":["cedr","mcp"]"#)
     );
     assert!(!s.dir.path().join("add").exists());
     assert!(!s.dir.path().join("config").exists());
@@ -197,6 +212,23 @@ elif [ -f "$HOME/grok-add" ]; then echo 'cedr cedr mcp'
 fi"#,
     );
 
+    fake_agent(
+        &s,
+        "gemini",
+        r#"test "$*" = 'mcp add --scope user cedr cedr mcp' || exit 1
+printf '%s\n' "$*" > "$HOME/gemini-add""#,
+    );
+    fake_agent(&s, "cursor", r#"echo unexpected > "$HOME/cursor-cli""#);
+    fake_agent(
+        &s,
+        "opencode",
+        r#"case "$*" in
+  --version) echo 2.0.0 ;;
+  'mcp add cedr --global -- cedr mcp') printf '%s\n' "$*" > "$HOME/opencode-add" ;;
+  *) exit 1 ;;
+esac"#,
+    );
+
     let out = run_init(&s, &["--yes"]);
     assert_eq!(out.status.code(), Some(1), "{:?}", out);
     let payload: Value = serde_json::from_str(&stdout(&out)).unwrap();
@@ -214,6 +246,27 @@ fi"#,
     assert_eq!(std::fs::read_to_string(timer).unwrap(), "existing timer");
     assert!(!root.join("claude-add").exists());
     assert!(!root.join("codex-add").exists());
+    assert_eq!(step(&payload, "mcp.gemini")["status"], "applied");
+    assert_eq!(
+        std::fs::read_to_string(root.join("gemini-add")).unwrap(),
+        "mcp add --scope user cedr cedr mcp\n"
+    );
+    assert_eq!(step(&payload, "mcp.opencode")["status"], "applied");
+    assert_eq!(
+        std::fs::read_to_string(root.join("opencode-add")).unwrap(),
+        "mcp add cedr --global -- cedr mcp\n"
+    );
+    let cursor = step(&payload, "mcp.cursor");
+    assert_eq!(cursor["status"], "skipped");
+    assert!(cursor["command"].is_null());
+    assert!(
+        cursor["description"]
+            .as_str()
+            .unwrap()
+            .contains("~/.cursor/mcp.json")
+    );
+    assert!(!root.join("cursor-cli").exists());
+    assert!(!root.join(".cursor").exists());
     assert!(String::from_utf8_lossy(&out.stderr).contains("Doctor:"));
 }
 
