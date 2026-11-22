@@ -2,6 +2,41 @@
 
 Every release of the `cedr` CLI, newest first. The GitHub release notes for a version are its entry here. The design contracts are [docs/route.md](docs/route.md) (Route and the MCP server), [docs/council.md](docs/council.md) (Council), [docs/design.md](docs/design.md) (Guard), [docs/sync.md](docs/sync.md) (Sync), [docs/monitor.md](docs/monitor.md) (Monitor), [docs/compare.md](docs/compare.md) (Compare), [docs/bench.md](docs/bench.md) (Bench), [docs/doctor.md](docs/doctor.md), [docs/update.md](docs/update.md) and [docs/telemetry.md](docs/telemetry.md); the user guides are at [cedr.dev/docs](https://cedr.dev/docs).
 
+## v0.16.0 (2026-11-22)
+
+<img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.16.0.png" alt="cedr v0.16.0: full coverage" width="770">
+
+**v0.16.0** · 7 changes from 1 contributor
+
+### Highlights
+**Tell a quiet agent from one Monitor could only partly read.** Each `cedr monitor` report now carries coverage for every agent found on the machine: sessions with usage, sessions seen without final usage yet (Copilot sessions not shut down, Antigravity conversations still being written), malformed records, and what cannot be counted and why. Text output adds a line only for an agent whose coverage is incomplete; `--format json` adds a `coverage` object. Pushes are unchanged.
+
+**opencode 2.x usage counts again.** Monitor reads opencode's `session_v2`, `session_message` and `session_part` tables beside the legacy message table, so newer opencode installs no longer show as unsupported. A migrated database is counted once, and subagent sessions count as subagent usage.
+
+**Doctor checks the cedr MCP server in every agent.** `cedr doctor` adds an `mcp.<client>` check for Claude Code, Codex, Grok Build, Gemini CLI, Cursor, Copilot in VS Code, OpenCode, Muse Code and Antigravity, and prints the command or config snippet that adds a missing registration. `cedr init` uses the same plan without rewriting desktop client configuration.
+
+### Features
+- **Legacy skill pins:** `cedr guard verify` reports skill pins written before typed hashes as `CV006` warnings, with the `cedr guard lock` command to refresh them. `--require-typed-pins`, the Action input `require-typed-pins: true` and the MCP `guard_verify` option `require_typed_pins` make them errors. See [docs/guard.md](docs/guard.md).
+- **GitLab CI provenance pushed:** Compare now sends the GitLab job and merge request with pushed results, as it does for GitHub Actions runs.
+
+### Fixes
+- **Bench recovery:** a recovery lock is released explicitly before retrying, so a concurrent run no longer waits on a lock a forked process kept open.
+
+<details>
+<summary>Full changelog</summary>
+
+#### What's Changed
+* fix(bench): release recovery locks before retrying
+* feat(doctor): check mcp registration across supported clients
+* feat(guard): warn about legacy untyped skill pins
+* feat(compare): push gitlab ci provenance with results
+* feat(monitor): read opencode's session_v2 schema
+* feat(monitor): report source coverage beside usage
+* chore(release): see what monitor could not read and check mcp in every agent as cedr 0.16.0
+
+**Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.15.0...v0.16.0
+</details>
+
 ## v0.15.0 (2026-11-21)
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.15.0.png" alt="cedr v0.15.0: first run" width="770">
