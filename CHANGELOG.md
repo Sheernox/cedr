@@ -6,12 +6,12 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.16.0.png" alt="cedr v0.16.0: full coverage" width="770">
 
-**v0.16.0** · 7 changes from 1 contributor
+**v0.16.0** · 8 changes from 1 contributor
 
 ### Highlights
 **Tell a quiet agent from one Monitor could only partly read.** Each `cedr monitor` report now carries coverage for every agent found on the machine: sessions with usage, sessions seen without final usage yet (Copilot sessions not shut down, Antigravity conversations still being written), malformed records, and what cannot be counted and why. Text output adds a line only for an agent whose coverage is incomplete; `--format json` adds a `coverage` object. Pushes are unchanged.
 
-**opencode 2.x usage counts again.** Monitor reads opencode's `session_v2`, `session_message` and `session_part` tables beside the legacy message table, so newer opencode installs no longer show as unsupported. A migrated database is counted once, and subagent sessions count as subagent usage.
+**opencode 2.x usage counts again.** Monitor reads opencode's `session_v2`, `session_message` and `session_part` tables beside the legacy message table, so newer opencode installs no longer show as unsupported. A migrated database is counted once, and subagent sessions count as subagent usage. A database an earlier version already read is read again once, and usage it already pushed moves to its corrected project.
 
 **Doctor checks the cedr MCP server in every agent.** `cedr doctor` adds an `mcp.<client>` check for Claude Code, Codex, Grok Build, Gemini CLI, Cursor, Copilot in VS Code, OpenCode, Muse Code and Antigravity, and prints the command or config snippet that adds a missing registration. `cedr init` uses the same plan without rewriting desktop client configuration.
 
@@ -32,6 +32,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 * feat(compare): push gitlab ci provenance with results
 * feat(monitor): read opencode's session_v2 schema
 * feat(monitor): report source coverage beside usage
+* fix(monitor): reread opencode once and repair usage whose project changed
 * chore(release): see what monitor could not read and check mcp in every agent as cedr 0.16.0
 
 **Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.15.0...v0.16.0

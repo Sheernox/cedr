@@ -901,7 +901,13 @@ fn files_in(h: &str, c: &Config, home: &str) -> Result<Vec<PathBuf>> {
 /// keyed by response, so nothing is counted twice). Codex 2: responses take their own `thread_id` as session.
 /// Antigravity 2: interrupted generations no longer count as malformed.
 /// Copilot 2: sessions that never shut down are recorded for coverage.
-const REREADS: &[(&str, i64)] = &[("codex", 2), ("antigravity", 2), ("copilot", 2)];
+/// Opencode 2: the session_v2 tables are read, and replace legacy copies of the same messages.
+const REREADS: &[(&str, i64)] = &[
+    ("codex", 2),
+    ("antigravity", 2),
+    ("copilot", 2),
+    ("opencode", 2),
+];
 
 pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
     for &h in crate::HARNESSES {
@@ -1112,8 +1118,9 @@ pub fn collect(c: &Config, db: &mut Store) -> Result<()> {
             "INSERT OR REPLACE INTO sources VALUES(?,?)",
             params![h, v.to_string()],
         )?;
-        // A response that moves session records its old key in `repairs` (the store's `response_moved` trigger, in
-        // the same transaction as the move), so an interrupted reread loses nothing and simply runs again.
+        // A response that moves session, project or sidechain records its old key in `repairs` (the store's
+        // `response_moved` trigger, in the same transaction as the move), so an interrupted reread loses nothing and
+        // simply runs again.
         if let Some(r) = revision.filter(|_| reread && error.is_none()) {
             db.db.execute(
                 "INSERT OR REPLACE INTO meta VALUES(?,?)",
@@ -1149,7 +1156,7 @@ fn opencode_sqlite(path: &Path, c: &Config, db: &Store) -> Result<Opencode> {
         ));
     }
     if tables.contains("message") {
-        opencode_legacy(&conn, c, db)?;
+        opencode_legacy(&conn, v2, c, db)?;
     }
     if !v2 {
         return Ok(Opencode::Read(0));
@@ -1161,8 +1168,14 @@ fn opencode_sqlite(path: &Path, c: &Config, db: &Store) -> Result<Opencode> {
         db,
     )?))
 }
-fn opencode_legacy(conn: &rusqlite::Connection, c: &Config, db: &Store) -> Result<()> {
-    let mut q = conn.prepare("SELECT id,session_id,data FROM message")?;
+/// The legacy `message` table. Beside session_v2 it reads only messages the new tables lack: writing a legacy copy
+/// over the newer one on every read would flip its project and sidechain back and forth.
+fn opencode_legacy(conn: &rusqlite::Connection, v2: bool, c: &Config, db: &Store) -> Result<()> {
+    let mut q = conn.prepare(if v2 {
+        "SELECT id,session_id,data FROM message WHERE id NOT IN (SELECT id FROM session_message)"
+    } else {
+        "SELECT id,session_id,data FROM message"
+    })?;
     for item in q.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -1737,6 +1750,79 @@ mod tests {
                 ("msg_b".into(), "apiErrors".into(), child, at + 3600),
                 ("msg_d".into(), "compactions".into(), root, at),
             ]
+        );
+    }
+    #[test]
+    fn a_store_read_before_session_v2_rereads_opencode_and_repairs_the_legacy_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("web");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let (c, mut db) = opencode_db(dir.path(), OPENCODE_V2);
+        let t = 1_793_354_400_000_i64;
+        let conn = rusqlite::Connection::open(dir.path().join("opencode.db")).unwrap();
+        conn.execute(
+            "INSERT INTO session_v2 VALUES('ses_root','p',NULL,?,NULL,?,?)",
+            params![repo.display().to_string(), t, t],
+        )
+        .unwrap();
+        let tokens =
+            json!({"input": 100, "output": 20, "reasoning": 0, "cache": {"read": 0, "write": 0}});
+        conn.execute(
+            "INSERT INTO session_message VALUES('msg_a','ses_root','assistant',0,?,?,?)",
+            params![
+                t,
+                t,
+                json!({"model": {"id": "gpt-6.1-sol", "providerID": "openai"}, "content": [],
+                "tokens": tokens, "time": {"created": t}})
+                .to_string()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message VALUES('msg_a','ses_root',?,?,?)",
+            params![t, t, json!({"role": "assistant", "modelID": "gpt-6.1-sol", "time": {"created": t},
+                "tokens": {"input": 1, "output": 1, "reasoning": 0, "cache": {"read": 0, "write": 0}}}).to_string()],
+        )
+        .unwrap();
+        drop(conn);
+        collect(&c, &mut db).unwrap();
+        // What a store kept from the legacy reader alone: no project, and cursors that say the file is read.
+        db.db
+            .execute_batch(
+                "UPDATE responses SET project=NULL, input=1; DELETE FROM meta; DELETE FROM repairs",
+            )
+            .unwrap();
+        let state = |db: &Store| -> (Value, Vec<Option<String>>) {
+            let row = db
+                .db
+                .query_row(
+                    "SELECT json_array(input,project) FROM responses WHERE id='msg_a'",
+                    [],
+                    |r| Ok(serde_json::from_str(&r.get::<_, String>(0)?).unwrap()),
+                )
+                .unwrap();
+            let repairs = db
+                .db
+                .prepare("SELECT project FROM repairs ORDER BY id")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            (row, repairs)
+        };
+        collect(&c, &mut db).unwrap();
+        assert_eq!(
+            state(&db),
+            (json!([100, "web"]), vec![None]),
+            "the unchanged database is reread, and the legacy key is kept for the app's copy"
+        );
+        db.db.execute_batch("DELETE FROM meta").unwrap();
+        collect(&c, &mut db).unwrap();
+        assert_eq!(
+            state(&db).1,
+            vec![None],
+            "rereading again moves nothing: the legacy copy never overwrites the newer one"
         );
     }
     fn coverage(db: &Store, harness: &str, project: Option<&str>) -> Value {

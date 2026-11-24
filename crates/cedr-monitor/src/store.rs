@@ -1,6 +1,6 @@
 //! Transactional counts-only store. Response identities survive file moves and replay.
 use crate::Result;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
@@ -75,7 +75,19 @@ impl Store {
         }
         let db = Connection::open(path)?;
         db.busy_timeout(Duration::from_secs(30))?;
-        db.execute_batch("PRAGMA journal_mode=DELETE; CREATE TABLE IF NOT EXISTS responses(harness TEXT,id TEXT,at INTEGER,session TEXT,project TEXT,model TEXT,effort TEXT,sidechain INTEGER,input INTEGER,write5 INTEGER,write1 INTEGER,read INTEGER,output INTEGER,reasoning INTEGER,searches INTEGER,fetches INTEGER,wall INTEGER,context INTEGER,cost REAL,PRIMARY KEY(harness,id)); CREATE INDEX IF NOT EXISTS response_time ON responses(at); CREATE INDEX IF NOT EXISTS response_session ON responses(harness,session,at); CREATE TABLE IF NOT EXISTS events(harness TEXT,id TEXT,at INTEGER,session TEXT,project TEXT,model TEXT,effort TEXT,sidechain INTEGER,kind TEXT,PRIMARY KEY(harness,id,kind)); CREATE INDEX IF NOT EXISTS event_time ON events(at); CREATE TABLE IF NOT EXISTS cursors(path TEXT PRIMARY KEY,data TEXT); CREATE TABLE IF NOT EXISTS readings(harness TEXT,window TEXT,at TEXT,data TEXT,PRIMARY KEY(harness,window,at)); CREATE TABLE IF NOT EXISTS sources(harness TEXT PRIMARY KEY,data TEXT); CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value INTEGER); CREATE TABLE IF NOT EXISTS repairs(id INTEGER PRIMARY KEY,hour INTEGER,harness TEXT,model TEXT,effort TEXT,project TEXT,session TEXT,sidechain INTEGER); CREATE TABLE IF NOT EXISTS repairs_sent(org TEXT,id INTEGER,PRIMARY KEY(org,id)); CREATE TABLE IF NOT EXISTS unfinished(harness TEXT,session TEXT,at INTEGER,project TEXT,PRIMARY KEY(harness,session)); CREATE TABLE IF NOT EXISTS malformed(harness TEXT,file TEXT,at INTEGER,count INTEGER,PRIMARY KEY(harness,file)); CREATE TRIGGER IF NOT EXISTS response_moved AFTER UPDATE OF session ON responses WHEN old.session IS NOT new.session BEGIN INSERT INTO repairs(hour,harness,model,effort,project,session,sidechain) VALUES(old.at/3600*3600,old.harness,old.model,old.effort,old.project,old.session,old.sidechain); END;")?;
+        // Before 0.16 the trigger watched only `session`; a store made then gets the one that also watches the
+        // other parts of a pushed row's key, so a response whose project or sidechain changes is repaired too.
+        let moved: Option<String> = db
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='response_moved'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if moved.is_some_and(|sql| !sql.contains("new.project")) {
+            db.execute_batch("DROP TRIGGER response_moved")?;
+        }
+        db.execute_batch("PRAGMA journal_mode=DELETE; CREATE TABLE IF NOT EXISTS responses(harness TEXT,id TEXT,at INTEGER,session TEXT,project TEXT,model TEXT,effort TEXT,sidechain INTEGER,input INTEGER,write5 INTEGER,write1 INTEGER,read INTEGER,output INTEGER,reasoning INTEGER,searches INTEGER,fetches INTEGER,wall INTEGER,context INTEGER,cost REAL,PRIMARY KEY(harness,id)); CREATE INDEX IF NOT EXISTS response_time ON responses(at); CREATE INDEX IF NOT EXISTS response_session ON responses(harness,session,at); CREATE TABLE IF NOT EXISTS events(harness TEXT,id TEXT,at INTEGER,session TEXT,project TEXT,model TEXT,effort TEXT,sidechain INTEGER,kind TEXT,PRIMARY KEY(harness,id,kind)); CREATE INDEX IF NOT EXISTS event_time ON events(at); CREATE TABLE IF NOT EXISTS cursors(path TEXT PRIMARY KEY,data TEXT); CREATE TABLE IF NOT EXISTS readings(harness TEXT,window TEXT,at TEXT,data TEXT,PRIMARY KEY(harness,window,at)); CREATE TABLE IF NOT EXISTS sources(harness TEXT PRIMARY KEY,data TEXT); CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value INTEGER); CREATE TABLE IF NOT EXISTS repairs(id INTEGER PRIMARY KEY,hour INTEGER,harness TEXT,model TEXT,effort TEXT,project TEXT,session TEXT,sidechain INTEGER); CREATE TABLE IF NOT EXISTS repairs_sent(org TEXT,id INTEGER,PRIMARY KEY(org,id)); CREATE TABLE IF NOT EXISTS unfinished(harness TEXT,session TEXT,at INTEGER,project TEXT,PRIMARY KEY(harness,session)); CREATE TABLE IF NOT EXISTS malformed(harness TEXT,file TEXT,at INTEGER,count INTEGER,PRIMARY KEY(harness,file)); CREATE TRIGGER IF NOT EXISTS response_moved AFTER UPDATE OF session,project,sidechain ON responses WHEN old.session IS NOT new.session OR old.project IS NOT new.project OR old.sidechain IS NOT new.sidechain BEGIN INSERT INTO repairs(hour,harness,model,effort,project,session,sidechain) VALUES(old.at/3600*3600,old.harness,old.model,old.effort,old.project,old.session,old.sidechain); END;")?;
         Ok(Self { db })
     }
     /// Stores a response; one with no known time (still 0) cannot be placed in an hour and is left out.
@@ -180,5 +192,30 @@ impl Store {
         q.query_map([], |r| r.get::<_, String>(0))?
             .map(|r| Ok(serde_json::from_str(&r?)?))
             .collect::<Result<Vec<_>>>()
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_store_made_before_0_16_repairs_a_changed_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("monitor.sqlite");
+        Store::open(&path).unwrap().db.execute_batch(
+            "DROP TRIGGER response_moved; CREATE TRIGGER response_moved AFTER UPDATE OF session ON responses WHEN old.session IS NOT new.session BEGIN INSERT INTO repairs(hour,harness,model,effort,project,session,sidechain) VALUES(old.at/3600*3600,old.harness,old.model,old.effort,old.project,old.session,old.sidechain); END;
+             INSERT INTO responses(harness,id,at,session,project,sidechain) VALUES('opencode','m',7200,'s',NULL,0)",
+        )
+        .unwrap();
+        let db = Store::open(&path).unwrap();
+        db.db
+            .execute_batch("UPDATE responses SET project='web'")
+            .unwrap();
+        let repairs: (i64, Option<String>) = db
+            .db
+            .query_row("SELECT hour,project FROM repairs", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(repairs, (7200, None));
     }
 }
