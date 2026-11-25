@@ -2,6 +2,8 @@
 """Render banner/banner.html to assets/banner.png (2560x800, transparent rounded corners), or
 with a version (`render-banner.py v0.5.0`) banner/releases/<version>.html to
 assets/releases/<version>.png (1664x832), the hero image of that CHANGELOG entry, shown 770 wide.
+`render-banner.py social` renders banner/social.html to assets/social.png (1280x640, opaque), the
+repository's social preview, which is uploaded by hand under Settings, General, Social preview.
 Start a new release's page from a copy of banner/releases/v0.8.0.html and change only the words.
 
 Needs the Python playwright package and its Chromium. Commit the HTML and the PNG together.
@@ -16,7 +18,14 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def main() -> None:
-    if len(sys.argv) > 1:
+    opaque = False
+    if sys.argv[1:] == ["social"]:
+        source = ROOT / "banner" / "social.html"
+        target = ROOT / "assets" / "social.png"
+        height = 640
+        scale = 1
+        opaque = True
+    elif len(sys.argv) > 1:
         version = sys.argv[1]
         source = ROOT / "banner" / "releases" / f"{version}.html"
         target = ROOT / "assets" / "releases" / f"{version}.png"
@@ -37,7 +46,7 @@ def main() -> None:
         )
         page.goto(source.as_uri())
         page.wait_for_load_state("networkidle")
-        page.locator(".bn").screenshot(path=str(target), omit_background=True)
+        page.locator(".bn").screenshot(path=str(target), omit_background=not opaque)
         browser.close()
     print(f"wrote {target.relative_to(ROOT)}")
 
