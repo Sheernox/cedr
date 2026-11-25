@@ -14,7 +14,16 @@
 
 <br>
 
-`cedr` is the command line tool behind [cedr.dev](https://cedr.dev): every coding agent, one control panel. It picks the agent, model and effort for each kind of work, merges reviews from several vendors into one gate, pins the skills and MCP servers your agents load, compiles one setup into each agent's own files, and reports usage, spend and plan limits across them. Any agent that speaks MCP can call it directly.
+Coding agents each keep their own config, plan limits and logs, so using more than one means copying setup by hand, guessing which plan has room left, and trusting skills and MCP servers nobody pinned. `cedr`, the command line tool behind [cedr.dev](https://cedr.dev), runs them all from one place:
+
+- **Route** picks the agent, model and effort for each task, and skips plans near their limits.
+- **Council** has reviewers from several vendors check a change, and blocks on any serious finding.
+- **Guard** pins the skills and MCP servers your agents load, and fails CI when one changes.
+- **Sync** turns one set of rules, skills and MCP servers into each agent's own files.
+- **Monitor** reports tokens, cost and plan limits across every agent, from local logs.
+- **Compare** tests whether a new model or setup actually does better, with your own tasks.
+
+Any agent that speaks MCP can call it directly.
 
 > [!NOTE]
 > cedr is in public beta. Commands and file formats may still change before 1.0. See [how versions work](docs/versioning.md).
@@ -29,32 +38,32 @@
 </tr>
 <tr valign="top">
 <td align="center"><a href="https://cedr.dev/docs/route"><img src="assets/products/route.svg" width="40" height="40" alt=""></a><br><a href="https://cedr.dev/docs/route"><b>Route</b></a></td>
-<td>Picks the agent, model and effort for each kind of work from your <code>routes.toml</code>. Equally suited work goes to the plan with the most room left, and plans near their limits are skipped. You set the limits per plan or route, and the models per route and work size.</td>
+<td>Reads your <code>routes.toml</code>, where you set the limits per plan or route and the models per route and work size. Equally suited work goes to the plan with the most room left.</td>
 <td><code>cedr route pick review.code</code></td>
 </tr>
 <tr valign="top">
 <td align="center"><a href="https://cedr.dev/docs/council"><img src="assets/products/council.svg" width="40" height="40" alt=""></a><br><a href="https://cedr.dev/docs/council"><b>Council</b></a></td>
-<td>Starts one reviewer per vendor, merges their reports, groups findings that point at the same place and decides the gate. Any P0 or P1 blocks; too few reports is never a silent pass.</td>
+<td>Groups findings that point at the same place. Any P0 or P1 blocks; too few reports is never a silent pass.</td>
 <td><code>cedr council plan review.council</code></td>
 </tr>
 <tr valign="top">
 <td align="center"><a href="https://cedr.dev/docs/guard"><img src="assets/products/guard.svg" width="40" height="40" alt=""></a><br><a href="https://cedr.dev/docs/guard"><b>Guard</b></a></td>
-<td>Lints your agent setup, pins every skill and MCP server in <code>.cedr/guard.lock</code>, and fails CI when a server's tools, descriptions or network hosts change after you pinned it.</td>
+<td>Lints your agent setup. Pins live in <code>.cedr/guard.lock</code> and cover each server's tools, descriptions and network hosts.</td>
 <td><code>cedr guard lint</code></td>
 </tr>
 <tr valign="top">
 <td align="center"><a href="https://cedr.dev/docs/sync"><img src="assets/products/sync.svg" width="40" height="40" alt=""></a><br><a href="https://cedr.dev/docs/sync"><b>Sync</b></a></td>
-<td>Write rules, skills, MCP servers, permissions and hooks once in <code>.cedr/</code>, and cedr writes each agent's own files. CI fails on drift, and hand edits are never overwritten unless you pass <code>--force</code>.</td>
+<td>Sources, including permissions and hooks, live in <code>.cedr/</code>. CI fails on drift; hand edits are kept unless you pass <code>--force</code>.</td>
 <td><code>cedr sync init</code></td>
 </tr>
 <tr valign="top">
 <td align="center"><a href="https://cedr.dev/docs/monitor"><img src="assets/products/monitor.svg" width="40" height="40" alt=""></a><br><a href="https://cedr.dev/docs/monitor"><b>Monitor</b></a></td>
-<td>Reads each agent's local logs and reports tokens, cache use, API-equivalent cost, sessions and how close each plan is to its limit. Counts leave your machine only when you push them.</td>
+<td>Costs are API-equivalent, with cache use and sessions. Counts leave your machine only when you push them.</td>
 <td><code>cedr monitor limits</code></td>
 </tr>
 <tr valign="top">
 <td align="center"><a href="https://cedr.dev/docs/compare"><img src="assets/products/compare.svg" width="40" height="40" alt=""></a><br><a href="https://cedr.dev/docs/compare"><b>Compare</b></a></td>
-<td>Runs a suite of real tasks against a baseline and a candidate, with tests deciding each trial, inside a budget you set. Reports the pass rates, cost and how much the difference can be trusted, and records every version involved.</td>
+<td>Tests decide each trial, within a budget you set. Reports pass rates, cost and how much the difference can be trusted.</td>
 <td><code>cedr compare init</code></td>
 </tr>
 <tr valign="top">

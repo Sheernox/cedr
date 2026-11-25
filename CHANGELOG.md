@@ -6,7 +6,7 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 
 <img src="https://raw.githubusercontent.com/Sheernox/cedr/main/assets/releases/v0.16.0.png" alt="cedr v0.16.0: full coverage" width="770">
 
-**v0.16.0** · 8 changes from 1 contributor
+**v0.16.0** · 10 changes from 1 contributor
 
 ### Highlights
 **Tell a quiet agent from one Monitor could only partly read.** Each `cedr monitor` report now carries coverage for every agent found on the machine: sessions with usage, sessions seen without final usage yet (Copilot sessions not shut down, Antigravity conversations still being written), malformed records, and what cannot be counted and why. Text output adds a line only for an agent whose coverage is incomplete; `--format json` adds a `coverage` object. Pushes are unchanged.
@@ -22,6 +22,9 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 ### Fixes
 - **Bench recovery:** a recovery lock is released explicitly before retrying, so a concurrent run no longer waits on a lock a forked process kept open.
 
+### Docs
+- **README:** opens with the problem cedr solves and one line per product, and the repository has a social preview image for shared links.
+
 <details>
 <summary>Full changelog</summary>
 
@@ -33,6 +36,8 @@ Every release of the `cedr` CLI, newest first. The GitHub release notes for a ve
 * feat(monitor): read opencode's session_v2 schema
 * feat(monitor): report source coverage beside usage
 * fix(monitor): reread opencode once and repair usage whose project changed
+* chore(assets): add the repository social preview image
+* docs(readme): open with the problem cedr solves and one line per product
 * chore(release): see what monitor could not read and check mcp in every agent as cedr 0.16.0
 
 **Full Changelog**: https://github.com/Sheernox/cedr/compare/v0.15.0...v0.16.0
